@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { useGame } from "./state/store";
 import { api } from "./api/client";
+import Overworld from "./ui/Overworld";
+import { BattleDebateView } from "./ui/BattleDebateView";
+import PartyScreen from "./ui/PartyScreen";
+import { GambitEditor } from "./ui/GambitEditor";
+import TrainingScreen from "./ui/TrainingScreen";
 
-// Wave 0 shell: a menu that starts a run + a health badge + screen switch.
-// Wave 1 workstreams replace the placeholder panels:
+// Wave 2: real screens wired in.
 //   overworld -> WS-A (Phaser canvas)
 //   encounter -> WS-B/WS-C (BattleDebateView)
-//   party     -> WS-E (PartyScreen)
+//   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
 //   training  -> WS-F (TrainingScreen)
 export default function App() {
   const { runId, screen, topic, setRun, setScreen } = useGame();
@@ -79,8 +83,8 @@ export default function App() {
               </button>
             ))}
           </nav>
-          <main className="flex-1 grid place-items-center">
-            <PlaceholderPanel screen={screen} />
+          <main className="flex-1 overflow-auto">
+            <ScreenPanel screen={screen} />
           </main>
         </>
       )}
@@ -88,17 +92,44 @@ export default function App() {
   );
 }
 
-function PlaceholderPanel({ screen }: { screen: string }) {
-  const owners: Record<string, string> = {
-    overworld: "WS-A — Phaser tile overworld mounts here",
-    encounter: "WS-B/WS-C — live debate battle UI mounts here",
-    party: "WS-E — party + capture screen mounts here",
-    training: "WS-F — GEPA/GRPO training UI mounts here",
-  };
-  return (
-    <div className="text-center opacity-50">
-      <div className="text-5xl mb-3">🚧</div>
-      <div className="font-mono text-sm">{owners[screen] ?? screen}</div>
-    </div>
-  );
+function ScreenPanel({ screen }: { screen: string }) {
+  // PartyScreen signals "edit gambits" via window.location.hash = gambits/{id}.
+  const [gambitMonster, setGambitMonster] = useState<string | null>(null);
+  useEffect(() => {
+    const sync = () => {
+      const m = window.location.hash.match(/^#?gambits\/(.+)$/);
+      setGambitMonster(m ? m[1] : null);
+    };
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+
+  switch (screen) {
+    case "overworld":
+      return <Overworld />;
+    case "encounter":
+      return <BattleDebateView />;
+    case "training":
+      return <TrainingScreen />;
+    case "party":
+      if (gambitMonster) {
+        return (
+          <div className="p-4 max-w-3xl mx-auto">
+            <button
+              className="mb-3 text-sm px-3 py-1 rounded bg-white/5 hover:bg-white/10"
+              onClick={() => {
+                window.location.hash = "";
+              }}
+            >
+              ← back to party
+            </button>
+            <GambitEditor monsterId={gambitMonster} />
+          </div>
+        );
+      }
+      return <PartyScreen />;
+    default:
+      return <div className="grid place-items-center h-full opacity-50">{screen}</div>;
+  }
 }

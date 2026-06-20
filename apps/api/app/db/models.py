@@ -33,7 +33,9 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    # Naive UTC: the timestamp columns are TIMESTAMP WITHOUT TIME ZONE, and
+    # asyncpg rejects tz-aware values against them. Keep everything naive-UTC.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ---- Enums (mirror packages/shared/enums.ts) ----

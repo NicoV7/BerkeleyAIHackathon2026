@@ -41,3 +41,6 @@ apps/api/.venv/
 
 # Build caches
 .vite/
+
+# TS build cache
+*.tsbuildinfo
