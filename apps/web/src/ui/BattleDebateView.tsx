@@ -41,7 +41,7 @@ function HpBar({ hp, max_hp }: { hp: number; max_hp: number }) {
   const segs = 16;
   const pct = max_hp > 0 ? Math.max(0, Math.min(1, hp / max_hp)) : 0;
   const filled = Math.round(pct * segs);
-  const color = pct > 0.6 ? "var(--win)" : pct > 0.3 ? "var(--warn)" : "var(--danger)";
+  const color = pct > 0.6 ? "var(--hp-high)" : pct > 0.3 ? "var(--hp-mid)" : "var(--hp-low)";
   return (
     <div className="flex gap-[2px] h-3">
       {Array.from({ length: segs }).map((_, i) => (

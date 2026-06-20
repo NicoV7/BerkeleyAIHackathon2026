@@ -8,26 +8,49 @@
 :root {
   color-scheme: dark;
 
-  /* Core palette */
-  --bg: #0e1018; /* near-black blue, app background */
-  --panel: #1a1d2e; /* dialogue boxes, cards */
-  --panel2: #11131f; /* inset / transcript well */
-  --ink: #e8e6d8; /* off-white parchment text */
-  --muted: #8a8fa3; /* secondary text */
-  --accent: #ffcf3f; /* GOLD — judge score, "reasoning is the weapon" */
-  --party: #5cc8ff; /* cyan — player side */
-  --enemy: #ff5d6c; /* rose — enemy side */
-  --win: #6ee787; /* hp high / positive delta */
-  --warn: #ffcf3f;
-  --danger: #ff5d6c;
+  /* ---- Canonical palette ---- */
+  /* core */
+  --bg: #1b1730;
+  --surface: #2a2342;
+  --ink: #f5ecd8;
+  --gold: #ffce4a;
+  --cta: #5fbf57;
+  --enemy: #ff5a63;
+  /* structural & state */
+  --bg-deep: #120f24;
+  --surface-2: #352c52;
+  --border: #4a3f6b;
+  --ink-dim: #b9a8c9;
+  --ink-faint: #7d7196;
+  --gold-deep: #d99a2e;
+  --cta-deep: #3f9a40;
+  --party: #56c2e6;
+  --xp: #8a7bf0;
+  --hp-high: #6ee06a;
+  --hp-mid: #ffce4a;
+  --hp-low: #ff5a63;
+  /* debate types (elemental) */
+  --t-logos: #4a8fe0;
+  --t-pathos: #ff6f91;
+  --t-ethos: #e8a838;
+  --t-chaos: #a86fe0;
+  --t-socratic: #34c2a8;
+  --t-rhetoric: #6fc25a;
 
-  /* Elemental (debate-type) palette */
-  --logos: #4f8bff;
-  --pathos: #ff5d8f;
-  --ethos: #ffb13f;
-  --chaos: #b46bff;
-  --socratic: #36d6c3;
-  --rhetoric: #6ee787;
+  /* ---- Semantic aliases (keep existing component vars working) ---- */
+  --panel: var(--surface);
+  --panel2: var(--bg-deep);
+  --muted: var(--ink-dim);
+  --accent: var(--gold);
+  --win: var(--hp-high);
+  --warn: var(--gold);
+  --danger: var(--enemy);
+  --logos: var(--t-logos);
+  --pathos: var(--t-pathos);
+  --ethos: var(--t-ethos);
+  --chaos: var(--t-chaos);
+  --socratic: var(--t-socratic);
+  --rhetoric: var(--t-rhetoric);
 
   /* Fonts */
   --font-display: "Press Start 2P", monospace;
@@ -79,13 +102,14 @@ select {
 
 /* ---- Pixel panel: hard border + hard offset shadow ---- */
 .pixel-panel {
-  background: var(--panel);
-  border: 3px solid rgba(232, 230, 216, 0.18);
+  background: var(--surface);
+  border: 3px solid var(--border);
   box-shadow: 4px 4px 0 #000;
 }
 .pixel-inset {
-  background: var(--panel2);
-  border: 2px solid rgba(232, 230, 216, 0.1);
+  background: var(--bg-deep);
+  border: 2px solid var(--border);
+  opacity: 0.85;
 }
 
 /* ---- Pixel button: solid fill, hard shadow, tactile press ---- */
