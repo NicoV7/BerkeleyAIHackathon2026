@@ -203,12 +203,45 @@ class TrainRequest(BaseModel):
     rounds: int = 4
 
 
+class Scorecard(BaseModel):
+    """Wave A: measurable before/after training delta against a fixed benchmark.
+
+    Units are explicit to avoid the legacy `TrainJob.score_delta` ambiguity:
+    win_rate_* are 0..1, judge_score_* are 0..100. Computed by the benchmark
+    harness (deterministic: temp=0 + fixed seed + N-run averaging).
+    """
+    win_rate_before: float = 0.0
+    win_rate_after: float = 0.0
+    win_rate_delta: float = 0.0
+    judge_score_before: float = 0.0
+    judge_score_after: float = 0.0
+    judge_score_delta: float = 0.0
+    genome_diff: str = ""
+    n_benchmark_runs: int = 0
+
+
+class TrainingHistoryEntry(BaseModel):
+    genome_version: int
+    kind: Literal["gepa", "grpo", "evolution", "seed"]
+    created_at: str
+    judge_score: Optional[float] = None
+    win_rate: Optional[float] = None
+    note: str = ""
+
+
+class TrainingHistory(BaseModel):
+    monster_id: str
+    entries: list[TrainingHistoryEntry] = []
+
+
 class TrainJob(BaseModel):
     job_id: str
     monster_id: str
     kind: Literal["gepa", "grpo"]
     status: Literal["queued", "running", "awaiting_preference", "done", "failed"]
     score_delta: Optional[float] = None
+    # Wave A: full measurable delta (Optional — populated when a benchmark ran).
+    scorecard: Optional["Scorecard"] = None
 
 
 class PreferenceVariant(BaseModel):
@@ -225,3 +258,31 @@ class PreferenceBatch(BaseModel):
 
 class PreferenceSubmit(BaseModel):
     ranking: list[str]  # variant_ids best -> worst
+
+
+# ---- Persistence (Wave A cross-cutting: run save / resume) ----
+
+
+class RunSaveResult(BaseModel):
+    """Result of POST /api/runs/{id}/save — snapshots run + party to durable PG."""
+    run_id: str
+    saved: bool
+    saved_at: str
+    party_size: int = 0
+
+
+class RunResumeState(BaseModel):
+    """Full durable run state for GET /api/runs/{id} (survives restart).
+
+    Extends the in-flight RunState with the captured roster + a resume marker so
+    the frontend can rehydrate a session after a reload.
+    """
+    id: str
+    debate_topic: str
+    player_x: int
+    player_y: int
+    status: str
+    party: list[MonsterSummary] = []
+    captured: list[MonsterSummary] = []
+    saved_at: Optional[str] = None
+    resumable: bool = False
