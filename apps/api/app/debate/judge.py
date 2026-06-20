@@ -34,7 +34,11 @@ JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "judge")
 _RUBRIC = (
     "You are a strict but fair debate judge. Score each argument 0-100 on how "
     "persuasive, relevant to the topic, and well-reasoned it is. 50 is an average "
-    "argument; 80+ is excellent; below 40 is weak or off-topic. Be discriminating."
+    "argument; 80+ is excellent; below 40 is weak or off-topic. Be discriminating. "
+    "Also rate two dimensions 0-100: 'logic' (reasoning, evidence, coherence) and "
+    "'persuasion' (rhetorical force, framing, emotional pull). For each argument, "
+    "write 'why' as ONE short sentence naming the single decisive move that made it "
+    "win or lose (e.g. 'It reframed the burden of proof onto the opponent.')."
 )
 
 _STOP_WORDS = {
@@ -49,6 +53,9 @@ class JudgeScore:
     actor_id: str
     score: float
     rationale: str
+    why: str = ""
+    logic: float = 0.0
+    persuasion: float = 0.0
 
 
 def _tokens(text: str) -> set[str]:
@@ -114,7 +121,8 @@ def _build_messages(topic: str, items: list[dict[str, Any]]) -> list[dict[str, s
         f"Arguments this round:\n{args_block}\n\n"
         f"Score EACH argument. Use these EXACT ids as the JSON keys: {ids}.\n"
         "Return ONLY a JSON object mapping each id to "
-        '{"score": <0-100>, "rationale": "<one short sentence>"}.\n'
+        '{"score": <0-100>, "why": "<one short sentence naming the decisive move>", '
+        '"logic": <0-100>, "persuasion": <0-100>, "rationale": "<one short sentence>"}.\n'
         "Do not invent ids; copy the ids given above verbatim."
     )
     return [
@@ -181,6 +189,9 @@ async def score_round(
         text = it["text"]
         score: float | None = None
         rationale = ""
+        why = ""
+        logic: float | None = None
+        persuasion: float | None = None
         entry: Any = None
         if isinstance(parsed, dict):
             entry = parsed.get(aid)
@@ -189,11 +200,37 @@ async def score_round(
         if isinstance(entry, dict):
             score = _coerce_score(entry.get("score"))
             rationale = str(entry.get("rationale", "")).strip()
+            why = str(entry.get("why", "")).strip()
+            logic = _coerce_score(entry.get("logic"))
+            persuasion = _coerce_score(entry.get("persuasion"))
         elif entry is not None:
             score = _coerce_score(entry)
         if score is None:
+            # Heuristic fallback: templated, never-blank explanation + dims.
             score = heuristic_score(topic, text)
             if not rationale:
                 rationale = "Heuristic score (judge output unavailable)."
-        results.append(JudgeScore(actor_id=aid, score=score, rationale=rationale or "Scored."))
+            if not why:
+                why = f"{aid} made the more on-topic, substantive case."
+            if logic is None:
+                logic = score
+            if persuasion is None:
+                persuasion = score
+        # Backward-compatible defaults for fields the model omitted.
+        if not why:
+            why = rationale or f"{aid} made the more on-topic, substantive case."
+        if logic is None:
+            logic = score
+        if persuasion is None:
+            persuasion = score
+        results.append(
+            JudgeScore(
+                actor_id=aid,
+                score=score,
+                rationale=rationale or "Scored.",
+                why=why,
+                logic=logic,
+                persuasion=persuasion,
+            )
+        )
     return results

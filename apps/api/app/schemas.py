@@ -102,6 +102,11 @@ class JudgeVerdict(BaseModel):
     score: float
     rationale: str
     damage: int
+    # Additive, backward-compatible with old persisted JSON (all Optional).
+    why: Optional[str] = None
+    logic: Optional[float] = None
+    persuasion: Optional[float] = None
+    actor_id: Optional[str] = None
 
 
 class EncounterState(BaseModel):

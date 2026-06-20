@@ -199,6 +199,10 @@ def _to_verdict(d: dict) -> JudgeVerdict:
         score=d["score"],
         rationale=d["rationale"],
         damage=d["damage"],
+        why=d.get("why"),
+        logic=d.get("logic"),
+        persuasion=d.get("persuasion"),
+        actor_id=d.get("actor_id"),
     )
 
 

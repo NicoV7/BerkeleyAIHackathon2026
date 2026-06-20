@@ -262,18 +262,24 @@ def _sanitize(text: str) -> str:
 
 def _apply_round_damage(
     combatants: list[Combatant],
-    scored: list[tuple[Combatant, float, str]],
+    scored: list[tuple],
     momentum: dict[str, float],
 ) -> list[dict[str, Any]]:
     """Apply damage from a round's scored utterances. Returns verdict dicts.
 
     Each scored utterance damages the opposing side, split across its living
     members. Momentum nudges based on net per-side scoring this round.
+
+    Each `scored` entry is `(actor, score, rationale)` and may carry an optional
+    4th element: a dict of extra verdict fields (e.g. why/logic/persuasion) that
+    is merged into the emitted verdict. Older 3-tuple callers stay supported.
     """
     verdicts: list[dict[str, Any]] = []
     side_net: dict[str, float] = {"party": 0.0, "enemy": 0.0}
 
-    for actor, score, rationale in scored:
+    for entry in scored:
+        actor, score, rationale = entry[0], entry[1], entry[2]
+        extra: dict[str, Any] = entry[3] if len(entry) > 3 and isinstance(entry[3], dict) else {}
         side_net[actor.role] += (score - 50.0)
         enemy_role = "enemy" if actor.role == "party" else "party"
         targets = [c for c in combatants if c.role == enemy_role and c.alive]
@@ -302,6 +308,7 @@ def _apply_round_damage(
                 "score": score,
                 "rationale": rationale,
                 "damage": total_dmg,
+                **extra,
             }
         )
 
@@ -386,11 +393,16 @@ async def run_round_stream(
     # --- Judge the whole round at once ---
     fallback_model = next((c.model for c in combatants if c.model), None)
     scores = await score_round(topic, scored_inputs, fallback_model=fallback_model)
-    scored: list[tuple[Combatant, float, str]] = []
+    scored: list[tuple] = []
     for js in scores:
         actor = actor_by_id.get(js.actor_id)
         if actor:
-            scored.append((actor, js.score, js.rationale))
+            extra = {
+                "why": js.why,
+                "logic": js.logic,
+                "persuasion": js.persuasion,
+            }
+            scored.append((actor, js.score, js.rationale, extra))
 
     verdicts = _apply_round_damage(combatants, scored, momentum)
 
@@ -406,9 +418,13 @@ async def run_round_stream(
             "score": v["score"],
             "rationale": v["rationale"],
             "damage": v["damage"],
+            "actor_id": v["actor_id"],
+            "why": v.get("why"),
+            "logic": v.get("logic"),
+            "persuasion": v.get("persuasion"),
         }
         await r.rpush(k_judge(eid), _json.dumps(verdict_payload))
-        yield Event("verdict", {**verdict_payload, "actor_id": v["actor_id"]})
+        yield Event("verdict", verdict_payload)
     await r.expire(k_judge(eid), ENCOUNTER_TTL_SECONDS)
 
     for c in combatants:
