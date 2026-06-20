@@ -44,3 +44,8 @@ apps/api/.venv/
 
 # TS build cache
 *.tsbuildinfo
+.gstack/
+.coverage
+apps/api/.coverage
+uv.lock
+apps/api/uv.lock

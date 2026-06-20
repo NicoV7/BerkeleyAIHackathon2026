@@ -7,6 +7,7 @@ when the wild is in the "capturable window" (hp < 25% of max_hp).
 from __future__ import annotations
 
 import logging
+import os
 import random
 from typing import Optional, Tuple
 
@@ -23,15 +24,34 @@ CAPTURE_BASE = 0.15             # minimum capture probability
 CAPTURE_SCALE = 0.80            # extra probability at 0 HP
 CAPTURE_MAX_P = 0.95            # probability cap
 
+# Demo determinism: when set truthy, the probabilistic roll is bypassed so a
+# climax capture cannot fail on an unlucky 5% roll. The capturable-HP-window
+# gate is still enforced (the wild must still be weakened). Default OFF so the
+# real game keeps its probabilistic risk.
+DEMO_FORCE_CAPTURE_ENV = "DEMO_FORCE_CAPTURE"
+
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def _demo_force_enabled() -> bool:
+    """True when the DEMO_FORCE_CAPTURE env flag is set to a truthy value."""
+    return os.environ.get(DEMO_FORCE_CAPTURE_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 async def attempt_capture(
     session: AsyncSession,
     encounter_id: str,
     wild_id: str,
+    *,
+    force: bool = False,
+    seed: Optional[int] = None,
 ) -> Tuple[bool, Optional[Monster], str]:
     """Try to capture a wild monster during an active encounter.
 
@@ -43,6 +63,13 @@ async def attempt_capture(
     3. Roll probability: p = clamp(base + (1 - hp/max_hp) * scale, 0, 0.95)
     4. On success: flip owner -> 'player', optionally seed a CHARACTER memory.
     5. Return result — caller is responsible for committing the session.
+
+    Demo-mode determinism (additive, default OFF):
+    - ``force=True`` (or the ``DEMO_FORCE_CAPTURE`` env flag) bypasses the
+      probabilistic roll so a climax capture in the demo cannot fail on a 5%
+      roll. The capturable-HP-window gate is STILL enforced.
+    - ``seed`` makes the probabilistic roll deterministic (reproducible demo)
+      without bypassing it — useful for a "real but reliable" tell.
     """
     from app.redis_state import get_hp_map  # frozen helper
 
@@ -82,24 +109,38 @@ async def attempt_capture(
             f"{int(CAPTURABLE_HP_FRACTION * 100)}% first.",
         )
 
-    # Roll capture probability
-    p = _clamp(
-        CAPTURE_BASE + (1.0 - hp_fraction) * CAPTURE_SCALE,
-        0.0,
-        CAPTURE_MAX_P,
-    )
-    roll = random.random()
-    success = roll < p
+    # Demo determinism: force a guaranteed capture (window gate already passed).
+    forced = force or _demo_force_enabled()
+    if forced:
+        p = 1.0
+        roll = 0.0
+        success = True
+        log.info(
+            "Capture attempt (DEMO FORCED): monster=%s hp=%d/%d success=True",
+            wild_id,
+            current_hp,
+            max_hp,
+        )
+    else:
+        # Roll capture probability (optionally seeded for reproducibility).
+        p = _clamp(
+            CAPTURE_BASE + (1.0 - hp_fraction) * CAPTURE_SCALE,
+            0.0,
+            CAPTURE_MAX_P,
+        )
+        rng = random.Random(seed) if seed is not None else random
+        roll = rng.random()
+        success = roll < p
 
-    log.info(
-        "Capture attempt: monster=%s hp=%d/%d p=%.2f roll=%.2f success=%s",
-        wild_id,
-        current_hp,
-        max_hp,
-        p,
-        roll,
-        success,
-    )
+        log.info(
+            "Capture attempt: monster=%s hp=%d/%d p=%.2f roll=%.2f success=%s",
+            wild_id,
+            current_hp,
+            max_hp,
+            p,
+            roll,
+            success,
+        )
 
     if not success:
         return (
