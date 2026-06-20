@@ -5,6 +5,7 @@
  * The server (WS-B) pushes JSON messages; we parse them and accumulate state.
  *
  * Message shape from server (at minimum):
+ *   { type: "token",      data: TokenDelta }      // live streamed token delta
  *   { type: "utterance",  data: Utterance }
  *   { type: "verdict",    data: JudgeVerdict }
  *   { type: "state",      data: EncounterState }
@@ -49,6 +50,37 @@ export interface JudgeVerdict {
   actor_id?: string;
 }
 
+/**
+ * Streamed token delta ({ type: "token", data: TokenDelta }).
+ * The server emits these incrementally before the canonical `utterance` for the
+ * same (turn, actor_id). `text` is the delta to append to the live buffer.
+ */
+export interface TokenDelta {
+  turn: number;
+  actor_id: string;
+  /** Delta text to append to the live buffer for this (turn, actor_id). */
+  text: string;
+  /** Optional role hint; the view also resolves role/color from the roster. */
+  actor_role?: "party" | "enemy" | "judge";
+}
+
+/**
+ * A live (in-progress) utterance assembled from streamed `token` deltas, keyed
+ * by (turn, actor_id). Closed/reconciled when the canonical `utterance` arrives.
+ * `done` flags an empty-buffer utterance so the view can typewriter the full
+ * text as a fallback.
+ */
+export interface LiveUtterance {
+  turn: number;
+  actor_id: string;
+  actor_role?: "party" | "enemy" | "judge";
+  text: string;
+  /** True once the matching `utterance` closed the buffer (drives fallback). */
+  done: boolean;
+  /** When true, no tokens streamed — view should typewriter the whole text. */
+  fallback: boolean;
+}
+
 /** Live HP update for a single combatant ({ type: "hp", data: HpUpdate }). */
 export interface HpUpdate {
   monster_id: string;
@@ -90,10 +122,22 @@ export interface EncounterStreamState {
   encounter: EncounterState | null;
   transcript: Utterance[];
   verdicts: JudgeVerdict[];
+  /**
+   * In-progress utterances assembled from streamed `token` deltas, keyed by
+   * `${turn}:${actor_id}`. An entry with `fallback: true` carries the full
+   * closed text with no streamed tokens — the view typewriters it. Entries are
+   * removed once their canonical `utterance` lands in `transcript`.
+   */
+  liveTokens: Record<string, LiveUtterance>;
   /** Latest known phase, tracked from `phase` events and `state` snapshots. */
   phase: EncounterPhase;
   /** Close and clean up the websocket connection manually */
   disconnect: () => void;
+}
+
+/** Stable key for the live-token buffer / de-dupe against (turn, actor_id). */
+function liveKey(turn: number, actorId: string): string {
+  return `${turn}:${actorId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +151,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [encounter, setEncounter] = useState<EncounterState | null>(null);
   const [transcript, setTranscript] = useState<Utterance[]>([]);
   const [verdicts, setVerdicts] = useState<JudgeVerdict[]>([]);
+  const [liveTokens, setLiveTokens] = useState<Record<string, LiveUtterance>>({});
   const [phase, setPhase] = useState<EncounterPhase>("intro");
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -155,6 +200,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       setEncounter(null);
       setTranscript([]);
       setVerdicts([]);
+      setLiveTokens({});
       setPhase("intro");
       phaseRef.current = "intro";
       return;
@@ -163,6 +209,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     // Reset state for new encounter
     setTranscript([]);
     setVerdicts([]);
+    setLiveTokens({});
     setPhase("intro");
     phaseRef.current = "intro";
 
@@ -188,14 +235,59 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             message?: string;
           };
 
-          if (msg.type === "utterance") {
+          if (msg.type === "token") {
+            // Live token delta — append to the buffer keyed by (turn, actor_id).
+            const t = msg.data as TokenDelta;
+            const key = liveKey(t.turn, t.actor_id);
+            setLiveTokens((prev) => {
+              const cur = prev[key];
+              // Once an utterance has closed this key, ignore stray late tokens
+              // so we never re-open a finished line.
+              if (cur?.done) return prev;
+              const next: LiveUtterance = {
+                turn: t.turn,
+                actor_id: t.actor_id,
+                actor_role: t.actor_role ?? cur?.actor_role,
+                text: (cur?.text ?? "") + (t.text ?? ""),
+                done: false,
+                fallback: false,
+              };
+              return { ...prev, [key]: next };
+            });
+          } else if (msg.type === "utterance") {
             const u = msg.data as Utterance;
+            const key = liveKey(u.turn, u.actor_id);
+            // The canonical utterance closes its live buffer. Reconcile on the
+            // same (turn, actor_id) so we render exactly once: append to the
+            // transcript (de-duped on turn+actor_id+ts) and retire the buffer.
             setTranscript((prev) => {
-              // de-dupe by (turn, actor_id, ts)
               const exists = prev.some(
                 (x) => x.turn === u.turn && x.actor_id === u.actor_id && x.ts === u.ts
               );
               return exists ? prev : [...prev, u];
+            });
+            setLiveTokens((prev) => {
+              const cur = prev[key];
+              const streamed = (cur?.text ?? "").length > 0;
+              if (streamed) {
+                // Tokens streamed → transcript bubble takes over; drop buffer.
+                if (!cur) return prev;
+                const { [key]: _removed, ...rest } = prev;
+                return rest;
+              }
+              // Empty buffer → no tokens arrived; hand the whole text to the
+              // view as a typewriter fallback (keep keyed entry, mark done).
+              return {
+                ...prev,
+                [key]: {
+                  turn: u.turn,
+                  actor_id: u.actor_id,
+                  actor_role: u.actor_role,
+                  text: u.text,
+                  done: true,
+                  fallback: true,
+                },
+              };
             });
           } else if (msg.type === "verdict") {
             const v = msg.data as JudgeVerdict;
@@ -208,8 +300,28 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
           } else if (msg.type === "state") {
             const s = msg.data as EncounterState;
             setEncounter(s);
-            // Hydrate transcript + verdicts from full state snapshot
-            if (s.transcript?.length) setTranscript(s.transcript);
+            // Hydrate transcript + verdicts from full state snapshot.
+            // A full snapshot supersedes any in-flight token buffers; drop ones
+            // already represented in the snapshot transcript so we don't render
+            // a live line and its finished bubble at once.
+            if (s.transcript?.length) {
+              setTranscript(s.transcript);
+              setLiveTokens((prev) => {
+                let changed = false;
+                const next: Record<string, LiveUtterance> = {};
+                for (const [k, v] of Object.entries(prev)) {
+                  const covered = s.transcript.some(
+                    (x) => x.turn === v.turn && x.actor_id === v.actor_id
+                  );
+                  if (covered) {
+                    changed = true;
+                  } else {
+                    next[k] = v;
+                  }
+                }
+                return changed ? next : prev;
+              });
+            }
             if (s.verdicts?.length) setVerdicts(s.verdicts);
             if (s.phase) {
               setPhase(s.phase);
@@ -268,5 +380,5 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encounterId]);
 
-  return { status, encounter, transcript, verdicts, phase, disconnect };
+  return { status, encounter, transcript, verdicts, liveTokens, phase, disconnect };
 }

@@ -19,10 +19,12 @@ import { useGame } from "../state/store";
 import {
   CombatantState,
   JudgeVerdict,
+  LiveUtterance,
   Utterance,
   useEncounterStream,
 } from "../ws/useEncounterStream";
 import { Scoreboard } from "./Scoreboard";
+import { useArenaAudio } from "./useArenaAudio";
 
 /** Cosmetic pre-round stance options (wiring is a future task). */
 const STANCES = ["Aggressive", "Measured", "Defensive"] as const;
@@ -116,6 +118,107 @@ function UtteranceBubble({ u, liveNames }: { u: Utterance; liveNames: Record<str
   );
 }
 
+/** Resolve a (party | enemy | judge) role for an actor_id via the live roster. */
+function roleForActor(
+  actorId: string,
+  roster: CombatantState[],
+  hint?: "party" | "enemy" | "judge"
+): "party" | "enemy" | "judge" {
+  if (actorId === "judge") return "judge";
+  const c = roster.find((r) => r.monster_id === actorId);
+  if (c) return c.role;
+  return hint ?? "enemy";
+}
+
+/**
+ * TypewriterText — reveals `text` one character at a time. Used for the
+ * whole-utterance fallback (no tokens streamed) so an instantly-arrived line
+ * still feels alive. Resets cleanly whenever the source text changes.
+ */
+function TypewriterText({ text, cps = 60 }: { text: string; cps?: number }) {
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    setShown(0);
+    if (!text) return;
+    const stepMs = Math.max(8, Math.round(1000 / cps));
+    const id = setInterval(() => {
+      setShown((n) => {
+        if (n >= text.length) {
+          clearInterval(id);
+          return n;
+        }
+        return n + 1;
+      });
+    }, stepMs);
+    return () => clearInterval(id);
+  }, [text, cps]);
+  const done = shown >= text.length;
+  return (
+    <span>
+      {text.slice(0, shown)}
+      {!done && <span className="opacity-60 animate-pulse">▋</span>}
+    </span>
+  );
+}
+
+/**
+ * LiveUtteranceBubble — renders an in-progress utterance assembled from
+ * streamed tokens (or the whole-text typewriter fallback). Role/color is
+ * sourced by actor_id lookup in the combatant roster so live lines match the
+ * finished bubbles exactly.
+ */
+function LiveUtteranceBubble({
+  live,
+  roster,
+  liveNames,
+}: {
+  live: LiveUtterance;
+  roster: CombatantState[];
+  liveNames: Record<string, string>;
+}) {
+  const role = roleForActor(live.actor_id, roster, live.actor_role);
+  const isParty = role === "party";
+  const isJudge = role === "judge";
+
+  const bg = isJudge
+    ? "bg-yellow-900/40 border-yellow-600/40"
+    : isParty
+      ? "bg-indigo-900/40 border-indigo-500/40"
+      : "bg-rose-900/40 border-rose-500/40";
+
+  const nameColor = isJudge
+    ? "text-yellow-400"
+    : isParty
+      ? "text-indigo-300"
+      : "text-rose-300";
+
+  const actorName = liveNames[live.actor_id] ?? live.actor_id;
+
+  return (
+    <div className={`border rounded p-2 text-sm ${bg} ring-1 ring-white/10`}>
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`text-xs font-semibold ${nameColor}`}>{actorName}</span>
+        <span className="text-[10px] uppercase tracking-wide text-white/40 animate-pulse">
+          live
+        </span>
+        <span className="ml-auto text-xs text-white/30">turn {live.turn}</span>
+      </div>
+      <p className="text-white/90 leading-relaxed whitespace-pre-wrap">
+        {live.fallback ? (
+          // Empty-buffer utterance → typewriter the whole text.
+          <TypewriterText text={live.text} />
+        ) : (
+          // Token stream → show the buffer as it grows, with a caret.
+          <>
+            {live.text}
+            <span className="opacity-60 animate-pulse">▋</span>
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function VerdictBadge({ v }: { v: JudgeVerdict }) {
   // Scores are unsigned 0-100; 50 is the break-even average.
   const positive = isWinningScore(v.score);
@@ -199,17 +302,33 @@ function Chip({
 
 export function BattleDebateView() {
   const { activeEncounterId, setEncounter } = useGame();
-  const { status, encounter, transcript, verdicts, phase } =
+  const { status, encounter, transcript, verdicts, liveTokens, phase } =
     useEncounterStream(activeEncounterId);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [stance, setStance] = useState<Stance>("Measured");
 
-  // Auto-scroll transcript to bottom on new messages
+  // Audio stings (taste decision T-D1) — muted by default so it never blares.
+  const arenaAudio = useArenaAudio();
+
+  // In-progress (streaming / fallback) utterances, ordered by turn then actor.
+  const liveList: LiveUtterance[] = Object.values(liveTokens).sort(
+    (a, b) => a.turn - b.turn || a.actor_id.localeCompare(b.actor_id)
+  );
+  // Length of the longest live buffer — used to re-scroll as tokens stream in.
+  const liveTextLen = liveList.reduce((n, l) => n + l.text.length, 0);
+
+  // Auto-scroll transcript to bottom on new messages and as tokens stream.
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript.length]);
+  }, [transcript.length, liveList.length, liveTextLen]);
+
+  // Additive: fire a short sting on key beats (KO/win, loss, capturable).
+  // Edge-triggered inside the hook, so this only sounds on real transitions.
+  useEffect(() => {
+    arenaAudio.onBeat(phase);
+  }, [phase, arenaAudio]);
 
   // Name lookup map from live encounter combatants (fallback to ids)
   const liveNames: Record<string, string> = {};
@@ -314,6 +433,16 @@ export function BattleDebateView() {
           >
             {phase}
           </span>
+          {/* Audio sting toggle (default OFF so it never blares unexpectedly) */}
+          <button
+            type="button"
+            onClick={() => arenaAudio.toggleMuted()}
+            title={arenaAudio.muted ? "Enable arena audio stings" : "Mute arena audio stings"}
+            aria-pressed={!arenaAudio.muted}
+            className="rounded border border-white/15 px-1.5 py-0.5 hover:bg-white/10"
+          >
+            {arenaAudio.muted ? "🔇 SFX" : "🔊 SFX"}
+          </button>
         </div>
       </div>
 
@@ -374,7 +503,16 @@ export function BattleDebateView() {
             {transcript.map((u, i) => (
               <UtteranceBubble key={`${u.turn}-${u.actor_id}-${i}`} u={u} liveNames={liveNames} />
             ))}
-            {transcript.length === 0 && (
+            {/* Live, in-progress lines (token stream or typewriter fallback) */}
+            {liveList.map((live) => (
+              <LiveUtteranceBubble
+                key={`live-${live.turn}-${live.actor_id}`}
+                live={live}
+                roster={combatants}
+                liveNames={liveNames}
+              />
+            ))}
+            {transcript.length === 0 && liveList.length === 0 && (
               <div className="text-sm text-white/30 italic px-1">
                 Debate will appear here once the first round starts…
               </div>

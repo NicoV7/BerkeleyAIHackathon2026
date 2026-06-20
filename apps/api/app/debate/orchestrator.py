@@ -257,6 +257,79 @@ def _sanitize(text: str) -> str:
     return "".join(ch for ch in text if ch >= " " or ch in "\n\t")
 
 
+# First-token wall-clock guard for the live streaming path. On a contended CPU
+# gemma3 the dominant demo risk is a stalled model that never emits a first
+# token; we'd rather fail this one utterance (and fall back to a templated line)
+# than hang the whole WS round. Tuned for cold local models.
+STREAM_FIRST_TOKEN_TIMEOUT_S = 18.0
+
+
+async def _stream_utterance(
+    actor: Combatant,
+    topic: str,
+    transcript: list[dict[str, Any]],
+    action: dict[str, Any],
+    memories: list[str],
+    name_lookup: dict[str, str],
+):
+    """Live streaming twin of `_generate_utterance`.
+
+    Async generator that REUSES `_build_actor_messages` for the prompt, iterates
+    `gateway.stream(...)`, sanitizes every token via `_sanitize`, and accumulates
+    the full text. Each yield is a dict:
+
+      * `{"kind": "token", "text": <sanitized chunk>}` per streamed chunk, and
+      * exactly one terminating `{"kind": "done", "text": <full accumulated text>}`
+        carrying the canonical assembled utterance (with the same templated
+        fallback as `_generate_utterance` if the stream produced nothing).
+
+    A first-token timeout (`STREAM_FIRST_TOKEN_TIMEOUT_S`) guards a stalled CPU
+    model: if no token arrives in time the utterance fails over to the fallback
+    line instead of hanging the round. `_generate_utterance` is intentionally
+    left untouched so the headless/REST paths keep their determinism.
+    """
+    messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
+    parts: list[str] = []
+    try:
+        agen = gateway.stream(
+            messages, model=actor.model, temperature=0.8, max_tokens=180
+        )
+        first = True
+        while True:
+            try:
+                if first:
+                    chunk = await asyncio.wait_for(
+                        agen.__anext__(), timeout=STREAM_FIRST_TOKEN_TIMEOUT_S
+                    )
+                    first = False
+                else:
+                    chunk = await agen.__anext__()
+            except StopAsyncIteration:
+                break
+            piece = _sanitize(chunk or "")
+            if not piece:
+                continue
+            parts.append(piece)
+            yield {"kind": "token", "text": piece}
+        # Best-effort close of the underlying generator.
+        aclose = getattr(agen, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001
+                pass
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+        # Stalled or errored stream: drop whatever partial text we have so the
+        # fallback below produces a clean, complete line.
+        parts = []
+
+    full = "".join(parts).strip()
+    if not full:
+        full = f"({actor.name} presses the point on {topic}.)"
+    full = _sanitize(full)
+    yield {"kind": "done", "text": full}
+
+
 # ---- Core round logic (shared) ----------------------------------------------
 
 
@@ -375,9 +448,27 @@ async def run_round_stream(
         action = _decide_action(actor, battle_state)
         memories = await _gather_memories(actor, topic, run_id)
         transcript = await get_transcript_safe(eid)
-        text = await _generate_utterance(
+
+        # Live token streaming: emit additive `token` events as the model thinks,
+        # then the canonical `utterance` event with the full assembled text. The
+        # `done` chunk carries the fallback-resolved text, so a stalled/empty
+        # stream still produces a complete utterance (whole-utterance fallback).
+        text = ""
+        async for chunk in _stream_utterance(
             actor, topic, transcript, action, memories, name_lookup
-        )
+        ):
+            if chunk["kind"] == "token":
+                yield Event(
+                    "token",
+                    {
+                        "turn": turn_no,
+                        "actor_id": actor.monster_id,
+                        "text": chunk["text"],
+                    },
+                )
+            else:  # "done"
+                text = chunk["text"]
+
         utt = {
             "turn": turn_no,
             "actor_id": actor.monster_id,

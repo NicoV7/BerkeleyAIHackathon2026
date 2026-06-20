@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 // Minimal global game store. Workstreams extend their own slices; keep this
 // shell stable (runId, screen routing, active encounter).
-export type Screen = "menu" | "overworld" | "encounter" | "party" | "training";
+export type Screen = "menu" | "overworld" | "encounter" | "party" | "training" | "demo";
 
 interface GameState {
   runId: string | null;

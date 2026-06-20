@@ -6,6 +6,7 @@ import { BattleDebateView } from "./ui/BattleDebateView";
 import PartyScreen from "./ui/PartyScreen";
 import { GambitEditor } from "./ui/GambitEditor";
 import TrainingScreen from "./ui/TrainingScreen";
+import DemoArcPanel from "./ui/DemoArcPanel";
 
 // Wave 2: real screens wired in.
 //   overworld -> WS-A (Phaser canvas)
@@ -71,7 +72,7 @@ export default function App() {
       ) : (
         <>
           <nav className="flex gap-2 px-4 py-2 border-b border-white/10 text-sm">
-            {(["overworld", "encounter", "party", "training"] as const).map((s) => (
+            {(["overworld", "encounter", "party", "training", "demo"] as const).map((s) => (
               <button
                 key={s}
                 className={`px-3 py-1 rounded ${
@@ -112,6 +113,8 @@ function ScreenPanel({ screen }: { screen: string }) {
       return <BattleDebateView />;
     case "training":
       return <TrainingScreen />;
+    case "demo":
+      return <DemoArcPanel />;
     case "party":
       if (gambitMonster) {
         return (
