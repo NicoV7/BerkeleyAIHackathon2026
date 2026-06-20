@@ -19,13 +19,18 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from sqlalchemy import desc, select
+
+from app.db.models import EventType, Memory
 from app.gateway.gateway import gateway
 from app.training import genome as genome_mod
 from app.training import selfplay
 
 VARIANTS_PER_ROUND = 3
+BATTLE_MEMORY_LIMIT = 5
 
 
 async def run_gepa(
@@ -37,8 +42,17 @@ async def run_gepa(
     model: str = selfplay.DEFAULT_MODEL,
     persist: bool = True,
 ) -> tuple[dict[str, Any], float]:
-    """Evolve the monster's genome. Returns (best_genome, score_delta)."""
-    topic = topic or _topic_for(monster)
+    """Evolve the monster's genome. Returns (best_genome, score_delta).
+
+    Training is grounded in the monster's REAL battle history: we pull its recent
+    BATTLE memories (written on encounter finalize), rehearse self-play on a topic
+    it actually faced, and seed the reflective loop with a critique of a real loss.
+    Falls back to a generic topic when the agent has no battle history yet.
+    """
+    battles = await _load_battle_memories(session, monster)
+    topic = topic or _topic_from_battles(battles) or _topic_for(monster)
+    # Reflect on what actually went wrong in a real fight before rehearsing.
+    seed_directive = await _seed_directive_from_battles(battles, topic, model)
 
     # --- DSPy GEPA attempt (bonus path) ---
     try:
@@ -47,8 +61,67 @@ async def run_gepa(
         pass
 
     return await _run_fallback_gepa(
-        session, monster, rounds, topic=topic, model=model, persist=persist
+        session, monster, rounds, topic=topic, model=model, persist=persist,
+        seed_directive=seed_directive,
     )
+
+
+# ----------------------------------------------- real battle history (grounding)
+
+
+async def _load_battle_memories(session: Any, monster: Any, limit: int = BATTLE_MEMORY_LIMIT):
+    """Most-recent BATTLE memories for this monster (empty if none / no session)."""
+    mid = getattr(monster, "id", None)
+    if not mid or session is None:
+        return []
+    try:
+        res = await session.execute(
+            select(Memory)
+            .where(Memory.monster_id == mid, Memory.event_type == EventType.battle)
+            .order_by(desc(Memory.created_at))
+            .limit(limit)
+        )
+        return list(res.scalars().all())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _topic_from_battles(battles: list[Any]) -> str | None:
+    """Recover the debate topic from a battle memory's stored content."""
+    for m in battles:
+        match = re.search(r"Debate on '([^']+)'", getattr(m, "content", "") or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+async def _seed_directive_from_battles(
+    battles: list[Any], topic: str, model: str
+) -> str | None:
+    """Critique a REAL past loss (or the latest fight) into a coaching directive."""
+    if not battles:
+        return None
+    loss = next((m for m in battles if "LOST" in (getattr(m, "content", "") or "")), None)
+    target = loss or battles[0]
+    return await _critique_text(topic, getattr(target, "content", "") or "", model)
+
+
+async def _critique_text(topic: str, battle_text: str, model: str) -> str:
+    if not battle_text.strip():
+        return ""
+    prompt = (
+        f"Here is a record of a REAL past debate this agent fought on '{topic}':\n\n"
+        f"{battle_text[:2000]}\n\n"
+        "In ONE imperative sentence, give the single coaching directive that would "
+        "most improve this debater's next performance. Reply with only that sentence."
+    )
+    try:
+        out = await gateway.complete(
+            [{"role": "user", "content": prompt}], model=model, temperature=0.5, max_tokens=60
+        )
+        return ((out or "").strip().splitlines() or [""])[0].strip()[:200]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # --------------------------------------------------------------- DSPy (bonus)
@@ -77,6 +150,7 @@ async def _run_fallback_gepa(
     topic: str,
     model: str,
     persist: bool,
+    seed_directive: str | None = None,
 ) -> tuple[dict[str, Any], float]:
     base_genome = genome_mod.read_genome(monster)
 
@@ -88,7 +162,8 @@ async def _run_fallback_gepa(
 
     best_genome = base_genome
     best_score = baseline_score
-    best_critique_directive: str | None = None
+    # Round 1 starts from a directive grounded in a REAL past loss (if any).
+    best_critique_directive: str | None = seed_directive or None
 
     for _ in range(max(1, rounds)):
         seed = best_genome

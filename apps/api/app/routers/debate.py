@@ -11,7 +11,9 @@ win/loss/flee.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +32,11 @@ from app.routers.encounter import (
 from app.schemas import AutoRequest, JudgeVerdict, TurnResult, Utterance
 
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
+
+# Wall-clock guards: a single round shouldn't run forever on a slow local model,
+# and /auto shouldn't keep starting rounds past a total budget.
+ROUND_TIMEOUT_S = 120.0
+AUTO_BUDGET_S = 240.0
 
 
 # ---- Finalize (idempotent) --------------------------------------------------
@@ -200,7 +207,12 @@ def _to_verdict(d: dict) -> JudgeVerdict:
 
 @router.post("/{eid}/turn", response_model=TurnResult)
 async def take_turn(eid: str, session: AsyncSession = Depends(get_session)) -> TurnResult:
-    new_utts, new_verdicts, phase_event = await _run_one_round(eid)
+    try:
+        new_utts, new_verdicts, phase_event = await asyncio.wait_for(
+            _run_one_round(eid), timeout=ROUND_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="round timed out") from None
     state = await build_encounter_state(eid)
     return TurnResult(
         encounter=state,
@@ -218,11 +230,21 @@ async def auto(
     all_verdicts: list[JudgeVerdict] = []
     capturable: list[str] = []
     rounds = max(1, min(req.rounds, 12))
+    deadline = time.monotonic() + AUTO_BUDGET_S
     for _ in range(rounds):
         meta = await get_meta(eid)
         if meta.get("phase") in ("won", "lost"):
             break
-        utts, verdicts, phase_event = await _run_one_round(eid)
+        # Stop starting new rounds once the wall-clock budget is spent.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            utts, verdicts, phase_event = await asyncio.wait_for(
+                _run_one_round(eid), timeout=min(ROUND_TIMEOUT_S, remaining)
+            )
+        except asyncio.TimeoutError:
+            break  # return progress so far rather than hang the request
         all_utts.extend(utts)
         all_verdicts.extend(verdicts)
         capturable = phase_event.get("capturable_ids", [])

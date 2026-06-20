@@ -44,20 +44,6 @@ from app.schemas import (
 router = APIRouter(prefix="/api/encounters", tags=["encounter"])
 
 
-def _naive_created_at(obj) -> None:
-    """Strip tzinfo from created_at before insert.
-
-    FROZEN-CONTRACT GAP: db.models defaults created_at to a tz-AWARE datetime,
-    but the columns are TIMESTAMP WITHOUT TIME ZONE (init.sql), which asyncpg
-    refuses. Until the foundation makes the columns timestamptz (or the default
-    naive), every workstream inserting these rows must normalize. Noted in
-    memories/ws-b-debate.md.
-    """
-    ca = getattr(obj, "created_at", None)
-    if ca is not None and getattr(ca, "tzinfo", None) is not None:
-        obj.created_at = ca.replace(tzinfo=None)
-
-
 # ---- Enemy setup (WS-A seam) ------------------------------------------------
 
 
@@ -107,7 +93,6 @@ async def _resolve_enemies(
         pass
     # Fallback fabricate + persist so HP/id are real.
     enemy = _fabricate_enemy(run_id)
-    _naive_created_at(enemy)
     session.add(enemy)
     await session.flush()
     return [enemy]
@@ -133,7 +118,6 @@ async def _resolve_party(session: AsyncSession, run_id: str) -> list[Monster]:
         level=2,
         max_hp=100,
     )
-    _naive_created_at(pm)
     session.add(pm)
     await session.flush()
     return [pm]
@@ -349,7 +333,6 @@ async def create_encounter(
         party_ids=[m.id for m in party_monsters],
         result=EncounterResult.ongoing,
     )
-    _naive_created_at(enc)
     session.add(enc)
     await session.commit()
 

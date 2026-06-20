@@ -10,7 +10,6 @@ even if the DB or gateway is unreachable.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,9 +113,7 @@ async def write_event(
     keywords = _extract_keywords(content + " " + summary)
 
     # 4. Persist
-    # models.py uses TIMESTAMP WITHOUT TIME ZONE but _now() yields aware datetimes;
-    # asyncpg rejects aware->naive mismatch, so supply naive UTC explicitly.
-    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    # created_at comes from the model's naive-UTC default (_now).
     memory = Memory(
         monster_id=monster_id,
         run_id=run_id,
@@ -127,7 +124,6 @@ async def write_event(
         keywords=keywords,
         salience=salience,
         encounter_id=encounter_id,
-        created_at=now_naive,
     )
     session.add(memory)
     await session.commit()

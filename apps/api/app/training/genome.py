@@ -227,8 +227,6 @@ def apply_genome(
     `before` is the genome snapshot prior to training (for the artifact); if not
     given we read it from the monster's current state.
     """
-    from datetime import datetime, timezone
-
     from app.db.models import TrainingArtifact  # local import: avoid cycles
 
     genome_before = before if before is not None else read_genome(monster)
@@ -254,9 +252,7 @@ def apply_genome(
         genome_after=genome,
         score_delta=float(score_delta),
         accepted=bool(accepted),
-        # Column is TIMESTAMP WITHOUT TIME ZONE; the model default is tz-aware,
-        # which asyncpg rejects. Insert a naive UTC datetime explicitly.
-        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        # created_at comes from the model's naive-UTC default (_now).
     )
     session.add(artifact)
     return artifact
