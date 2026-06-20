@@ -324,11 +324,17 @@ async def create_encounter(
     enemies = [_to_combatant(m, "enemy") for m in enemy_monsters]
     combatants = party + enemies
 
+    # Topic is randomized PER BATTLE (not preseeded per run). run.debate_topic is
+    # kept as a legacy/theme field but no longer drives the encounter.
+    from app.debate.topics import pick_random_topic
+
+    topic = pick_random_topic()
+
     eid = str(uuid.uuid4())
     enc = Encounter(
         id=eid,
         run_id=req.run_id,
-        topic=run.debate_topic,
+        topic=topic,
         enemy_ids=[m.id for m in enemy_monsters],
         party_ids=[m.id for m in party_monsters],
         result=EncounterResult.ongoing,
@@ -336,7 +342,7 @@ async def create_encounter(
     session.add(enc)
     await session.commit()
 
-    await seed_redis(eid, req.run_id, run.debate_topic, combatants)
+    await seed_redis(eid, req.run_id, topic, combatants)
     await set_meta(eid, phase="debating")
     return await build_encounter_state(eid)
 

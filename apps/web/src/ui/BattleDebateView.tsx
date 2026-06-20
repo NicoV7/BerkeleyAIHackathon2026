@@ -308,6 +308,8 @@ export function BattleDebateView() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [stance, setStance] = useState<Stance>("Measured");
+  // Auto mode: agents pick who argues and the battle self-runs round to round.
+  const [auto, setAuto] = useState(false);
 
   // Audio stings (taste decision T-D1) — muted by default so it never blares.
   const arenaAudio = useArenaAudio();
@@ -341,6 +343,18 @@ export function BattleDebateView() {
 
   const isCapturable = phase === "capturable";
   const isOver = phase === "won" || phase === "lost";
+
+  // Living party agents the player can send into a turn (dungeon-RPG picker).
+  const partyChoices = combatants.filter((c) => c.role === "party" && c.hp > 0);
+
+  // Auto mode self-runs: when on (and idle, not finished), advance one round.
+  // Each round flips `busy` and bumps turn_no, which re-fires this effect →
+  // the debate proceeds autonomously without manual clicks.
+  useEffect(() => {
+    if (!auto || busy || isOver || !activeEncounterId) return;
+    void doAction("/auto", { rounds: 1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto, busy, isOver, activeEncounterId, encounter?.turn_no]);
 
   // Hero: the single latest verdict drives the jumbo banner (one per frame).
   const latestVerdict: JudgeVerdict | null =
@@ -537,45 +551,68 @@ export function BattleDebateView() {
         </div>
       </div>
 
-      {/* Action bar */}
-      <div className="border-t border-white/10 px-3 py-2 flex items-center gap-2 flex-wrap">
-        {actionError && (
-          <span className="text-xs text-red-400 flex-1">{actionError}</span>
-        )}
+      {/* Action bar — dungeon RPG: your party sits at the bottom; pick who argues */}
+      <div className="border-t border-white/10 px-3 py-2 space-y-2">
+        {actionError && <div className="text-xs text-red-400">{actionError}</div>}
 
-        <button
-          disabled={busy || isOver}
-          onClick={() => doAction("/turn")}
-          className="px-3 py-1.5 text-sm rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40"
-        >
-          {busy ? "…" : "Next Round"}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs uppercase tracking-wide text-white/40">
+            {isOver ? "Battle over" : auto ? "Auto — agents are debating…" : "Send in your agent:"}
+          </span>
 
-        <button
-          disabled={busy || isOver}
-          onClick={() => doAction("/auto", { rounds: 3 })}
-          className="px-3 py-1.5 text-sm rounded bg-indigo-800 hover:bg-indigo-700 disabled:opacity-40"
-        >
-          Auto (3)
-        </button>
+          {/* Player picks which party AI argues this round (hidden in Auto/over). */}
+          {!auto && !isOver &&
+            (partyChoices.length > 0 ? (
+              partyChoices.map((c) => (
+                <button
+                  key={c.monster_id}
+                  disabled={busy}
+                  onClick={() => doAction("/turn", { actor_id: c.monster_id })}
+                  title={`Send ${c.name} into this turn`}
+                  className="px-3 py-1.5 text-sm rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <span>{busy ? "…" : c.name}</span>
+                  <span className="text-[10px] text-white/60">
+                    {c.hp}/{c.max_hp}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <span className="text-xs text-white/30">No party agents available</span>
+            ))}
 
-        {isCapturable && (
+          {/* Auto toggle: hand the whole battle to the agents (self-runs). */}
+          <button
+            disabled={isOver}
+            onClick={() => setAuto((a) => !a)}
+            aria-pressed={auto}
+            className={`px-3 py-1.5 text-sm rounded disabled:opacity-40 ${
+              auto
+                ? "bg-emerald-600 hover:bg-emerald-500"
+                : "bg-indigo-900 hover:bg-indigo-800"
+            }`}
+          >
+            {auto ? "⏸ Stop Auto" : "▶ Auto"}
+          </button>
+
+          {isCapturable && (
+            <button
+              disabled={busy}
+              onClick={handleCapture}
+              className="px-3 py-1.5 text-sm rounded bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40"
+            >
+              Capture
+            </button>
+          )}
+
           <button
             disabled={busy}
-            onClick={handleCapture}
-            className="px-3 py-1.5 text-sm rounded bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40"
+            onClick={handleFlee}
+            className="ml-auto px-3 py-1.5 text-sm rounded bg-white/5 hover:bg-white/10"
           >
-            Capture
+            Flee
           </button>
-        )}
-
-        <button
-          disabled={busy}
-          onClick={handleFlee}
-          className="ml-auto px-3 py-1.5 text-sm rounded bg-white/5 hover:bg-white/10"
-        >
-          Flee
-        </button>
+        </div>
       </div>
     </div>
   );

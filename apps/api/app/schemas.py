@@ -126,6 +126,11 @@ class CreateEncounterRequest(BaseModel):
     enemy_group_id: Optional[str] = None
 
 
+class TurnRequest(BaseModel):
+    # The party agent the player chose to argue this round. None = auto-pick.
+    actor_id: Optional[str] = None
+
+
 class AutoRequest(BaseModel):
     rounds: int = 1
 

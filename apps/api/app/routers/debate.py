@@ -29,7 +29,7 @@ from app.routers.encounter import (
     load_momentum,
     set_meta,
 )
-from app.schemas import AutoRequest, JudgeVerdict, TurnResult, Utterance
+from app.schemas import AutoRequest, JudgeVerdict, TurnRequest, TurnResult, Utterance
 
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
@@ -139,7 +139,9 @@ _PHASE_TO_RESULT = {
 # ---- One round (collect events) --------------------------------------------
 
 
-async def _run_one_round(eid: str) -> tuple[list[Utterance], list[JudgeVerdict], dict]:
+async def _run_one_round(
+    eid: str, active_party_id: str | None = None
+) -> tuple[list[Utterance], list[JudgeVerdict], dict]:
     meta = await get_meta(eid)
     phase = meta.get("phase", "debating")
     if phase in ("won", "lost"):
@@ -156,7 +158,8 @@ async def _run_one_round(eid: str) -> tuple[list[Utterance], list[JudgeVerdict],
     phase_event: dict = {"phase": "debating", "capturable_ids": [], "turn_no": start_turn}
 
     async for ev in run_round_stream(
-        eid, topic, combatants, run_id, start_turn, momentum
+        eid, topic, combatants, run_id, start_turn, momentum,
+        active_party_id=active_party_id,
     ):
         if ev.kind == "utterance":
             new_utts.append(Utterance(**_utt_fields(ev.data)))
@@ -210,10 +213,15 @@ def _to_verdict(d: dict) -> JudgeVerdict:
 
 
 @router.post("/{eid}/turn", response_model=TurnResult)
-async def take_turn(eid: str, session: AsyncSession = Depends(get_session)) -> TurnResult:
+async def take_turn(
+    eid: str,
+    req: TurnRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> TurnResult:
+    active_party_id = req.actor_id if req else None
     try:
         new_utts, new_verdicts, phase_event = await asyncio.wait_for(
-            _run_one_round(eid), timeout=ROUND_TIMEOUT_S
+            _run_one_round(eid, active_party_id), timeout=ROUND_TIMEOUT_S
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="round timed out") from None

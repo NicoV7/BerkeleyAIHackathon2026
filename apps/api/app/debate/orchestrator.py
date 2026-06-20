@@ -415,6 +415,18 @@ def _phase_for(combatants: list[Combatant]) -> tuple[str, list[str]]:
 # ---- Live (Redis) path ------------------------------------------------------
 
 
+def _pick_active_party(party: list[Combatant], momentum: dict[str, float]) -> Combatant:
+    """Autonomous initiative: pick which party agent argues this round.
+
+    Heuristic — the healthiest living party agent leads (deterministic tiebreak by
+    name). This is the "agents decide who goes first" behavior used in Auto mode.
+    """
+    return sorted(
+        party,
+        key=lambda c: (-(c.hp / c.max_hp if c.max_hp else 0.0), c.name),
+    )[0]
+
+
 async def run_round_stream(
     eid: str,
     topic: str,
@@ -423,17 +435,30 @@ async def run_round_stream(
     start_turn: int,
     momentum: dict[str, float],
     last_verdict_score: float = 50.0,
+    active_party_id: str | None = None,
 ):
     """Async generator running ONE round. Yields Event objects.
 
-    Mutates `combatants` HP and `momentum` in place. The caller persists state to
-    Redis as events arrive (so the WS stream and Redis stay in lockstep).
+    Dungeon-RPG turn model: exactly ONE party agent argues per round (the
+    player-picked `active_party_id`, or auto-picked via `_pick_active_party` when
+    None), followed by every living enemy. Mutates `combatants` HP and `momentum`
+    in place; the caller persists state to Redis as events arrive.
     """
     from app.redis_state import append_utterance, set_hp
 
     name_lookup = {c.monster_id: c.name for c in combatants}
     turn_no = start_turn
-    order = [c for c in combatants if c.alive]
+
+    living = [c for c in combatants if c.alive]
+    party = [c for c in living if c.role == "party"]
+    enemies = [c for c in living if c.role == "enemy"]
+    if party:
+        active = next((c for c in party if c.monster_id == active_party_id), None)
+        if active is None:
+            active = _pick_active_party(party, momentum)
+        order = [active] + enemies
+    else:
+        order = living
     scored_inputs: list[dict[str, Any]] = []
     actor_by_id = {c.monster_id: c for c in combatants}
 
