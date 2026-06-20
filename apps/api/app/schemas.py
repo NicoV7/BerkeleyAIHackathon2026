@@ -102,6 +102,11 @@ class JudgeVerdict(BaseModel):
     score: float
     rationale: str
     damage: int
+    # Additive, backward-compatible with old persisted JSON (all Optional).
+    why: Optional[str] = None
+    logic: Optional[float] = None
+    persuasion: Optional[float] = None
+    actor_id: Optional[str] = None
 
 
 class EncounterState(BaseModel):
@@ -119,6 +124,11 @@ class CreateEncounterRequest(BaseModel):
     run_id: str
     wild_id: Optional[str] = None
     enemy_group_id: Optional[str] = None
+
+
+class TurnRequest(BaseModel):
+    # The party agent the player chose to argue this round. None = auto-pick.
+    actor_id: Optional[str] = None
 
 
 class AutoRequest(BaseModel):

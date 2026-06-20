@@ -241,7 +241,7 @@ async def _generate_utterance(
     messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
     try:
         text = await gateway.complete(
-            messages, model=actor.model, temperature=0.8, max_tokens=180
+            messages, model=actor.model, temperature=0.8, max_tokens=96
         )
         text = (text or "").strip()
     except Exception as e:  # noqa: BLE001
@@ -257,23 +257,102 @@ def _sanitize(text: str) -> str:
     return "".join(ch for ch in text if ch >= " " or ch in "\n\t")
 
 
+# First-token wall-clock guard for the live streaming path. On a contended CPU
+# gemma3 the dominant demo risk is a stalled model that never emits a first
+# token; we'd rather fail this one utterance (and fall back to a templated line)
+# than hang the whole WS round. Tuned for cold local models.
+STREAM_FIRST_TOKEN_TIMEOUT_S = 18.0
+
+
+async def _stream_utterance(
+    actor: Combatant,
+    topic: str,
+    transcript: list[dict[str, Any]],
+    action: dict[str, Any],
+    memories: list[str],
+    name_lookup: dict[str, str],
+):
+    """Live streaming twin of `_generate_utterance`.
+
+    Async generator that REUSES `_build_actor_messages` for the prompt, iterates
+    `gateway.stream(...)`, sanitizes every token via `_sanitize`, and accumulates
+    the full text. Each yield is a dict:
+
+      * `{"kind": "token", "text": <sanitized chunk>}` per streamed chunk, and
+      * exactly one terminating `{"kind": "done", "text": <full accumulated text>}`
+        carrying the canonical assembled utterance (with the same templated
+        fallback as `_generate_utterance` if the stream produced nothing).
+
+    A first-token timeout (`STREAM_FIRST_TOKEN_TIMEOUT_S`) guards a stalled CPU
+    model: if no token arrives in time the utterance fails over to the fallback
+    line instead of hanging the round. `_generate_utterance` is intentionally
+    left untouched so the headless/REST paths keep their determinism.
+    """
+    messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
+    parts: list[str] = []
+    try:
+        agen = gateway.stream(
+            messages, model=actor.model, temperature=0.8, max_tokens=96
+        )
+        first = True
+        while True:
+            try:
+                if first:
+                    chunk = await asyncio.wait_for(
+                        agen.__anext__(), timeout=STREAM_FIRST_TOKEN_TIMEOUT_S
+                    )
+                    first = False
+                else:
+                    chunk = await agen.__anext__()
+            except StopAsyncIteration:
+                break
+            piece = _sanitize(chunk or "")
+            if not piece:
+                continue
+            parts.append(piece)
+            yield {"kind": "token", "text": piece}
+        # Best-effort close of the underlying generator.
+        aclose = getattr(agen, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001
+                pass
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+        # Stalled or errored stream: drop whatever partial text we have so the
+        # fallback below produces a clean, complete line.
+        parts = []
+
+    full = "".join(parts).strip()
+    if not full:
+        full = f"({actor.name} presses the point on {topic}.)"
+    full = _sanitize(full)
+    yield {"kind": "done", "text": full}
+
+
 # ---- Core round logic (shared) ----------------------------------------------
 
 
 def _apply_round_damage(
     combatants: list[Combatant],
-    scored: list[tuple[Combatant, float, str]],
+    scored: list[tuple],
     momentum: dict[str, float],
 ) -> list[dict[str, Any]]:
     """Apply damage from a round's scored utterances. Returns verdict dicts.
 
     Each scored utterance damages the opposing side, split across its living
     members. Momentum nudges based on net per-side scoring this round.
+
+    Each `scored` entry is `(actor, score, rationale)` and may carry an optional
+    4th element: a dict of extra verdict fields (e.g. why/logic/persuasion) that
+    is merged into the emitted verdict. Older 3-tuple callers stay supported.
     """
     verdicts: list[dict[str, Any]] = []
     side_net: dict[str, float] = {"party": 0.0, "enemy": 0.0}
 
-    for actor, score, rationale in scored:
+    for entry in scored:
+        actor, score, rationale = entry[0], entry[1], entry[2]
+        extra: dict[str, Any] = entry[3] if len(entry) > 3 and isinstance(entry[3], dict) else {}
         side_net[actor.role] += (score - 50.0)
         enemy_role = "enemy" if actor.role == "party" else "party"
         targets = [c for c in combatants if c.role == enemy_role and c.alive]
@@ -302,6 +381,7 @@ def _apply_round_damage(
                 "score": score,
                 "rationale": rationale,
                 "damage": total_dmg,
+                **extra,
             }
         )
 
@@ -335,6 +415,18 @@ def _phase_for(combatants: list[Combatant]) -> tuple[str, list[str]]:
 # ---- Live (Redis) path ------------------------------------------------------
 
 
+def _pick_active_party(party: list[Combatant], momentum: dict[str, float]) -> Combatant:
+    """Autonomous initiative: pick which party agent argues this round.
+
+    Heuristic — the healthiest living party agent leads (deterministic tiebreak by
+    name). This is the "agents decide who goes first" behavior used in Auto mode.
+    """
+    return sorted(
+        party,
+        key=lambda c: (-(c.hp / c.max_hp if c.max_hp else 0.0), c.name),
+    )[0]
+
+
 async def run_round_stream(
     eid: str,
     topic: str,
@@ -343,17 +435,30 @@ async def run_round_stream(
     start_turn: int,
     momentum: dict[str, float],
     last_verdict_score: float = 50.0,
+    active_party_id: str | None = None,
 ):
     """Async generator running ONE round. Yields Event objects.
 
-    Mutates `combatants` HP and `momentum` in place. The caller persists state to
-    Redis as events arrive (so the WS stream and Redis stay in lockstep).
+    Dungeon-RPG turn model: exactly ONE party agent argues per round (the
+    player-picked `active_party_id`, or auto-picked via `_pick_active_party` when
+    None), followed by every living enemy. Mutates `combatants` HP and `momentum`
+    in place; the caller persists state to Redis as events arrive.
     """
     from app.redis_state import append_utterance, set_hp
 
     name_lookup = {c.monster_id: c.name for c in combatants}
     turn_no = start_turn
-    order = [c for c in combatants if c.alive]
+
+    living = [c for c in combatants if c.alive]
+    party = [c for c in living if c.role == "party"]
+    enemies = [c for c in living if c.role == "enemy"]
+    if party:
+        active = next((c for c in party if c.monster_id == active_party_id), None)
+        if active is None:
+            active = _pick_active_party(party, momentum)
+        order = [active] + enemies
+    else:
+        order = living
     scored_inputs: list[dict[str, Any]] = []
     actor_by_id = {c.monster_id: c for c in combatants}
 
@@ -368,9 +473,27 @@ async def run_round_stream(
         action = _decide_action(actor, battle_state)
         memories = await _gather_memories(actor, topic, run_id)
         transcript = await get_transcript_safe(eid)
-        text = await _generate_utterance(
+
+        # Live token streaming: emit additive `token` events as the model thinks,
+        # then the canonical `utterance` event with the full assembled text. The
+        # `done` chunk carries the fallback-resolved text, so a stalled/empty
+        # stream still produces a complete utterance (whole-utterance fallback).
+        text = ""
+        async for chunk in _stream_utterance(
             actor, topic, transcript, action, memories, name_lookup
-        )
+        ):
+            if chunk["kind"] == "token":
+                yield Event(
+                    "token",
+                    {
+                        "turn": turn_no,
+                        "actor_id": actor.monster_id,
+                        "text": chunk["text"],
+                    },
+                )
+            else:  # "done"
+                text = chunk["text"]
+
         utt = {
             "turn": turn_no,
             "actor_id": actor.monster_id,
@@ -386,11 +509,16 @@ async def run_round_stream(
     # --- Judge the whole round at once ---
     fallback_model = next((c.model for c in combatants if c.model), None)
     scores = await score_round(topic, scored_inputs, fallback_model=fallback_model)
-    scored: list[tuple[Combatant, float, str]] = []
+    scored: list[tuple] = []
     for js in scores:
         actor = actor_by_id.get(js.actor_id)
         if actor:
-            scored.append((actor, js.score, js.rationale))
+            extra = {
+                "why": js.why,
+                "logic": js.logic,
+                "persuasion": js.persuasion,
+            }
+            scored.append((actor, js.score, js.rationale, extra))
 
     verdicts = _apply_round_damage(combatants, scored, momentum)
 
@@ -406,9 +534,13 @@ async def run_round_stream(
             "score": v["score"],
             "rationale": v["rationale"],
             "damage": v["damage"],
+            "actor_id": v["actor_id"],
+            "why": v.get("why"),
+            "logic": v.get("logic"),
+            "persuasion": v.get("persuasion"),
         }
         await r.rpush(k_judge(eid), _json.dumps(verdict_payload))
-        yield Event("verdict", {**verdict_payload, "actor_id": v["actor_id"]})
+        yield Event("verdict", verdict_payload)
     await r.expire(k_judge(eid), ENCOUNTER_TTL_SECONDS)
 
     for c in combatants:

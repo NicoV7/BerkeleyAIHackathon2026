@@ -23,7 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 # Heavier / optional: GEPA via DSPy. Falls back to a hand-rolled loop if absent.
 training = ["dspy-ai>=2.5"]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "pytest-cov>=5.0", "ruff>=0.7"]
 
 [tool.ruff]
 line-length = 100
@@ -31,3 +31,26 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+# Coverage is opt-in via `--cov` flags below; we don't force it on every run so a
+# bare `pytest` stays fast while the impl fleet is mid-edit.
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "*/migrations/*",
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# fail_under intentionally not set yet (coverage gate deferred until the
+# implementation fleet lands the source under test).
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

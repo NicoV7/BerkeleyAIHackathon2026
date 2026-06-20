@@ -233,12 +233,20 @@ def _utt_fields(d: dict) -> dict:
 
 
 def _to_verdict(d: dict) -> JudgeVerdict:
+    # Additive fields from the Wave-1 WS-1 judge expansion (commit 352f8f4):
+    # `why` is the hero-banner one-liner, `logic`/`persuasion` are sub-scores,
+    # and `actor_id` ties the verdict back to the speaker being judged.
+    # All four are Optional in the schema so older persisted verdicts still load.
     return JudgeVerdict(
         turn=d["turn"],
         target=d["target"],
         score=d["score"],
         rationale=d["rationale"],
         damage=d["damage"],
+        why=d.get("why"),
+        logic=d.get("logic"),
+        persuasion=d.get("persuasion"),
+        actor_id=d.get("actor_id"),
     )
 
 
@@ -360,6 +368,10 @@ async def stream(ws: WebSocket, eid: str) -> None:
             # autonomous loop as before.
             is_argue = isinstance(msg, dict) and msg.get("action") == "argue"
             rounds = 1 if is_argue else max(1, min(int(msg.get("rounds", 1)), 12))
+            # Optional pick-your-agent (commit 6b4ded9): the autonomous branch may
+            # honor `actor_id` so the player can choose which party agent argues.
+            # None falls back to the orchestrator's autonomous initiative.
+            active_party_id = msg.get("actor_id") or None if not is_argue else None
 
             for _ in range(rounds):
                 meta = await get_meta(eid)
@@ -378,7 +390,8 @@ async def stream(ws: WebSocket, eid: str) -> None:
                     )
                 else:
                     stream = run_round_stream(
-                        eid, topic, combatants, run_id, start_turn, momentum
+                        eid, topic, combatants, run_id, start_turn, momentum,
+                        active_party_id=active_party_id,
                     )
 
                 final_phase = {"phase": "debating", "capturable_ids": [], "turn_no": start_turn}
