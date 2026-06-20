@@ -12,6 +12,7 @@ from typing import Optional
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import EventType, Memory
 from app.memory.embeddings import embed
 
@@ -79,11 +80,32 @@ async def retrieve(
         else:
             et_filter = event_type
 
-    # -- 1. Vector search (cosine distance, ascending = most similar first) --
-    vector_ids: list[str] = []
+    # -- 0. Embed the query once; reused by the Redis fast path AND the pgvector
+    # leg below so we never embed twice. --
+    q_vec: Optional[list[float]] = None
     try:
         vecs = await embed([query])
         q_vec = vecs[0]
+    except Exception:  # noqa: BLE001
+        q_vec = None
+
+    # -- Fast path: RedisVL vector hot-cache (best-effort). On any miss/error we
+    # fall through to the durable pgvector + trigram hybrid below. --
+    if settings.memory_cache_enabled and q_vec is not None:
+        try:
+            from app.memory import redis_index
+
+            cached = await redis_index.search(monster_id, q_vec, k=k, event_type=et_filter)
+            if cached:
+                return cached
+        except Exception:  # noqa: BLE001
+            pass
+
+    # -- 1. Vector search (cosine distance, ascending = most similar first) --
+    vector_ids: list[str] = []
+    try:
+        if q_vec is None:
+            raise RuntimeError("query embedding unavailable")
 
         # Build base query for vector search
         vec_stmt = (

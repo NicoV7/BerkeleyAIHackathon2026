@@ -19,7 +19,9 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    # Redis 8 bundles the search & query engine (RediSearch) needed by RedisVL
+    # for the memory vector hot-cache. Backward-compatible with the enc:* keys.
+    image: redis:8-alpine
     ports:
       - "6379:6379"
     healthcheck:

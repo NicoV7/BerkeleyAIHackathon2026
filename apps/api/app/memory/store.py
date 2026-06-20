@@ -128,4 +128,14 @@ async def write_event(
     session.add(memory)
     await session.commit()
     await session.refresh(memory)
+
+    # Write-through to the RedisVL hot-cache (best-effort; never breaks the
+    # durable pg write). Falls back transparently if Redis/index is unavailable.
+    try:
+        from app.memory import redis_index
+
+        await redis_index.index_memory(memory)
+    except Exception:  # noqa: BLE001
+        pass
+
     return memory
