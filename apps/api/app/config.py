@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://debate:debate@postgres:5432/debate"
     redis_url: str = "redis://redis:6379/0"
 
+    # Memory hot-cache (RedisVL vector index in front of pgvector)
+    memory_cache_enabled: bool = True
+    redis_index_name: str = "mem_idx"
+
     # App
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173"

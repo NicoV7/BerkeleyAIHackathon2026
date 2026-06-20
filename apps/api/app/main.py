@@ -25,10 +25,43 @@ log = logging.getLogger("uvicorn.error")
 OPTIONAL_ROUTERS = ["map", "encounter", "debate", "party", "memory", "capture", "training"]
 
 
+async def _init_memory_cache() -> None:
+    """Ensure the RedisVL memory index exists and warm it from recent pg rows.
+
+    Best-effort: a missing module / older Redis just leaves retrieval on the
+    durable pgvector path. Never blocks startup.
+    """
+    try:
+        from sqlalchemy import select
+
+        from app.db.models import Memory
+        from app.db.session import SessionLocal
+        from app.memory import redis_index
+
+        if not await redis_index.ensure_index():
+            return
+        # Warm the cache with the most recent embedded memories so already-played
+        # battles are immediately searchable.
+        async with SessionLocal() as session:
+            stmt = (
+                select(Memory)
+                .where(Memory.embedding.isnot(None))
+                .order_by(Memory.created_at.desc())
+                .limit(500)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+        for m in rows:
+            await redis_index.index_memory(m)
+        log.info("RedisVL memory cache warmed: %d rows", len(rows))
+    except Exception as e:  # noqa: BLE001
+        log.info("RedisVL memory cache init skipped: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     log.info("DB initialized")
+    await _init_memory_cache()
     yield
     await gateway.aclose()
 

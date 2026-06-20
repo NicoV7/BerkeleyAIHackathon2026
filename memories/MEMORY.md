@@ -6,7 +6,7 @@ One line per memory file. Loaded first to decide relevance. See `README.md` for 
 - [ws-a-overworld.md](ws-a-overworld.md) — Phaser overworld + map/run/move API + starter-party/wild generation.
 - [ws-b-debate.md](ws-b-debate.md) — debate turn engine, judge, damage, encounter+debate routers, WS stream, run_self_play.
 - [ws-c-gambits.md](ws-c-gambits.md) — FF12 gambit DSL (choose_action), gambit CRUD router, battle/debate UI + WS hook.
-- [ws-d-memory.md](ws-d-memory.md) — hybrid RAG: embeddings, write_event, retrieve (pgvector + trigram, RRF), memory router.
+- [ws-d-memory.md](ws-d-memory.md) — hybrid RAG: embeddings, write_event, retrieve (pgvector + trigram, RRF), memory router. **+ RedisVL vector hot-cache** (`memory/redis_index.py`, index `mem_idx`, prefix `mem:`) in front of pgvector — `retrieve()` tries Redis first then falls back; gated by `MEMORY_CACHE_ENABLED`; needs Redis 8+; rebuildable via `scripts/backfill_redis_memories.py`.
 - [ws-e-party.md](ws-e-party.md) — capture (HP-gated), XP/level/evolution, capture router + party listing, PartyScreen.
 - [ws-f-training.md](ws-f-training.md) — GEPA (DSPy + hand-rolled fallback) + GRPO-HITL, genome mutate/apply, training router + UI.
 - [ws-g-human-argue.md](ws-g-human-argue.md) — Wave 2 frontend pivot: human-argues (PlayerArgueRequest + run_human_round_stream + argue WS/REST), tasteful-pixel design system, dual ReasoningTrend, skill chips, bug fixes. Note: combatants need `gemma3:1b` pulled.
