@@ -66,17 +66,22 @@ services:
 
   web:
     build:
-      context: ../apps/web
-      dockerfile: Dockerfile
+      # Repo-root context so the pnpm workspace (@debate/shared) resolves.
+      context: ..
+      dockerfile: apps/web/Dockerfile
     environment:
-      VITE_API_BASE: http://localhost:${API_PORT:-8000}
+      # Empty base => the browser uses same-origin and Vite proxies /api -> api:8000.
+      VITE_API_BASE: ""
+      VITE_PROXY_TARGET: "http://api:8000"
     ports:
       - "${WEB_PORT:-5173}:5173"
     depends_on:
       - api
     volumes:
-      - ../apps/web:/app
-      - /app/node_modules
+      - ../apps/web:/repo/apps/web
+      - ../packages:/repo/packages
+      - /repo/node_modules
+      - /repo/apps/web/node_modules
     command: pnpm dev --host 0.0.0.0
 
 volumes:
