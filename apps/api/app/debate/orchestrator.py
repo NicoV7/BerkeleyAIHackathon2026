@@ -427,6 +427,190 @@ async def get_transcript_safe(eid: str) -> list[dict[str, Any]]:
         return []
 
 
+# ---- Human-argues path (WS-G) -----------------------------------------------
+
+
+def _lead(combatants: list[Combatant], role: str) -> Optional[Combatant]:
+    """Highest-initiative alive combatant on a side (level desc, then name)."""
+    alive = [c for c in combatants if c.role == role and c.alive]
+    if not alive:
+        return None
+    return sorted(alive, key=lambda c: (-c.level, c.name))[0]
+
+
+def _resolve_skill(actor: Combatant, skill_id: str | None) -> tuple[Optional[str], str, float]:
+    """Resolve a skill_id (== skill name) against an actor's skills.
+
+    Returns (skill_name, attack_type, power). Falls back to the actor's own type
+    and power 1.0 when the skill is absent or unnamed.
+    """
+    if not skill_id:
+        return None, actor.type, 1.0
+    for s in actor.skills or []:
+        if isinstance(s, dict) and str(s.get("name", "")) == skill_id:
+            return (
+                str(s.get("name")),
+                str(s.get("type") or actor.type),
+                float(s.get("power", 1.0) or 1.0),
+            )
+        if isinstance(s, str) and s == skill_id:
+            return s, actor.type, 1.0
+    # Unknown skill name — still record it as used, but no type/power bonus.
+    return skill_id, actor.type, 1.0
+
+
+async def run_human_round_stream(
+    eid: str,
+    topic: str,
+    combatants: list[Combatant],
+    run_id: str | None,
+    start_turn: int,
+    momentum: dict[str, float],
+    player_text: str,
+    skill_id: str | None = None,
+):
+    """Async generator running ONE human-driven round. Yields Event objects.
+
+    The player's typed argument is the lead party monster's turn; the lead enemy
+    rebuts autonomously. Both are scored together, damage applies (the player's
+    chosen skill scales it), then hp/phase emit. Mirrors `run_round_stream`'s
+    event protocol so the WS/REST callers are unchanged. Mutates `combatants` HP
+    and `momentum` in place.
+    """
+    from app.redis_state import (
+        ENCOUNTER_TTL_SECONDS,
+        append_utterance,
+        get_redis,
+        k_judge,
+        set_hp,
+    )
+
+    name_lookup = {c.monster_id: c.name for c in combatants}
+    turn_no = start_turn
+
+    player = _lead(combatants, "party")
+    enemy = _lead(combatants, "enemy")
+    if player is None or enemy is None:
+        phase, capturable = _phase_for(combatants)
+        yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
+        return
+
+    skill_name, attack_type, skill_power = _resolve_skill(player, skill_id)
+
+    # --- Player turn (human-typed) ---
+    turn_no += 1
+    text = _sanitize((player_text or "").strip()) or f"({player.name} stays silent on {topic}.)"
+    player_utt = {
+        "turn": turn_no,
+        "actor_id": player.monster_id,
+        "actor_role": "party",
+        "skill_used": skill_name,
+        "text": text,
+        "ts": time.time(),
+    }
+    await append_utterance(eid, player_utt)
+    yield Event("utterance", player_utt)
+
+    # --- Enemy rebuttal (autonomous) ---
+    turn_no += 1
+    battle_state = _build_battle_state(enemy, combatants, topic, turn_no, 50.0, momentum)
+    action = _decide_action(enemy, battle_state)
+    memories = await _gather_memories(enemy, topic, run_id)
+    transcript = await get_transcript_safe(eid)
+    enemy_text = await _generate_utterance(
+        enemy, topic, transcript, action, memories, name_lookup
+    )
+    enemy_utt = {
+        "turn": turn_no,
+        "actor_id": enemy.monster_id,
+        "actor_role": "enemy",
+        "skill_used": action.get("skill"),
+        "text": enemy_text,
+        "ts": time.time(),
+    }
+    await append_utterance(eid, enemy_utt)
+    yield Event("utterance", enemy_utt)
+
+    # --- Judge both at once ---
+    fallback_model = next((c.model for c in combatants if c.model), None)
+    scores = await score_round(
+        topic,
+        [
+            {"actor_id": player.monster_id, "text": text},
+            {"actor_id": enemy.monster_id, "text": enemy_text},
+        ],
+        fallback_model=fallback_model,
+    )
+    score_by_id = {js.actor_id: js for js in scores}
+
+    # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---
+    verdicts: list[dict[str, Any]] = []
+    side_net = {"party": 0.0, "enemy": 0.0}
+    for actor, atk_type, mult in (
+        (player, attack_type, skill_power),
+        (enemy, enemy.type, 1.0),
+    ):
+        js = score_by_id.get(actor.monster_id)
+        if js is None:
+            continue
+        side_net[actor.role] += js.score - 50.0
+        target = _lead(combatants, "enemy" if actor.role == "party" else "party")
+        if target is None:
+            continue
+        mom = momentum.get(actor.role, 1.0)
+        dmg = compute_damage(
+            score=js.score,
+            attacker_type=atk_type,
+            defender_type=target.type,
+            skill_mult=mult,
+            momentum=mom,
+            attacker_level=actor.level,
+            defender_level=target.level,
+        )
+        target.hp = max(0, target.hp - dmg)
+        verdicts.append(
+            {
+                "turn": turn_no,
+                "actor_id": actor.monster_id,
+                "target": target.monster_id,
+                "score": js.score,
+                "rationale": js.rationale,
+                "damage": dmg,
+            }
+        )
+
+    # Momentum update (same shape as _apply_round_damage).
+    for side in ("party", "enemy"):
+        swing = side_net[side] / 100.0
+        momentum[side] = max(0.7, min(1.3, momentum.get(side, 1.0) + swing * 0.15))
+
+    # --- Persist + emit verdicts, hp, phase ---
+    r = get_redis()
+    for v in verdicts:
+        payload = {
+            "turn": v["turn"],
+            "target": v["target"],
+            "score": v["score"],
+            "rationale": v["rationale"],
+            "damage": v["damage"],
+        }
+        await r.rpush(k_judge(eid), _json_dumps(payload))
+        yield Event("verdict", {**payload, "actor_id": v["actor_id"]})
+    await r.expire(k_judge(eid), ENCOUNTER_TTL_SECONDS)
+
+    for c in combatants:
+        await set_hp(eid, c.monster_id, c.hp)
+    yield Event("hp", {c.monster_id: c.hp for c in combatants})
+
+    phase, capturable = _phase_for(combatants)
+    yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
+
+
+def _json_dumps(obj: Any) -> str:
+    import json
+    return json.dumps(obj)
+
+
 # ---- Headless self-play path (WS-F) -----------------------------------------
 
 

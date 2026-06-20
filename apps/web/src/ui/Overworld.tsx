@@ -35,9 +35,10 @@ export default function Overworld() {
       type: Phaser.AUTO,
       width: CANVAS_W,
       height: CANVAS_H,
-      backgroundColor: "#1a1a2e",
+      backgroundColor: "#0e1018",
       parent: containerRef.current,
       scene: [OverworldScene],
+      render: { pixelArt: true, antialias: false, roundPixels: true },
       scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,
@@ -66,21 +67,23 @@ export default function Overworld() {
 
   if (!runId) {
     return (
-      <div className="flex items-center justify-center h-full opacity-50">
-        <p className="text-sm font-mono">No active run — start a run first.</p>
+      <div className="flex items-center justify-center h-full">
+        <p className="font-body text-sm" style={{ color: "var(--muted)" }}>
+          No active run — start a run first.
+        </p>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col items-center gap-2 p-2">
-      <div className="text-xs opacity-50 font-mono">
+      <div className="font-hud text-[10px]" style={{ color: "var(--muted)" }}>
         Arrow keys / WASD to move · Walk into a red enemy to battle
       </div>
       <div
         ref={containerRef}
-        style={{ width: CANVAS_W, height: CANVAS_H }}
-        className="rounded overflow-hidden border border-white/10"
+        style={{ width: CANVAS_W, height: CANVAS_H, borderColor: "rgba(232,230,216,0.18)" }}
+        className="overflow-hidden border-[3px]"
       />
     </div>
   );

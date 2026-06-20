@@ -4,16 +4,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useGame } from "../state/store";
+import { ReasoningTrend, type TrendSeries } from "./ReasoningTrend";
 
 interface MonsterSummary {
   id: string;
   name: string;
   type: string;
   level: number;
-}
-interface RunState {
-  id: string;
-  party: MonsterSummary[];
 }
 interface Utterance {
   turn: number;
@@ -39,12 +36,28 @@ interface PreferenceBatch {
   variants: PreferenceVariant[];
 }
 
+// Nominal baseline for the agent's reasoning curve before the first cycle.
+const AGENT_BASELINE = 60;
+
 export default function TrainingScreen() {
-  const { runId } = useGame();
+  const { runId, lastYouScores } = useGame();
   const [party, setParty] = useState<MonsterSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Agent reasoning curve: each adopted training cycle nudges it by score_delta.
+  const [agentScores, setAgentScores] = useState<number[]>([]);
+  const [lastDelta, setLastDelta] = useState<number | null>(null);
+
+  function recordDelta(delta: number) {
+    setLastDelta(delta);
+    setAgentScores((prev) => {
+      const base = prev.length ? prev[prev.length - 1] : AGENT_BASELINE;
+      const next = Math.max(0, Math.min(100, base + delta));
+      return prev.length ? [...prev, next] : [AGENT_BASELINE, next];
+    });
+  }
 
   // GEPA
   const [gepaDelta, setGepaDelta] = useState<number | null>(null);
@@ -57,10 +70,8 @@ export default function TrainingScreen() {
   useEffect(() => {
     if (!runId) return;
     api
-      .get<RunState>(`/api/runs/${runId}/party`)
-      .then((r) => {
-        const p = (r as any).party ?? (r as any) ?? [];
-        const list: MonsterSummary[] = Array.isArray(p) ? p : p.party ?? [];
+      .get<MonsterSummary[]>(`/api/runs/${runId}/party`)
+      .then((list) => {
         setParty(list);
         if (list.length && !selected) setSelected(list[0].id);
       })
@@ -77,7 +88,9 @@ export default function TrainingScreen() {
       const job = await api.post<TrainJob>(`/api/monsters/${selected}/train/gepa`, {
         rounds: 2,
       });
-      setGepaDelta(job.score_delta ?? 0);
+      const delta = job.score_delta ?? 0;
+      setGepaDelta(delta);
+      recordDelta(delta);
     } catch (e: any) {
       setError(`GEPA failed: ${e.message}`);
     } finally {
@@ -124,6 +137,7 @@ export default function TrainingScreen() {
         ranking,
       });
       setAdopted(job);
+      recordDelta(job.score_delta ?? 0);
     } catch (e: any) {
       setError(`Submit failed: ${e.message}`);
     } finally {
@@ -135,9 +149,42 @@ export default function TrainingScreen() {
     ? ranking.map((id) => batch.variants.find((v) => v.variant_id === id)!).filter(Boolean)
     : [];
 
+  const agentBefore = agentScores.length ? agentScores[0] : null;
+  const agentAfter = agentScores.length ? agentScores[agentScores.length - 1] : null;
+  const progressSeries: TrendSeries[] = [];
+  if (lastYouScores.length)
+    progressSeries.push({ label: "You", color: "var(--party)", points: lastYouScores });
+  if (agentScores.length)
+    progressSeries.push({ label: "Trained agent", color: "var(--accent)", points: agentScores });
+
   return (
     <div className="p-4 space-y-6 max-w-3xl mx-auto text-sm">
-      <h2 className="text-lg font-bold">🧬 Training Lab</h2>
+      <h2 className="font-display text-base">🧬 Training Lab</h2>
+
+      {/* Dual money shot: human curve beside machine curve */}
+      {(progressSeries.length > 0 || lastDelta !== null) && (
+        <section className="pixel-panel p-3 space-y-2">
+          <div className="font-hud text-[10px]" style={{ color: "var(--muted)" }}>
+            Progress — human beside machine
+          </div>
+          {lastDelta !== null && agentBefore !== null && agentAfter !== null && (
+            <div className="font-display text-xl" style={{ color: "var(--accent)" }}>
+              Reasoning {Math.round(agentBefore)} → {Math.round(agentAfter)}{" "}
+              <span style={{ color: lastDelta >= 0 ? "var(--win)" : "var(--danger)" }}>
+                {lastDelta >= 0 ? "+" : ""}
+                {lastDelta.toFixed(0)}
+              </span>
+            </div>
+          )}
+          {progressSeries.length > 0 ? (
+            <ReasoningTrend series={progressSeries} title="Reasoning score / round" height={150} />
+          ) : (
+            <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
+              Run a training cycle to see the agent's curve; argue in a battle to see yours.
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Party picker */}
       <section className="space-y-2">
@@ -148,11 +195,7 @@ export default function TrainingScreen() {
             <button
               key={m.id}
               onClick={() => setSelected(m.id)}
-              className={`px-3 py-1 rounded border ${
-                selected === m.id
-                  ? "bg-indigo-600 border-indigo-400"
-                  : "bg-white/5 border-white/10 hover:bg-white/10"
-              }`}
+              className={selected === m.id ? "pixel-btn pixel-btn--accent" : "pixel-btn"}
             >
               {m.name} <span className="opacity-60">· {m.type} · L{m.level}</span>
             </button>
@@ -160,28 +203,36 @@ export default function TrainingScreen() {
         </div>
       </section>
 
-      {error && <div className="text-red-400 bg-red-950/40 rounded px-3 py-2">{error}</div>}
+      {error && (
+        <div
+          className="pixel-panel px-3 py-2 font-body"
+          style={{ borderColor: "var(--danger)", color: "var(--danger)" }}
+        >
+          {error}
+        </div>
+      )}
 
       {/* GEPA */}
-      <section className="space-y-2 border border-white/10 rounded p-3">
+      <section className="space-y-2 pixel-panel p-3">
         <div className="flex items-center justify-between">
           <div>
-            <div className="font-semibold">GEPA — reflective prompt evolution</div>
-            <div className="opacity-60 text-xs">
+            <div className="font-hud text-sm">GEPA — reflective prompt evolution</div>
+            <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
               Offline self-play + LLM critique. Returns a genome score delta.
             </div>
           </div>
           <button
             disabled={!selected || busy !== null}
             onClick={runGepa}
-            className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40"
+            className="pixel-btn pixel-btn--party"
           >
             {busy === "gepa" ? "Evolving…" : "Run GEPA"}
           </button>
         </div>
         {gepaDelta !== null && (
           <div
-            className={`text-sm font-mono ${gepaDelta >= 0 ? "text-emerald-400" : "text-yellow-400"}`}
+            className="text-sm font-body"
+            style={{ color: gepaDelta >= 0 ? "var(--win)" : "var(--warn)" }}
           >
             score delta: {gepaDelta >= 0 ? "+" : ""}
             {gepaDelta.toFixed(1)} — genome {gepaDelta >= 0 ? "adopted" : "kept (no gain)"}
@@ -190,18 +241,18 @@ export default function TrainingScreen() {
       </section>
 
       {/* GRPO-HITL */}
-      <section className="space-y-3 border border-white/10 rounded p-3">
+      <section className="space-y-3 pixel-panel p-3">
         <div className="flex items-center justify-between">
           <div>
-            <div className="font-semibold">GRPO-HITL — rank K variants</div>
-            <div className="opacity-60 text-xs">
+            <div className="font-hud text-sm">GRPO-HITL — rank K variants</div>
+            <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
               Sample 3 mutations, roll out, you rank the transcripts, best is adopted.
             </div>
           </div>
           <button
             disabled={!selected || busy !== null}
             onClick={startGrpo}
-            className="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-40"
+            className="pixel-btn pixel-btn--party"
           >
             {busy === "grpo" ? "Rolling out…" : "Start GRPO cycle"}
           </button>
@@ -213,22 +264,26 @@ export default function TrainingScreen() {
               Rank best → worst with the arrows, then submit.
             </div>
             {variantsByRank.map((v, idx) => (
-              <div key={v.variant_id} className="border border-white/10 rounded p-2 space-y-1">
+              <div key={v.variant_id} className="pixel-inset p-2 space-y-1">
                 <div className="flex items-center justify-between">
-                  <div className="font-semibold">
+                  <div className="font-hud text-xs">
                     #{idx + 1} · Variant {v.variant_id.slice(0, 6)}{" "}
-                    <span className="opacity-60 font-mono">judge {v.judge_score.toFixed(0)}</span>
+                    <span className="font-body" style={{ color: "var(--muted)" }}>
+                      judge {v.judge_score.toFixed(0)}
+                    </span>
                   </div>
                   <div className="flex gap-1">
                     <button
                       onClick={() => move(v.variant_id, -1)}
-                      className="px-2 rounded bg-white/10 hover:bg-white/20"
+                      className="pixel-btn"
+                      style={{ padding: "2px 6px" }}
                     >
                       ↑
                     </button>
                     <button
                       onClick={() => move(v.variant_id, 1)}
-                      className="px-2 rounded bg-white/10 hover:bg-white/20"
+                      className="pixel-btn"
+                      style={{ padding: "2px 6px" }}
                     >
                       ↓
                     </button>
@@ -240,9 +295,9 @@ export default function TrainingScreen() {
                     .map((u, i) => (
                       <div key={i}>
                         <span
-                          className={
-                            u.actor_role === "party" ? "text-emerald-400" : "text-rose-400"
-                          }
+                          style={{
+                            color: u.actor_role === "party" ? "var(--party)" : "var(--enemy)",
+                          }}
                         >
                           {u.actor_role}:
                         </span>{" "}
@@ -255,7 +310,7 @@ export default function TrainingScreen() {
             <button
               disabled={busy !== null || !!adopted}
               onClick={submitRanking}
-              className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40"
+              className="pixel-btn pixel-btn--accent"
             >
               {busy === "submit" ? "Submitting…" : "Submit ranking"}
             </button>
@@ -263,7 +318,7 @@ export default function TrainingScreen() {
         )}
 
         {adopted && (
-          <div className="text-emerald-400 font-mono text-sm">
+          <div className="font-body text-sm" style={{ color: "var(--win)" }}>
             ✓ adopted top variant · score delta {adopted.score_delta?.toFixed(2) ?? "?"} · status{" "}
             {adopted.status}
           </div>

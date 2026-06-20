@@ -88,9 +88,9 @@ function ConditionEditor({
 
   return (
     <div className="flex items-center gap-1 flex-wrap text-xs">
-      <span className="text-white/40">IF</span>
+      <span className="font-hud" style={{ color: "var(--muted)" }}>IF</span>
       <select
-        className="bg-white/5 border border-white/10 rounded px-1 py-0.5"
+        className="pixel-field text-xs"
         value={kind}
         onChange={(e) => {
           // Reset op when switching to topic_keyword
@@ -108,7 +108,7 @@ function ConditionEditor({
 
       {kind !== "topic_keyword" && (
         <select
-          className="bg-white/5 border border-white/10 rounded px-1 py-0.5"
+          className="pixel-field text-xs"
           value={op}
           onChange={(e) => set({ op: e.target.value })}
         >
@@ -122,14 +122,14 @@ function ConditionEditor({
 
       {kind === "topic_keyword" ? (
         <input
-          className="bg-white/5 border border-white/10 rounded px-1 py-0.5 w-28"
+          className="pixel-field text-xs w-28"
           placeholder="keyword"
           value={String(value)}
           onChange={(e) => set({ op: "contains", value: e.target.value })}
         />
       ) : (
         <input
-          className="bg-white/5 border border-white/10 rounded px-1 py-0.5 w-16"
+          className="pixel-field text-xs w-16"
           type="number"
           value={Number(value)}
           onChange={(e) => set({ value: Number(e.target.value) })}
@@ -158,9 +158,9 @@ function ActionEditor({
 
   return (
     <div className="flex items-center gap-1 flex-wrap text-xs">
-      <span className="text-white/40">THEN</span>
+      <span className="font-hud" style={{ color: "var(--muted)" }}>THEN</span>
       <select
-        className="bg-white/5 border border-white/10 rounded px-1 py-0.5"
+        className="pixel-field text-xs"
         value={kind}
         onChange={(e) => onChange({ kind: e.target.value })}
       >
@@ -173,31 +173,47 @@ function ActionEditor({
 
       {kind === "use_skill" && (
         <input
-          className="bg-white/5 border border-white/10 rounded px-1 py-0.5 w-32"
+          className="pixel-field text-xs w-32"
           placeholder="skill_id"
           value={String(action.skill_id ?? "")}
           onChange={(e) => set({ skill_id: e.target.value })}
         />
       )}
 
-      {kind === "target" && (
-        <select
-          className="bg-white/5 border border-white/10 rounded px-1 py-0.5"
-          value={String(action.who ?? "lowest_hp_enemy")}
-          onChange={(e) => set({ who: e.target.value })}
-        >
-          {TARGET_WHO.map((w) => (
-            <option key={w} value={w}>
-              {w}
-            </option>
-          ))}
-          <option value="__custom__">specific id…</option>
-        </select>
-      )}
+      {kind === "target" && (() => {
+        const who = String(action.who ?? "lowest_hp_enemy");
+        const isPreset = (TARGET_WHO as readonly string[]).includes(who);
+        return (
+          <>
+            <select
+              className="pixel-field text-xs"
+              value={isPreset ? who : "__custom__"}
+              onChange={(e) =>
+                set({ who: e.target.value === "__custom__" ? "" : e.target.value })
+              }
+            >
+              {TARGET_WHO.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+              <option value="__custom__">specific id…</option>
+            </select>
+            {!isPreset && (
+              <input
+                className="pixel-field text-xs w-32"
+                placeholder="monster id"
+                value={who}
+                onChange={(e) => set({ who: e.target.value })}
+              />
+            )}
+          </>
+        );
+      })()}
 
       {kind === "tone" && (
         <input
-          className="bg-white/5 border border-white/10 rounded px-1 py-0.5 w-28"
+          className="pixel-field text-xs w-28"
           placeholder="e.g. aggressive"
           value={String(action.value ?? "")}
           onChange={(e) => set({ value: e.target.value })}
@@ -230,19 +246,18 @@ function RuleRow({
 }) {
   return (
     <div
-      className={`border rounded p-2 space-y-1.5 ${
-        rule.enabled ? "border-white/15" : "border-white/5 opacity-50"
-      }`}
+      className={`pixel-inset p-2 space-y-1.5 ${rule.enabled ? "" : "opacity-50"}`}
     >
       <div className="flex items-center gap-2">
         {/* Priority badge */}
-        <span className="text-xs text-white/30 w-6 text-center">{index + 1}</span>
+        <span className="text-xs w-6 text-center" style={{ color: "var(--muted)" }}>
+          {index + 1}
+        </span>
 
         {/* Enable toggle */}
         <button
-          className={`text-xs px-1.5 py-0.5 rounded ${
-            rule.enabled ? "bg-indigo-700" : "bg-white/10"
-          }`}
+          className={`pixel-btn text-[10px] ${rule.enabled ? "pixel-btn--accent" : ""}`}
+          style={{ padding: "2px 6px" }}
           onClick={() => onChange({ ...rule, enabled: !rule.enabled })}
         >
           {rule.enabled ? "on" : "off"}
@@ -252,14 +267,16 @@ function RuleRow({
         <button
           disabled={index === 0}
           onClick={onMoveUp}
-          className="text-xs px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 disabled:opacity-20"
+          className="pixel-btn text-[10px]"
+          style={{ padding: "2px 6px" }}
         >
           ↑
         </button>
         <button
           disabled={index === total - 1}
           onClick={onMoveDown}
-          className="text-xs px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 disabled:opacity-20"
+          className="pixel-btn text-[10px]"
+          style={{ padding: "2px 6px" }}
         >
           ↓
         </button>
@@ -267,7 +284,8 @@ function RuleRow({
         {/* Remove */}
         <button
           onClick={onRemove}
-          className="ml-auto text-xs px-1.5 py-0.5 rounded bg-rose-900/50 hover:bg-rose-800/70"
+          className="pixel-btn pixel-btn--enemy ml-auto text-[10px]"
+          style={{ padding: "2px 6px" }}
         >
           ✕
         </button>
@@ -367,21 +385,29 @@ export function GambitEditor({ monsterId }: { monsterId: string }) {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-        <div className="text-sm font-semibold">Gambits</div>
+      <div
+        className="flex items-center justify-between px-3 py-2"
+        style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+      >
+        <div className="font-hud text-sm">Gambits</div>
         <div className="flex items-center gap-2">
-          {error && <span className="text-xs text-red-400">{error}</span>}
-          {saved && <span className="text-xs text-green-400">Saved!</span>}
-          <button
-            onClick={addRule}
-            className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20"
-          >
+          {error && (
+            <span className="font-hud text-[10px]" style={{ color: "var(--danger)" }}>
+              {error}
+            </span>
+          )}
+          {saved && (
+            <span className="font-hud text-[10px]" style={{ color: "var(--win)" }}>
+              Saved!
+            </span>
+          )}
+          <button onClick={addRule} className="pixel-btn text-[10px]">
             + Add Rule
           </button>
           <button
             onClick={save}
             disabled={saving}
-            className="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40"
+            className="pixel-btn pixel-btn--accent text-[10px]"
           >
             {saving ? "Saving…" : "Save"}
           </button>
