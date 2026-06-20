@@ -61,10 +61,12 @@ function CombatantCard({
   c,
   isLead,
   floatDmg,
+  floatKey,
 }: {
   c: CombatantState;
   isLead: boolean;
   floatDmg: number | null;
+  floatKey?: number | string;
 }) {
   const sideColor = c.role === "party" ? "var(--party)" : "var(--enemy)";
   return (
@@ -74,7 +76,7 @@ function CombatantCard({
     >
       {floatDmg != null && floatDmg > 0 && (
         <div
-          key={floatDmg + "-" + Math.random()}
+          key={`dmg-${floatKey ?? 0}`}
           className="dmg-float font-display absolute right-2 top-1 text-lg"
           style={{ color: "var(--danger)" }}
         >
@@ -414,6 +416,7 @@ export function BattleDebateView() {
               c={c}
               isLead={c.monster_id === leadParty?.monster_id}
               floatDmg={floatByTarget[c.monster_id] ?? null}
+              floatKey={lastVerdict?.turn}
             />
           ))
         )}

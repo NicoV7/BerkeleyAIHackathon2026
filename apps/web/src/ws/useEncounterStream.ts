@@ -90,8 +90,8 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unmountedRef = useRef(false);
-  // One pending drive command queued while the socket is still connecting.
-  const pendingSend = useRef<Record<string, unknown> | null>(null);
+  // Commands queued while the socket is still connecting (drained on onopen).
+  const pendingQueue = useRef<Record<string, unknown>[]>([]);
 
   /** Send a command now if open, else queue it until onopen. */
   const send = useCallback((payload: Record<string, unknown>) => {
@@ -99,7 +99,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     } else {
-      pendingSend.current = payload;
+      pendingQueue.current.push(payload);
     }
   }, []);
 
@@ -118,6 +118,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
     }
+    pendingQueue.current = [];
     if (wsRef.current) {
       wsRef.current.onclose = null; // prevent reconnect loop
       wsRef.current.close();
@@ -144,6 +145,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     }
 
     // Reset state for new encounter
+    pendingQueue.current = [];
     setTranscript([]);
     setVerdicts([]);
     setCapturableIds([]);
@@ -159,11 +161,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       ws.onopen = () => {
         if (unmountedRef.current) { ws.close(); return; }
         setStatus("open");
-        // Flush a queued drive/argue command issued before the socket opened.
-        if (pendingSend.current) {
-          ws.send(JSON.stringify(pendingSend.current));
-          pendingSend.current = null;
-        }
+        // Drain all commands queued before the socket opened.
+        const queued = pendingQueue.current.splice(0);
+        for (const payload of queued) ws.send(JSON.stringify(payload));
       };
 
       ws.onmessage = (evt: MessageEvent) => {

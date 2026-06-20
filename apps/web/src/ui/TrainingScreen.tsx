@@ -67,6 +67,16 @@ export default function TrainingScreen() {
   const [ranking, setRanking] = useState<string[]>([]);
   const [adopted, setAdopted] = useState<TrainJob | null>(null);
 
+  // Reset the agent curve whenever the selected monster changes.
+  useEffect(() => {
+    setAgentScores([]);
+    setLastDelta(null);
+    setGepaDelta(null);
+    setBatch(null);
+    setAdopted(null);
+    setRanking([]);
+  }, [selected]);
+
   useEffect(() => {
     if (!runId) return;
     api
