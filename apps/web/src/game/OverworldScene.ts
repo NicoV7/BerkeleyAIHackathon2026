@@ -166,7 +166,12 @@ export class OverworldScene extends Phaser.Scene {
     try {
       const res = await fetch(`/api/runs/${this.cfg.runId}/map`);
       if (!res.ok) return;
-      this.mapData = (await res.json()) as MapState;
+      const data = (await res.json()) as MapState;
+      // The scene may have been destroyed (React StrictMode double-mount, HMR,
+      // navigation away) while the fetch was in flight; bail before touching
+      // `this.add`, which would null-deref through the dead game object factory.
+      if (!this.sys?.isActive()) return;
+      this.mapData = data;
       this.px = this.mapData.player_x;
       this.py = this.mapData.player_y;
       this.drawMap();
