@@ -21,6 +21,373 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Run
+         * @description Create a new run row, roll a starter party, return RunState.
+         */
+        post: operations["create_run_api_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Map
+         * @description Return deterministic tile grid + current player pos + wild enemy positions.
+         */
+        get: operations["get_map_api_runs__run_id__map_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move Player
+         * @description Move player by (dx,dy); check walkability and wild-enemy collision.
+         */
+        post: operations["move_player_api_runs__run_id__move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Encounter */
+        post: operations["create_encounter_api_encounters__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Encounter */
+        post: operations["create_encounter_api_encounters_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{eid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Encounter */
+        get: operations["get_encounter_api_encounters__eid__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{eid}/turn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Take Turn */
+        post: operations["take_turn_api_encounters__eid__turn_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{eid}/auto": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Auto */
+        post: operations["auto_api_encounters__eid__auto_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{eid}/argue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Argue
+         * @description Human-argues (WS-G): the player's typed argument is the lead party monster's
+         *     turn; the lead enemy rebuts autonomously. REST fallback for the WS argue action.
+         */
+        post: operations["argue_api_encounters__eid__argue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{eid}/flee": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Flee */
+        post: operations["flee_api_encounters__eid__flee_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/monsters/{monster_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Monster
+         * @description Return basic monster info (used by GambitEditor + BattleDebateView).
+         */
+        get: operations["get_monster_api_monsters__monster_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/monsters/{monster_id}/gambits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Gambits
+         * @description Return all gambit rules for a monster, sorted by priority ascending.
+         */
+        get: operations["get_gambits_api_monsters__monster_id__gambits_get"];
+        /**
+         * Put Gambits
+         * @description Full-replace the gambit list for a monster.
+         *
+         *     Deletes all existing rules then inserts the provided list in order.
+         *     The frontend editor sends the full ordered list; server assigns new UUIDs
+         *     for rules that don't have an id yet.
+         */
+        put: operations["put_gambits_api_monsters__monster_id__gambits_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/monsters/{monster_id}/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Memories
+         * @description Retrieve memories for a monster using hybrid RAG (vector + trigram).
+         *
+         *     Query params:
+         *         q:    Natural language query (optional; if absent, returns recent memories).
+         *         type: Event type filter: BATTLE | PLAYER | CHARACTER (optional).
+         *         k:    Max results (default 8).
+         */
+        get: operations["get_memories_api_monsters__monster_id__memories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{encounter_id}/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attempt to capture a weakened wild monster
+         * @description Roll a capture attempt against the wild monster identified by wild_id.
+         *
+         *     The monster must be in a capturable HP window (< 25% of max_hp) or the
+         *     attempt is rejected with success=False and an explanatory message.
+         */
+        post: operations["post_capture_api_encounters__encounter_id__capture_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/party": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List all player-owned monsters in a run
+         * @description Return all monsters with owner='player' belonging to the given run.
+         */
+        get: operations["get_party_api_runs__run_id__party_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/monsters/{monster_id}/train/gepa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Train Gepa */
+        post: operations["train_gepa_api_monsters__monster_id__train_gepa_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/monsters/{monster_id}/train/grpo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Train Grpo */
+        post: operations["train_grpo_api_monsters__monster_id__train_grpo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/training/{job_id}/preference": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Preference */
+        post: operations["submit_preference_api_training__job_id__preference_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/training/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job */
+        get: operations["get_job_api_training__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -42,6 +409,149 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AutoRequest */
+        AutoRequest: {
+            /**
+             * Rounds
+             * @default 1
+             */
+            rounds: number;
+        };
+        /** CaptureRequest */
+        CaptureRequest: {
+            /** Wild Id */
+            wild_id: string;
+        };
+        /** CaptureResult */
+        CaptureResult: {
+            /** Success */
+            success: boolean;
+            monster?: components["schemas"]["MonsterSummary"] | null;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
+        /** CombatantState */
+        CombatantState: {
+            /** Monster Id */
+            monster_id: string;
+            /** Name */
+            name: string;
+            /** Type */
+            type: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "party" | "enemy";
+            /** Hp */
+            hp: number;
+            /** Max Hp */
+            max_hp: number;
+        };
+        /** CreateEncounterRequest */
+        CreateEncounterRequest: {
+            /** Run Id */
+            run_id: string;
+            /** Wild Id */
+            wild_id?: string | null;
+            /** Enemy Group Id */
+            enemy_group_id?: string | null;
+        };
+        /** CreateRunRequest */
+        CreateRunRequest: {
+            /**
+             * Topic
+             * @description The debate topic for this entire run
+             */
+            topic: string;
+            /**
+             * Seed
+             * @default 0
+             */
+            seed: number;
+        };
+        /** EncounterState */
+        EncounterState: {
+            /** Id */
+            id: string;
+            /** Run Id */
+            run_id: string;
+            /** Topic */
+            topic: string;
+            /**
+             * Phase
+             * @default intro
+             * @enum {string}
+             */
+            phase: "intro" | "debating" | "capturable" | "won" | "lost";
+            /**
+             * Turn No
+             * @default 0
+             */
+            turn_no: number;
+            /**
+             * Combatants
+             * @default []
+             */
+            combatants: components["schemas"]["CombatantState"][];
+            /**
+             * Transcript
+             * @default []
+             */
+            transcript: components["schemas"]["Utterance"][];
+            /**
+             * Verdicts
+             * @default []
+             */
+            verdicts: components["schemas"]["JudgeVerdict"][];
+        };
+        /** GambitList */
+        GambitList: {
+            /** Monster Id */
+            monster_id: string;
+            /**
+             * Rules
+             * @default []
+             */
+            rules: components["schemas"]["GambitRuleModel"][];
+        };
+        /** GambitRuleModel */
+        GambitRuleModel: {
+            /** Id */
+            id?: string | null;
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
+            /**
+             * Condition
+             * @default {}
+             */
+            condition: {
+                [key: string]: unknown;
+            };
+            /**
+             * Action
+             * @default {}
+             */
+            action: {
+                [key: string]: unknown;
+            };
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
         /** HealthResponse */
         HealthResponse: {
             /**
@@ -57,6 +567,263 @@ export interface components {
             gateway: {
                 [key: string]: unknown;
             };
+        };
+        /** JudgeVerdict */
+        JudgeVerdict: {
+            /** Turn */
+            turn: number;
+            /** Target */
+            target: string;
+            /** Score */
+            score: number;
+            /** Rationale */
+            rationale: string;
+            /** Damage */
+            damage: number;
+        };
+        /** MapState */
+        MapState: {
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Tiles */
+            tiles: number[][];
+            /** Player X */
+            player_x: number;
+            /** Player Y */
+            player_y: number;
+            /**
+             * Enemies
+             * @default []
+             */
+            enemies: components["schemas"]["TileEnemy"][];
+        };
+        /** MemoryItem */
+        MemoryItem: {
+            /** Id */
+            id: string;
+            /** Event Type */
+            event_type: string;
+            /** Summary */
+            summary: string;
+            /** Content */
+            content: string;
+            /** Salience */
+            salience: number;
+            /** Created At */
+            created_at: string;
+        };
+        /** MemoryQueryResult */
+        MemoryQueryResult: {
+            /** Monster Id */
+            monster_id: string;
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["MemoryItem"][];
+        };
+        /** MonsterSummary */
+        MonsterSummary: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Type */
+            type: string;
+            /** Owner */
+            owner: string;
+            /** Level */
+            level: number;
+            /** Xp */
+            xp: number;
+            /** Max Hp */
+            max_hp: number;
+            /** Evolution Stage */
+            evolution_stage: number;
+            /**
+             * Skills
+             * @default []
+             */
+            skills: unknown[];
+        };
+        /** MoveRequest */
+        MoveRequest: {
+            /**
+             * Dx
+             * @default 0
+             */
+            dx: number;
+            /**
+             * Dy
+             * @default 0
+             */
+            dy: number;
+        };
+        /** MoveResult */
+        MoveResult: {
+            /** Player X */
+            player_x: number;
+            /** Player Y */
+            player_y: number;
+            /** Encounter Id */
+            encounter_id?: string | null;
+        };
+        /**
+         * PlayerArgueRequest
+         * @description WS-G: a human-typed argument for the player's lead party monster.
+         *
+         *     `skill_id` is the chosen skill's NAME (skills have no separate id); the engine
+         *     resolves it against the lead combatant's skills for the rhetorical type +
+         *     damage power multiplier.
+         */
+        PlayerArgueRequest: {
+            /** Text */
+            text: string;
+            /** Skill Id */
+            skill_id?: string | null;
+        };
+        /** PreferenceBatch */
+        PreferenceBatch: {
+            /** Job Id */
+            job_id: string;
+            /** Monster Id */
+            monster_id: string;
+            /**
+             * Variants
+             * @default []
+             */
+            variants: components["schemas"]["PreferenceVariant"][];
+        };
+        /** PreferenceSubmit */
+        PreferenceSubmit: {
+            /** Ranking */
+            ranking: string[];
+        };
+        /** PreferenceVariant */
+        PreferenceVariant: {
+            /** Variant Id */
+            variant_id: string;
+            /**
+             * Transcript
+             * @default []
+             */
+            transcript: components["schemas"]["Utterance"][];
+            /**
+             * Judge Score
+             * @default 0
+             */
+            judge_score: number;
+        };
+        /** RunState */
+        RunState: {
+            /** Id */
+            id: string;
+            /** Debate Topic */
+            debate_topic: string;
+            /** Player X */
+            player_x: number;
+            /** Player Y */
+            player_y: number;
+            /** Status */
+            status: string;
+            /**
+             * Party
+             * @default []
+             */
+            party: components["schemas"]["MonsterSummary"][];
+        };
+        /** TileEnemy */
+        TileEnemy: {
+            /** Id */
+            id: string;
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /**
+             * Sprite
+             * @default enemy
+             */
+            sprite: string;
+        };
+        /** TrainJob */
+        TrainJob: {
+            /** Job Id */
+            job_id: string;
+            /** Monster Id */
+            monster_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "gepa" | "grpo";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "awaiting_preference" | "done" | "failed";
+            /** Score Delta */
+            score_delta?: number | null;
+        };
+        /** TrainRequest */
+        TrainRequest: {
+            /**
+             * Rounds
+             * @default 4
+             */
+            rounds: number;
+        };
+        /** TurnResult */
+        TurnResult: {
+            encounter: components["schemas"]["EncounterState"];
+            /**
+             * New Utterances
+             * @default []
+             */
+            new_utterances: components["schemas"]["Utterance"][];
+            /**
+             * New Verdicts
+             * @default []
+             */
+            new_verdicts: components["schemas"]["JudgeVerdict"][];
+            /**
+             * Capturable Ids
+             * @default []
+             */
+            capturable_ids: string[];
+        };
+        /** Utterance */
+        Utterance: {
+            /** Turn */
+            turn: number;
+            /** Actor Id */
+            actor_id: string;
+            /**
+             * Actor Role
+             * @enum {string}
+             */
+            actor_role: "party" | "enemy" | "judge";
+            /** Skill Used */
+            skill_used?: string | null;
+            /** Text */
+            text: string;
+            /** Ts */
+            ts: number;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -83,6 +850,664 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    create_run_api_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_map_api_runs__run_id__map_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MapState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_player_api_runs__run_id__move_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_encounter_api_encounters__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateEncounterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EncounterState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_encounter_api_encounters_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateEncounterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EncounterState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_encounter_api_encounters__eid__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EncounterState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    take_turn_api_encounters__eid__turn_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    auto_api_encounters__eid__auto_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    argue_api_encounters__eid__argue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlayerArgueRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    flee_api_encounters__eid__flee_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_monster_api_monsters__monster_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonsterSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_gambits_api_monsters__monster_id__gambits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GambitList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_gambits_api_monsters__monster_id__gambits_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GambitList"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GambitList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_memories_api_monsters__monster_id__memories_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                type?: string | null;
+                k?: number;
+            };
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryQueryResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_capture_api_encounters__encounter_id__capture_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                encounter_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_party_api_runs__run_id__party_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonsterSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    train_gepa_api_monsters__monster_id__train_gepa_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["TrainRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    train_grpo_api_monsters__monster_id__train_grpo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceBatch"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_preference_api_training__job_id__preference_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreferenceSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_api_training__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

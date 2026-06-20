@@ -125,6 +125,17 @@ class AutoRequest(BaseModel):
     rounds: int = 1
 
 
+class PlayerArgueRequest(BaseModel):
+    """WS-G: a human-typed argument for the player's lead party monster.
+
+    `skill_id` is the chosen skill's NAME (skills have no separate id); the engine
+    resolves it against the lead combatant's skills for the rhetorical type +
+    damage power multiplier.
+    """
+    text: str
+    skill_id: Optional[str] = None
+
+
 class TurnResult(BaseModel):
     encounter: EncounterState
     new_utterances: list[Utterance] = []

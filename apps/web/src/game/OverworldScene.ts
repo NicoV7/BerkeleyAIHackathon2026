@@ -46,8 +46,8 @@ export class OverworldScene extends Phaser.Scene {
 
   // Graphics objects
   private tileGraphics!: Phaser.GameObjects.Graphics;
-  private playerSprite!: Phaser.GameObjects.Rectangle;
-  private enemySprites: Map<string, Phaser.GameObjects.Rectangle> = new Map();
+  private playerSprite!: Phaser.GameObjects.Sprite;
+  private enemySprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -78,12 +78,75 @@ export class OverworldScene extends Phaser.Scene {
     // No external assets — everything is drawn procedurally.
   }
 
+  /**
+   * Bake two tiny 16×16 pixel-art textures with Graphics.generateTexture.
+   * pixelArt upscaling keeps the chunky pixels crisp at TILE_SIZE.
+   */
+  private bakeSprites() {
+    const SIZE = 16;
+
+    // px helper: paint a filled pixel rect on a graphics object.
+    const px = (
+      g: Phaser.GameObjects.Graphics,
+      color: number,
+      x: number,
+      y: number,
+      w = 1,
+      h = 1
+    ) => {
+      g.fillStyle(color, 1);
+      g.fillRect(x, y, w, h);
+    };
+
+    // --- Player: a little cyan knight blob (body, head, eyes, gold sword) ---
+    if (!this.textures.exists("player")) {
+      const g = this.make.graphics({ x: 0, y: 0 }, false);
+      // body
+      px(g, 0x5cc8ff, 5, 8, 6, 6);
+      // head
+      px(g, 0x5cc8ff, 5, 3, 6, 5);
+      // ink eyes
+      px(g, 0x0e1018, 6, 5);
+      px(g, 0x0e1018, 9, 5);
+      // ink feet
+      px(g, 0x0e1018, 5, 14, 2, 2);
+      px(g, 0x0e1018, 9, 14, 2, 2);
+      // gold sword down the right side
+      px(g, 0xffcf3f, 12, 6, 1, 7);
+      px(g, 0xffcf3f, 11, 12, 3, 1);
+      g.generateTexture("player", SIZE, SIZE);
+      g.destroy();
+    }
+
+    // --- Enemy: a menacing rose blob (body + gold accent + ink eyes) ---
+    if (!this.textures.exists("enemy")) {
+      const g = this.make.graphics({ x: 0, y: 0 }, false);
+      // round-ish body
+      px(g, 0xff5d6c, 4, 5, 8, 8);
+      px(g, 0xff5d6c, 5, 3, 6, 2);
+      px(g, 0xff5d6c, 3, 7, 1, 4);
+      px(g, 0xff5d6c, 12, 7, 1, 4);
+      // little horns (gold accent)
+      px(g, 0xffcf3f, 4, 2);
+      px(g, 0xffcf3f, 11, 2);
+      // ink eyes
+      px(g, 0x0e1018, 6, 7, 1, 2);
+      px(g, 0x0e1018, 9, 7, 1, 2);
+      g.generateTexture("enemy", SIZE, SIZE);
+      g.destroy();
+    }
+  }
+
   async create() {
     this.tileGraphics = this.add.graphics();
     this.cameras.main.setBackgroundColor("#1a1a2e");
 
-    // Player rectangle (blue)
-    this.playerSprite = this.add.rectangle(0, 0, TILE_SIZE - 4, TILE_SIZE - 4, 0x4488ff);
+    // Bake the procedural pixel-art sprites once (no external assets).
+    this.bakeSprites();
+
+    // Player sprite (cyan hero — matches --party). pixelArt upscaling keeps it crisp.
+    this.playerSprite = this.add.sprite(0, 0, "player");
+    this.playerSprite.setDisplaySize(TILE_SIZE - 4, TILE_SIZE - 4);
     this.playerSprite.setDepth(10);
 
     // Input
@@ -125,17 +188,17 @@ export class OverworldScene extends Phaser.Scene {
         const px = x * TILE_SIZE;
         const py = y * TILE_SIZE;
 
-        // Tile fill
-        g.fillStyle(blocked ? 0x2d4a22 : 0x2d5a1e, 1);
+        // Tile fill (desaturated grass / darker walls)
+        g.fillStyle(blocked ? 0x2a3326 : 0x33402a, 1);
         g.fillRect(px, py, TILE_SIZE, TILE_SIZE);
 
         // Subtle grid lines
-        g.lineStyle(1, blocked ? 0x1a2e12 : 0x1e3d14, 0.6);
+        g.lineStyle(1, blocked ? 0x1b2118 : 0x222c1c, 0.6);
         g.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
 
         // Darker wall "rock" texture
         if (blocked) {
-          g.fillStyle(0x1a2e12, 0.8);
+          g.fillStyle(0x1b2118, 0.85);
           g.fillRect(px + 6, py + 6, TILE_SIZE - 12, TILE_SIZE - 12);
         }
       }
@@ -155,14 +218,16 @@ export class OverworldScene extends Phaser.Scene {
       if (!this.enemySprites.has(enemy.id)) {
         const ex = enemy.x * TILE_SIZE + TILE_SIZE / 2;
         const ey = enemy.y * TILE_SIZE + TILE_SIZE / 2;
-        const spr = this.add.rectangle(ex, ey, TILE_SIZE - 6, TILE_SIZE - 6, 0xff4444);
+        const spr = this.add.sprite(ex, ey, "enemy");
+        spr.setDisplaySize(TILE_SIZE - 6, TILE_SIZE - 6);
         spr.setDepth(5);
 
-        // Pulsing animation
+        // Pulsing animation (relative to the baked display scale)
+        const baseScale = spr.scaleX;
         this.tweens.add({
           targets: spr,
-          scaleX: 1.15,
-          scaleY: 1.15,
+          scaleX: baseScale * 1.15,
+          scaleY: baseScale * 1.15,
           duration: 700,
           yoyo: true,
           repeat: -1,

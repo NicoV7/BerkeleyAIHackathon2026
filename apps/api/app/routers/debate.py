@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Encounter, EncounterResult
 from app.db.session import SessionLocal, get_session
-from app.debate.orchestrator import run_round_stream
+from app.debate.orchestrator import run_human_round_stream, run_round_stream
 from app.redis_state import get_transcript, k_meta
 from app.routers.encounter import (
     build_encounter_state,
@@ -29,7 +29,7 @@ from app.routers.encounter import (
     load_momentum,
     set_meta,
 )
-from app.schemas import AutoRequest, JudgeVerdict, TurnResult, Utterance
+from app.schemas import AutoRequest, JudgeVerdict, PlayerArgueRequest, TurnResult, Utterance
 
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
@@ -181,6 +181,46 @@ async def _run_one_round(eid: str) -> tuple[list[Utterance], list[JudgeVerdict],
     return new_utts, new_verdicts, phase_event
 
 
+async def _run_one_human_round(
+    eid: str, player_text: str, skill_id: str | None
+) -> tuple[list[Utterance], list[JudgeVerdict], dict]:
+    meta = await get_meta(eid)
+    phase = meta.get("phase", "debating")
+    if phase in ("won", "lost"):
+        raise HTTPException(status_code=409, detail=f"encounter already {phase}")
+
+    topic = meta.get("topic", "")
+    run_id = meta.get("run_id", "")
+    start_turn = int(meta.get("turn_no", 0) or 0)
+    combatants = await load_combatants(eid)
+    momentum = await load_momentum(eid)
+
+    new_utts: list[Utterance] = []
+    new_verdicts: list[JudgeVerdict] = []
+    phase_event: dict = {"phase": "debating", "capturable_ids": [], "turn_no": start_turn}
+
+    async for ev in run_human_round_stream(
+        eid, topic, combatants, run_id, start_turn, momentum, player_text, skill_id
+    ):
+        if ev.kind == "utterance":
+            new_utts.append(Utterance(**_utt_fields(ev.data)))
+        elif ev.kind == "verdict":
+            new_verdicts.append(_to_verdict(ev.data))
+        elif ev.kind == "phase":
+            phase_event = ev.data
+
+    from app.redis_state import get_redis, k_momentum
+
+    r = get_redis()
+    await r.hset(k_momentum(eid), mapping={k: str(v) for k, v in momentum.items()})
+    await set_meta(eid, turn_no=phase_event.get("turn_no", start_turn), phase=phase_event["phase"])
+
+    if phase_event["phase"] in _PHASE_TO_RESULT:
+        await _finalize(eid, _PHASE_TO_RESULT[phase_event["phase"]])
+
+    return new_utts, new_verdicts, phase_event
+
+
 def _utt_fields(d: dict) -> dict:
     return {
         "turn": d["turn"],
@@ -259,6 +299,27 @@ async def auto(
     )
 
 
+@router.post("/{eid}/argue", response_model=TurnResult)
+async def argue(
+    eid: str, req: PlayerArgueRequest, session: AsyncSession = Depends(get_session)
+) -> TurnResult:
+    """Human-argues (WS-G): the player's typed argument is the lead party monster's
+    turn; the lead enemy rebuts autonomously. REST fallback for the WS argue action."""
+    try:
+        new_utts, new_verdicts, phase_event = await asyncio.wait_for(
+            _run_one_human_round(eid, req.text, req.skill_id), timeout=ROUND_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="round timed out") from None
+    state = await build_encounter_state(eid)
+    return TurnResult(
+        encounter=state,
+        new_utterances=new_utts,
+        new_verdicts=new_verdicts,
+        capturable_ids=phase_event.get("capturable_ids", []),
+    )
+
+
 @router.post("/{eid}/flee", response_model=TurnResult)
 async def flee(eid: str, session: AsyncSession = Depends(get_session)) -> TurnResult:
     await get_meta(eid)  # 404 if missing
@@ -293,7 +354,12 @@ async def stream(ws: WebSocket, eid: str) -> None:
                 msg = await ws.receive_json()
             except WebSocketDisconnect:
                 break
-            rounds = max(1, min(int(msg.get("rounds", 1)), 12))
+
+            # WS-G: a human-typed argument drives ONE human round (player turn +
+            # autonomous enemy rebuttal). Otherwise {"rounds": N} drives the
+            # autonomous loop as before.
+            is_argue = isinstance(msg, dict) and msg.get("action") == "argue"
+            rounds = 1 if is_argue else max(1, min(int(msg.get("rounds", 1)), 12))
 
             for _ in range(rounds):
                 meta = await get_meta(eid)
@@ -305,10 +371,18 @@ async def stream(ws: WebSocket, eid: str) -> None:
                 combatants = await load_combatants(eid)
                 momentum = await load_momentum(eid)
 
+                if is_argue:
+                    stream = run_human_round_stream(
+                        eid, topic, combatants, run_id, start_turn, momentum,
+                        str(msg.get("text", "")), msg.get("skill_id"),
+                    )
+                else:
+                    stream = run_round_stream(
+                        eid, topic, combatants, run_id, start_turn, momentum
+                    )
+
                 final_phase = {"phase": "debating", "capturable_ids": [], "turn_no": start_turn}
-                async for ev in run_round_stream(
-                    eid, topic, combatants, run_id, start_turn, momentum
-                ):
+                async for ev in stream:
                     await ws.send_json({"type": ev.kind, "data": ev.data})
                     if ev.kind == "phase":
                         final_phase = ev.data

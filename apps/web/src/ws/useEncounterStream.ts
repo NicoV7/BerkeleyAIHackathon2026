@@ -64,6 +64,12 @@ export interface EncounterStreamState {
   encounter: EncounterState | null;
   transcript: Utterance[];
   verdicts: JudgeVerdict[];
+  /** Wild monster ids currently capturable (from the latest phase event). */
+  capturableIds: string[];
+  /** Drive N autonomous rounds (Auto / Next Round). */
+  drive: (rounds: number) => void;
+  /** Submit a human-typed argument as the player's turn. */
+  argue: (text: string, skillId?: string | null) => void;
   /** Close and clean up the websocket connection manually */
   disconnect: () => void;
 }
@@ -79,16 +85,40 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [encounter, setEncounter] = useState<EncounterState | null>(null);
   const [transcript, setTranscript] = useState<Utterance[]>([]);
   const [verdicts, setVerdicts] = useState<JudgeVerdict[]>([]);
+  const [capturableIds, setCapturableIds] = useState<string[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unmountedRef = useRef(false);
+  // Commands queued while the socket is still connecting (drained on onopen).
+  const pendingQueue = useRef<Record<string, unknown>[]>([]);
+
+  /** Send a command now if open, else queue it until onopen. */
+  const send = useCallback((payload: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
+    } else {
+      pendingQueue.current.push(payload);
+    }
+  }, []);
+
+  const drive = useCallback(
+    (rounds: number) => send({ rounds }),
+    [send]
+  );
+  const argue = useCallback(
+    (text: string, skillId?: string | null) =>
+      send({ action: "argue", text, skill_id: skillId ?? null }),
+    [send]
+  );
 
   const disconnect = useCallback(() => {
     if (reconnectTimer.current != null) {
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
     }
+    pendingQueue.current = [];
     if (wsRef.current) {
       wsRef.current.onclose = null; // prevent reconnect loop
       wsRef.current.close();
@@ -110,12 +140,15 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       setEncounter(null);
       setTranscript([]);
       setVerdicts([]);
+      setCapturableIds([]);
       return;
     }
 
     // Reset state for new encounter
+    pendingQueue.current = [];
     setTranscript([]);
     setVerdicts([]);
+    setCapturableIds([]);
 
     function connect() {
       if (unmountedRef.current) return;
@@ -128,6 +161,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       ws.onopen = () => {
         if (unmountedRef.current) { ws.close(); return; }
         setStatus("open");
+        // Drain all commands queued before the socket opened.
+        const queued = pendingQueue.current.splice(0);
+        for (const payload of queued) ws.send(JSON.stringify(payload));
       };
 
       ws.onmessage = (evt: MessageEvent) => {
@@ -156,6 +192,32 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
               );
               return exists ? prev : [...prev, v];
             });
+          } else if (msg.type === "hp") {
+            // payload: { [monster_id]: hp } — merge into combatants immutably.
+            const hpMap = msg.data as Record<string, number>;
+            setEncounter((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    combatants: prev.combatants.map((c) =>
+                      c.monster_id in hpMap ? { ...c, hp: hpMap[c.monster_id] } : c
+                    ),
+                  }
+                : prev
+            );
+          } else if (msg.type === "phase") {
+            // payload: { phase, capturable_ids, turn_no }
+            const p = msg.data as {
+              phase: EncounterState["phase"];
+              capturable_ids?: string[];
+              turn_no?: number;
+            };
+            setEncounter((prev) =>
+              prev
+                ? { ...prev, phase: p.phase, turn_no: p.turn_no ?? prev.turn_no }
+                : prev
+            );
+            setCapturableIds(p.capturable_ids ?? []);
           } else if (msg.type === "state") {
             const s = msg.data as EncounterState;
             setEncounter(s);
@@ -195,5 +257,5 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encounterId]);
 
-  return { status, encounter, transcript, verdicts, disconnect };
+  return { status, encounter, transcript, verdicts, capturableIds, drive, argue, disconnect };
 }

@@ -36,47 +36,75 @@ export default function App() {
     }
   }
 
+  const SUGGESTED = [
+    "Pineapple belongs on pizza",
+    "AI should be open source",
+    "Cats are better than dogs",
+  ];
+
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="flex items-center justify-between px-4 py-2 border-b border-white/10">
-        <h1 className="font-bold tracking-tight">⚔️ Debate RPG</h1>
-        <div className="flex items-center gap-3 text-xs">
-          <span>
+      <header
+        className="flex items-center justify-between px-4 py-2"
+        style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+      >
+        <h1 className="font-display text-sm">⚔️ DEBATE RPG</h1>
+        <div className="flex items-center gap-3 font-hud text-[10px]">
+          <span style={{ color: "var(--muted)" }}>
             api:{" "}
-            <span className={health === "ok" ? "text-green-400" : "text-yellow-400"}>{health}</span>
+            <span style={{ color: health === "ok" ? "var(--win)" : "var(--warn)" }}>{health}</span>
           </span>
-          {runId && <span className="opacity-60">topic: {topic}</span>}
+          {runId && (
+            <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
+              topic: {topic}
+            </span>
+          )}
         </div>
       </header>
 
       {!runId ? (
-        <main className="flex-1 grid place-items-center">
-          <div className="w-[28rem] max-w-[90vw] space-y-3 text-center">
-            <p className="opacity-70 text-sm">
+        <main className="flex-1 grid place-items-center p-4">
+          <div className="pixel-panel p-6 w-[30rem] max-w-[92vw] space-y-4 text-center">
+            <div className="font-display text-lg" style={{ color: "var(--accent)" }}>
+              DEBATE RPG
+            </div>
+            <p className="font-body text-sm" style={{ color: "var(--muted)" }}>
               Choose the topic every enemy in this run will debate.
             </p>
             <input
-              className="w-full bg-white/5 border border-white/10 rounded px-3 py-2"
+              className="pixel-field w-full text-sm"
               value={topicInput}
               onChange={(e) => setTopicInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") startRun();
+              }}
             />
-            <button
-              className="w-full bg-indigo-600 hover:bg-indigo-500 rounded px-3 py-2 font-semibold"
-              onClick={startRun}
-            >
+            <div className="flex gap-1.5 flex-wrap justify-center">
+              {SUGGESTED.map((t) => (
+                <button
+                  key={t}
+                  className="pixel-btn text-[9px] py-1"
+                  onClick={() => setTopicInput(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <button className="pixel-btn pixel-btn--accent w-full" onClick={startRun}>
               Start Run
             </button>
           </div>
         </main>
       ) : (
         <>
-          <nav className="flex gap-2 px-4 py-2 border-b border-white/10 text-sm">
+          <nav
+            className="flex gap-2 px-4 py-2"
+            style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+          >
             {(["overworld", "encounter", "party", "training"] as const).map((s) => (
               <button
                 key={s}
-                className={`px-3 py-1 rounded ${
-                  screen === s ? "bg-indigo-600" : "bg-white/5 hover:bg-white/10"
-                }`}
+                className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
                 onClick={() => setScreen(s)}
               >
                 {s}
@@ -117,7 +145,7 @@ function ScreenPanel({ screen }: { screen: string }) {
         return (
           <div className="p-4 max-w-3xl mx-auto">
             <button
-              className="mb-3 text-sm px-3 py-1 rounded bg-white/5 hover:bg-white/10"
+              className="pixel-btn text-[10px] mb-3"
               onClick={() => {
                 window.location.hash = "";
               }}
