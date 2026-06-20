@@ -131,6 +131,12 @@ export interface EncounterStreamState {
   liveTokens: Record<string, LiveUtterance>;
   /** Latest known phase, tracked from `phase` events and `state` snapshots. */
   phase: EncounterPhase;
+  /** True while a round is streaming (between drive() and round_done). */
+  running: boolean;
+  /** Drive a round over the WS so events stream live. `actor_id` = the party
+   * agent the player picked (null/omitted = agents auto-pick). Returns false if
+   * the socket isn't open yet. */
+  drive: (opts?: { rounds?: number; actor_id?: string | null }) => boolean;
   /** Close and clean up the websocket connection manually */
   disconnect: () => void;
 }
@@ -153,6 +159,8 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [verdicts, setVerdicts] = useState<JudgeVerdict[]>([]);
   const [liveTokens, setLiveTokens] = useState<Record<string, LiveUtterance>>({});
   const [phase, setPhase] = useState<EncounterPhase>("intro");
+  // True while a round is streaming (between drive() and round_done).
+  const [running, setRunning] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -185,6 +193,19 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       wsRef.current = null;
     }
     setStatus("closed");
+  }, []);
+
+  // Drive a round OVER THE WEBSOCKET so token/utterance/verdict events stream
+  // straight to the screen. (Driving via REST runs the round server-side but
+  // never pushes the live events to this client — that's why nothing streamed.)
+  const drive = useCallback((opts?: { rounds?: number; actor_id?: string | null }) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    setRunning(true);
+    ws.send(
+      JSON.stringify({ rounds: opts?.rounds ?? 1, actor_id: opts?.actor_id ?? null })
+    );
+    return true;
   }, []);
 
   useEffect(() => {
@@ -347,7 +368,10 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             setEncounter((prev) => (prev ? { ...prev, phase: p } : prev));
             // Stop auto-reconnecting once the battle has resolved.
             if (isFinished(p)) stopReconnect();
+          } else if (msg.type === "round_done") {
+            setRunning(false);
           } else if (msg.type === "error") {
+            setRunning(false);
             console.error("[useEncounterStream] server error:", msg.message);
           }
         } catch (e) {
@@ -358,11 +382,13 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       ws.onerror = () => {
         if (unmountedRef.current) return;
         setStatus("error");
+        setRunning(false);
       };
 
       ws.onclose = () => {
         if (unmountedRef.current) return;
         setStatus("closed");
+        setRunning(false);
         // Auto-reconnect unless the encounter has resolved (won/lost).
         if (encounterId && !unmountedRef.current && !isFinished(phaseRef.current)) {
           reconnectTimer.current = setTimeout(() => {
@@ -380,5 +406,5 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encounterId]);
 
-  return { status, encounter, transcript, verdicts, liveTokens, phase, disconnect };
+  return { status, encounter, transcript, verdicts, liveTokens, phase, running, drive, disconnect };
 }

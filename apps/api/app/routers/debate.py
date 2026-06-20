@@ -306,6 +306,8 @@ async def stream(ws: WebSocket, eid: str) -> None:
             except WebSocketDisconnect:
                 break
             rounds = max(1, min(int(msg.get("rounds", 1)), 12))
+            # The party agent the player picked (None = agents auto-pick).
+            active_party_id = msg.get("actor_id") or None
 
             for _ in range(rounds):
                 meta = await get_meta(eid)
@@ -319,7 +321,8 @@ async def stream(ws: WebSocket, eid: str) -> None:
 
                 final_phase = {"phase": "debating", "capturable_ids": [], "turn_no": start_turn}
                 async for ev in run_round_stream(
-                    eid, topic, combatants, run_id, start_turn, momentum
+                    eid, topic, combatants, run_id, start_turn, momentum,
+                    active_party_id=active_party_id,
                 ):
                     await ws.send_json({"type": ev.kind, "data": ev.data})
                     if ev.kind == "phase":

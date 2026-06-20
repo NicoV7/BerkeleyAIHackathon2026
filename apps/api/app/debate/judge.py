@@ -136,7 +136,7 @@ async def _judge_call(topic: str, items: list[dict[str, Any]], model: str) -> An
         _build_messages(topic, items),
         model=model,
         temperature=0.2,
-        max_tokens=400,
+        max_tokens=160,
         json_mode=True,
     )
     return _parse_json(raw)

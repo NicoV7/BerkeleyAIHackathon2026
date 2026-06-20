@@ -241,7 +241,7 @@ async def _generate_utterance(
     messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
     try:
         text = await gateway.complete(
-            messages, model=actor.model, temperature=0.8, max_tokens=180
+            messages, model=actor.model, temperature=0.8, max_tokens=96
         )
         text = (text or "").strip()
     except Exception as e:  # noqa: BLE001
@@ -292,7 +292,7 @@ async def _stream_utterance(
     parts: list[str] = []
     try:
         agen = gateway.stream(
-            messages, model=actor.model, temperature=0.8, max_tokens=180
+            messages, model=actor.model, temperature=0.8, max_tokens=96
         )
         first = True
         while True:

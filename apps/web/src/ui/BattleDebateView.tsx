@@ -302,7 +302,7 @@ function Chip({
 
 export function BattleDebateView() {
   const { activeEncounterId, setEncounter } = useGame();
-  const { status, encounter, transcript, verdicts, liveTokens, phase } =
+  const { status, encounter, transcript, verdicts, liveTokens, phase, running, drive } =
     useEncounterStream(activeEncounterId);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
@@ -347,14 +347,15 @@ export function BattleDebateView() {
   // Living party agents the player can send into a turn (dungeon-RPG picker).
   const partyChoices = combatants.filter((c) => c.role === "party" && c.hp > 0);
 
-  // Auto mode self-runs: when on (and idle, not finished), advance one round.
-  // Each round flips `busy` and bumps turn_no, which re-fires this effect →
-  // the debate proceeds autonomously without manual clicks.
+  // Auto mode self-runs: when on (and idle, not finished), drive one round over
+  // the WS with no chosen actor (agents auto-pick). round_done flips `running`
+  // false and turn_no advances → this effect re-fires → the debate proceeds
+  // autonomously, streaming each round.
   useEffect(() => {
-    if (!auto || busy || isOver || !activeEncounterId) return;
-    void doAction("/auto", { rounds: 1 });
+    if (!auto || running || isOver || !activeEncounterId) return;
+    drive({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, busy, isOver, activeEncounterId, encounter?.turn_no]);
+  }, [auto, running, isOver, activeEncounterId, encounter?.turn_no]);
 
   // Hero: the single latest verdict drives the jumbo banner (one per frame).
   const latestVerdict: JudgeVerdict | null =
@@ -566,12 +567,12 @@ export function BattleDebateView() {
               partyChoices.map((c) => (
                 <button
                   key={c.monster_id}
-                  disabled={busy}
-                  onClick={() => doAction("/turn", { actor_id: c.monster_id })}
+                  disabled={running}
+                  onClick={() => drive({ actor_id: c.monster_id })}
                   title={`Send ${c.name} into this turn`}
                   className="px-3 py-1.5 text-sm rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 flex items-center gap-1.5"
                 >
-                  <span>{busy ? "…" : c.name}</span>
+                  <span>{running ? "…" : c.name}</span>
                   <span className="text-[10px] text-white/60">
                     {c.hp}/{c.max_hp}
                   </span>
