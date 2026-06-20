@@ -99,5 +99,14 @@ async def clear_encounter(eid: str) -> None:
     await r.delete(*encounter_keys(eid))
 
 
+async def clear_conversation(eid: str) -> None:
+    """Evict only the heavy conversation keys (transcript + judge verdicts)
+    after a battle is durably persisted, to avoid context pollution. The small
+    meta/hp/momentum keys are left to expire via TTL so the encounter stays
+    queryable and repeat calls get a clean terminal phase."""
+    r = get_redis()
+    await r.delete(k_transcript(eid), k_judge(eid))
+
+
 async def ping() -> bool:
     return bool(await get_redis().ping())

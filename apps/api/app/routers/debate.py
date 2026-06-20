@@ -11,13 +11,15 @@ win/loss/flee.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Encounter, EncounterResult
 from app.db.session import SessionLocal, get_session
-from app.debate.orchestrator import Event, run_round_stream
-from app.redis_state import k_transcript
+from app.debate.orchestrator import run_round_stream
+from app.redis_state import get_transcript, k_meta
 from app.routers.encounter import (
     build_encounter_state,
     get_meta,
@@ -34,7 +36,24 @@ router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
 
 async def _finalize(eid: str, result: EncounterResult) -> None:
-    """Write final result + transcript ref to Postgres once."""
+    """Persist the battle durably, write per-party BATTLE memories, then evict
+    the conversation from Redis. Idempotent: a second call is a no-op.
+
+    Order matters: we read the transcript/verdicts/HP out of Redis FIRST, snapshot
+    them onto the Encounter row and into each party member's memory (so GEPA/RAG
+    have real battle data that outlives the cache), and only then evict the heavy
+    Redis keys to avoid context pollution.
+    """
+    from app.redis_state import clear_conversation, get_hp_map, get_redis, k_judge
+
+    transcript = await get_transcript(eid)
+    r = get_redis()
+    verdicts = [json.loads(v) for v in await r.lrange(k_judge(eid), 0, -1)]
+    final_hp = await get_hp_map(eid)
+    meta = await r.hgetall(k_meta(eid))
+    topic = meta.get("topic", "")
+    roster = json.loads(meta.get("combatants", "[]"))
+
     async with SessionLocal() as session:
         enc = await session.get(Encounter, eid)
         if not enc:
@@ -42,9 +61,66 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
         if enc.result != EncounterResult.ongoing:
             return  # already finalized
         enc.result = result
-        enc.transcript_ref = k_transcript(eid)
+        enc.transcript = transcript
+        enc.verdicts = verdicts
+        enc.final_hp = final_hp
+        enc.transcript_ref = None
         session.add(enc)
         await session.commit()
+
+        # Write one BATTLE memory per PARTY member (durable, embedded for RAG +
+        # available to GEPA training). Best-effort: never let this fail the battle.
+        await _write_battle_memories(session, enc, topic, transcript, final_hp, roster, result)
+
+    # Conversation is durably stored — free the cache.
+    await clear_conversation(eid)
+
+
+async def _write_battle_memories(
+    session: AsyncSession,
+    enc: Encounter,
+    topic: str,
+    transcript: list[dict],
+    final_hp: dict[str, int],
+    roster: list[dict],
+    result: EncounterResult,
+) -> None:
+    try:
+        from app.memory.store import write_event  # WS-D seam (optional)
+    except Exception:  # noqa: BLE001
+        return
+
+    names = {c["monster_id"]: c.get("name", c["monster_id"]) for c in roster}
+    outcome = {
+        EncounterResult.win: "Your side WON the debate.",
+        EncounterResult.loss: "Your side LOST the debate.",
+        EncounterResult.flee: "You fled the debate.",
+    }.get(result, "The debate ended.")
+
+    # Render the full conversation once, labeled by speaker.
+    lines = [f"{names.get(u['actor_id'], u['actor_role'])}: {u['text']}" for u in transcript]
+    convo = "\n".join(lines)
+
+    for pid in (enc.party_ids or []):
+        my_hp = final_hp.get(pid)
+        my_lines = [u["text"] for u in transcript if u["actor_id"] == pid]
+        content = (
+            f"Debate on '{topic}'. {outcome} "
+            f"Final HP: {my_hp}. My arguments: " + " | ".join(my_lines) +
+            f"\n\nFull transcript:\n{convo}"
+        )
+        try:
+            await write_event(
+                session,
+                monster_id=pid,
+                run_id=enc.run_id,
+                event_type="BATTLE",
+                content=content,
+                encounter_id=enc.id,
+                salience=0.8 if result in (EncounterResult.win, EncounterResult.loss) else 0.4,
+            )
+        except Exception:  # noqa: BLE001
+            continue
 
 
 _PHASE_TO_RESULT = {

@@ -274,6 +274,17 @@ async def build_encounter_state(eid: str) -> EncounterState:
     transcript_raw = await get_transcript(eid)
     verdicts_raw = await r.lrange(k_judge(eid), 0, -1)
 
+    # After finalize the conversation keys are evicted; fall back to the durable
+    # snapshot on the Encounter row so the transcript/verdicts still render.
+    if not transcript_raw and not verdicts_raw:
+        from app.db.session import SessionLocal
+
+        async with SessionLocal() as session:
+            enc = await session.get(Encounter, eid)
+        if enc and (enc.transcript or enc.verdicts):
+            transcript_raw = list(enc.transcript or [])
+            verdicts_raw = [json.dumps(v) for v in (enc.verdicts or [])]
+
     combatant_states = [
         CombatantState(
             monster_id=c.monster_id,

@@ -183,7 +183,12 @@ class Encounter(SQLModel, table=True):
     enemy_ids: list[Any] = Field(default_factory=list, sa_column=Column(JSONB))
     party_ids: list[Any] = Field(default_factory=list, sa_column=Column(JSONB))
     result: EncounterResult = Field(default=EncounterResult.ongoing)
-    transcript_ref: Optional[str] = None  # redis key snapshot
+    transcript_ref: Optional[str] = None  # legacy redis key pointer (TTL'd)
+    # Durable snapshot written on finalize, so the conversation survives the
+    # Redis TTL and the cache can be evicted to avoid context pollution.
+    transcript: list[Any] = Field(default_factory=list, sa_column=Column(JSONB))
+    verdicts: list[Any] = Field(default_factory=list, sa_column=Column(JSONB))
+    final_hp: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
     created_at: datetime = Field(default_factory=_now)
 
 
