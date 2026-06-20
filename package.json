@@ -1,0 +1,16 @@
+{
+  "name": "debate-rpg",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI Debate RPG — Pokémon-style roguelike where you debate enemy LLM agents",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "build:web": "pnpm --filter web build",
+    "gen:types": "pnpm --filter web gen:types",
+    "up": "docker compose -f infra/docker-compose.yml up -d --build",
+    "down": "docker compose -f infra/docker-compose.yml down",
+    "logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "pull-models": "bash infra/ollama/pull-models.sh"
+  },
+  "packageManager": "pnpm@10.28.0"
+}

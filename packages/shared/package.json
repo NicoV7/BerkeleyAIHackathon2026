@@ -1,0 +1,10 @@
+{
+  "name": "@debate/shared",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "enums.ts",
+  "exports": {
+    "./enums": "./enums.ts",
+    "./types": "./types.gen.ts"
+  }
+}

@@ -34,3 +34,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# API venv
+apps/api/.venv/
+*.egg-info/
+
+# Build caches
+.vite/
