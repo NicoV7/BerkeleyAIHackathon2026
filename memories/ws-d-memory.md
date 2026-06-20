@@ -79,4 +79,15 @@ GET /api/monsters/{monster_id}/memories
 - [ ] Add `pg_trgm.similarity()` score to keyword leg (currently pure ILIKE OR — would improve ranking quality).
 - [ ] GRPO training loop (WS-F) could consume retrieved memories as preference signal.
 - [ ] Streaming support for memory injection into debate context (WS-B).
-- [ ] Snapshot memories to Redis for ultra-low-latency access during active encounters.
+- [x] Snapshot memories to Redis for ultra-low-latency access during active encounters.
+      DONE — `memory/redis_index.py` adds a **RedisVL vector hot-cache** in front of
+      pgvector. `retrieve()` embeds the query once, tries `redis_index.search(monster_id,
+      q_vec, k, event_type)` first, and falls through to the pgvector+trigram RRF path on
+      any miss/error (signature unchanged → WS-B/inspector untouched). `write_event` does a
+      best-effort write-through via `index_memory(memory)`. Index `mem_idx`, key prefix
+      `mem:` (disjoint from `enc:*`), 768-dim cosine HNSW float32. Gated by
+      `settings.memory_cache_enabled` (env `MEMORY_CACHE_ENABLED`, default true). **Requires
+      Redis 8+** (search engine) — compose bumped `redis:7-alpine`→`redis:8-alpine`. Index is
+      created + warmed (recent 500 rows) in `main.py` lifespan; full rebuild via
+      `scripts/backfill_redis_memories.py`. pgvector remains source of truth; Redis is fully
+      rebuildable and flushing it just degrades to the pg path.
