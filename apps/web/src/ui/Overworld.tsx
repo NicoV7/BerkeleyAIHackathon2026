@@ -100,10 +100,12 @@ export default function Overworld() {
 
   // Keep the in-scene floating name tag in sync if the player's name changes
   // mid-run (the scene is only started once, so push updates imperatively).
+  // Guard on the scene being registered first: getScene() can throw while the
+  // Phaser game is still booting, so we check the manager's key map directly.
   useEffect(() => {
-    const scene = gameRef.current?.scene.getScene("OverworldScene") as
-      | OverworldScene
-      | undefined;
+    const manager = gameRef.current?.scene;
+    if (!manager || !manager.keys["OverworldScene"]) return;
+    const scene = manager.getScene("OverworldScene") as OverworldScene | undefined;
     scene?.setPlayerName?.(playerName);
   }, [playerName]);
 
