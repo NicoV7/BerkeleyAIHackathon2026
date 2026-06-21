@@ -83,7 +83,7 @@ function AppShell() {
   }, [runId]);
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen min-h-screen flex flex-col overflow-hidden">
       {runId && (
         <header
           className="flex items-center justify-between px-4 py-2"
@@ -156,7 +156,7 @@ function AppShell() {
               <AdventureMenu className="ml-auto" />
             </nav>
           )}
-          <main className="flex-1 overflow-auto relative">
+          <main className="flex-1 min-h-0 overflow-auto relative">
             {needsGacha ? (
               <>
                 <GachaScreen
