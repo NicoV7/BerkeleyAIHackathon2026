@@ -166,26 +166,69 @@ def _starter_town_poi(pois: list[POI], start: POI | None = None) -> POI | None:
     return min(towns, key=score)
 
 
+def _nearest_open_spawn_world(seed: int, x: int, y: int) -> tuple[int, int]:
+    """Nearest walkable, NON-TOWN tile to ``(x, y)``.
+
+    The overworld renderer draws a building (house/shop/inn/barn) on EVERY TOWN
+    tile, so a town-center spawn drops the player visually 'inside a building'.
+    We step out to the first open road/grass tile at the village edge — still
+    right beside the NPCs and quests, but in the open. ``get_canonical_tile``
+    returns None off the curated world (procedural path), so this degrades to a
+    plain nearest-walkable search there.
+    """
+    from app.world.algorithms.base import TOWN
+    from app.world.canonical import get_canonical_tile
+
+    world_width, world_height = _world_dims_for(seed)
+    sx = max(0, min(world_width - 1, x))
+    sy = max(0, min(world_height - 1, y))
+
+    def open_nontown(nx: int, ny: int) -> bool:
+        if _is_world_blocked(seed, nx, ny):
+            return False
+        return get_canonical_tile(nx, ny) != TOWN
+
+    if open_nontown(sx, sy):
+        return sx, sy
+    max_radius = max(world_width, world_height)
+    for radius in range(1, max_radius + 1):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if abs(dx) != radius and abs(dy) != radius:
+                    continue
+                nx = sx + dx
+                ny = sy + dy
+                if 0 <= nx < world_width and 0 <= ny < world_height and open_nontown(nx, ny):
+                    return nx, ny
+    # Everything nearby is town/blocked — fall back to any walkable tile.
+    return _nearest_walkable_world(seed, x, y)
+
+
 def _spawn_tile_for(seed: int) -> tuple[int, int]:
-    """Return the run's initial tile, preferring a populated town/village."""
+    """Return the run's initial tile: the curated start, on open ground.
+
+    Anchors on the world's curated ``start`` POI (the village commons — the
+    intended default spawn) and steps out to the nearest open, non-town tile so
+    the player never starts on a TOWN tile (which always renders a building).
+    """
     from app.world.canonical import get_canonical_world
 
     canonical = get_canonical_world()
     if canonical is not None:
-        spawn_poi = _starter_town_poi(canonical.spec.pois, canonical.spec.start)
-        if spawn_poi is None:
-            spawn_poi = canonical.spec.start
+        spawn_poi = canonical.spec.start or _starter_town_poi(
+            canonical.spec.pois, canonical.spec.start
+        )
         if spawn_poi is not None:
-            return _nearest_walkable_world(seed, spawn_poi.x, spawn_poi.y)
+            return _nearest_open_spawn_world(seed, spawn_poi.x, spawn_poi.y)
 
     tiles = _generate_tiles(seed)
     width, height = _tile_dims(tiles)
     pois = place_pois(seed, tiles, width, height)
     start = next((p for p in pois if p.kind == "start"), None)
-    spawn_poi = _starter_town_poi(pois, start) or start
+    spawn_poi = start or _starter_town_poi(pois, start)
     if spawn_poi is None:
-        return _nearest_walkable_world(seed, 1, 1)
-    return _nearest_walkable_world(seed, spawn_poi.x, spawn_poi.y)
+        return _nearest_open_spawn_world(seed, 1, 1)
+    return _nearest_open_spawn_world(seed, spawn_poi.x, spawn_poi.y)
 
 
 def _canonical_tile_window(
