@@ -18,7 +18,11 @@
 
 import Phaser from "phaser";
 import { EnemyManager, type Enemy, type EnemySpawn } from "./EnemyAI";
-import { NPCBehaviorManager, type NPCAnchorView } from "./NPCBehavior";
+import {
+  NPCBehaviorManager,
+  QUEST_MARKER_OFFSET,
+  type NPCAnchorView,
+} from "./NPCBehavior";
 import {
   createPlayerTextures,
   PlayerSpriteAnimator,
@@ -176,7 +180,7 @@ function terrainFill(tile: number, jitter: number): number {
 export interface OverworldConfig {
   runId: string;
   playerName?: string;
-  onEncounter: (wildId: string) => void;
+  onEncounter: (wildId?: string | null, locationTile?: number | null) => void;
   onNpcTalk?: (npc: NPCAnchorView) => void;
   onMapLoaded?: (m: {
     width: number;
@@ -236,12 +240,25 @@ interface TerrainBuffer {
   originY: number;
 }
 
+interface QuestOffer {
+  npc_id: string;
+  status: "active" | "available";
+  target: string;
+  target_name: string;
+  quest_id: string;
+}
+
+interface QuestOffersState {
+  offers: QuestOffer[];
+}
+
 export class OverworldScene extends Phaser.Scene {
   private cfg!: OverworldConfig;
 
   // Map data (loaded once per scene start)
   private mapData: MapState | null = null;
   private worldData: WorldState | null = null;
+  private questOfferNpcIds = new Set<string>();
 
   // Terrain renders via Phaser TILEMAP layers (Wave 0) — DOUBLE BUFFERED.
   // Two terrain buffers (front = visible, back = hidden), each a Tilemap with a
@@ -349,6 +366,7 @@ export class OverworldScene extends Phaser.Scene {
     this.encounterFired = false;
     this.encounterPending = false;
     this.lastHudTile = { x: -1, y: -1 };
+    this.questOfferNpcIds = new Set();
   }
 
   preload() {
@@ -694,6 +712,7 @@ export class OverworldScene extends Phaser.Scene {
     // we fire GET /api/runs/undefined/map → 404.
     if (!this.cfg?.runId) return;
     try {
+      const questOffersPromise = this.fetchQuestOfferIds();
       // Use a warm prefetched chunk if the desired window is already cached so the
       // swap is instant (no in-flight gap at all). Otherwise fetch on demand.
       let data: MapState | null = centerTile
@@ -720,6 +739,7 @@ export class OverworldScene extends Phaser.Scene {
           ? ((await worldRes.json()) as WorldState)
           : null;
       }
+      this.questOfferNpcIds = await questOffersPromise;
       // The scene may have been destroyed (React StrictMode double-mount, HMR,
       // navigation away) while the fetch was in flight; bail before touching
       // `this.add`, which would null-deref through the dead game object factory.
@@ -731,12 +751,15 @@ export class OverworldScene extends Phaser.Scene {
         // Forward NPC dialogue from interiors to the same React handler the
         // overworld uses, and persist position before leaving for an interior.
         onNpcTalk: this.cfg.onNpcTalk,
+        onEncounter: this.cfg.onEncounter,
         onEnterInterior: () => this.flushSync(),
       });
 
       const win = this.windowOf(data);
       const { originX, originY } = win;
       this.rememberChunk(data);
+      await this.warmChunkNeighborhood(data);
+      if (!this.sys?.isActive()) return;
 
       if (this.sim) {
         // DOUBLE BUFFER: the live (front) terrain stays visible. Stamp the new
@@ -820,6 +843,24 @@ export class OverworldScene extends Phaser.Scene {
     this.setBufferVisible(this.frontBuffer, false);
     this.setBufferVisible(back, true);
     this.frontBuffer = back;
+  }
+
+  async refreshQuestOffers(): Promise<void> {
+    if (!this.cfg?.runId) return;
+    this.questOfferNpcIds = await this.fetchQuestOfferIds();
+    if (this.sys?.isActive() && this.worldData) this.spawnNpcs();
+  }
+
+  private async fetchQuestOfferIds(): Promise<Set<string>> {
+    try {
+      const res = await fetch(`/api/runs/${this.cfg.runId}/quests/available`);
+      if (!res.ok) return new Set();
+      const data = (await res.json()) as QuestOffersState;
+      return new Set(data.offers.map((offer) => offer.npc_id));
+    } catch (e) {
+      console.error("Failed to fetch quest offers:", e);
+      return new Set();
+    }
   }
 
   /** Push one buffer slot's layers to the [front=0|back=1] depth band. */
@@ -1373,7 +1414,19 @@ export class OverworldScene extends Phaser.Scene {
       );
       lbl.setOrigin(0.5, 1);
       lbl.setDepth(8);
-      this.npcs.add(anchor, spr, lbl);
+      const marker = this.questOfferNpcIds.has(anchor.npc_id)
+        ? this.add
+            .text(spr.x, spr.y - QUEST_MARKER_OFFSET, "✓", {
+              fontFamily: "monospace",
+              fontSize: "14px",
+              color: "#ff5d6c",
+              stroke: "#0e1018",
+              strokeThickness: 3,
+            })
+            .setOrigin(0.5)
+            .setDepth(13)
+        : undefined;
+      this.npcs.add(anchor, spr, lbl, marker);
     }
   }
 
@@ -1526,8 +1579,29 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
+  /** Ensure the anchor chunk's immediate 3x3 neighbourhood is cached. */
+  private async warmChunkNeighborhood(anchor: MapState) {
+    const originX = anchor.origin_x ?? 0;
+    const originY = anchor.origin_y ?? 0;
+    const cellX = this.cellOf(originX + Math.floor(anchor.width / 2));
+    const cellY = this.cellOf(originY + Math.floor(anchor.height / 2));
+    const half = Math.floor(CHUNK_SIZE / 2);
+    const jobs: Array<Promise<void>> = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const cx = (cellX + dx) * CHUNK_SIZE + half;
+        const cy = (cellY + dy) * CHUNK_SIZE + half;
+        if (cx < 0 || cy < 0) continue;
+        jobs.push(this.prefetchChunk(cx, cy, false));
+      }
+    }
+    await Promise.all(jobs);
+    this.lastPrefetchCell = { x: cellX, y: cellY };
+  }
+
   /** Fetch one chunk into the prefetch cache, keyed by its returned origin. */
-  private async prefetchChunk(centerX: number, centerY: number) {
+  private async prefetchChunk(centerX: number, centerY: number, refreshNeighborhood = true) {
     // Dedupe by center so two near-tiles don't double-fetch the same region.
     const reqKey = chunkKey(centerX, centerY);
     if (this.prefetchInFlight.has(reqKey)) return;
@@ -1543,7 +1617,7 @@ export class OverworldScene extends Phaser.Scene {
       // A newly-cached adjacent neighbour: extend collision (so the player can
       // walk into it) and, if it adds coverage, paint it via a seamless swap.
       // Grid-aligned origins mean tiles never shift — no churn, just fill-in.
-      if (this.sim && this.mapData) {
+      if (refreshNeighborhood && this.sim && this.mapData) {
         const win = this.windowOf(data);
         const adjacent = windowsWithinRenderHalo(
           this.windowOf(this.mapData),
@@ -1616,7 +1690,18 @@ export class OverworldScene extends Phaser.Scene {
     }
     // Persist position before the scene flips to the battle screen.
     this.flushSync();
-    this.cfg.onEncounter(wildId);
+    this.cfg.onEncounter(wildId, this.currentLocationTile());
+  }
+
+  private currentLocationTile(): number | null {
+    if (!this.sim || !this.mapData) return null;
+    const originX = this.mapData.origin_x ?? 0;
+    const originY = this.mapData.origin_y ?? 0;
+    const localX = this.sim.tileX - originX;
+    const localY = this.sim.tileY - originY;
+    if (localY < 0 || localY >= this.mapData.tiles.length) return null;
+    if (localX < 0 || localX >= this.mapData.tiles[localY].length) return null;
+    return this.mapData.tiles[localY][localX];
   }
 
   /**

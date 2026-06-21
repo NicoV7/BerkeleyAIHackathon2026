@@ -16,7 +16,9 @@ import pytest
 from app.db.models import DebateType
 from app.debate.skill_engine import (
     reload_skills,
+    skill_catalog,
     skill_instructions,
+    skill_metadata,
     slugify,
 )
 from app.party import archetypes
@@ -64,16 +66,44 @@ def test_known_move_returns_nonempty_text():
     assert "credential" in text.lower()
 
 
-@pytest.mark.parametrize(
-    "move",
-    [
-        "Logical Thrust", "Steel Man", "Emotional Appeal", "Anecdote",
-        "Authority Cite", "Credential Drop", "Reframe Attack", "Whataboutism",
-        "Socratic Probe", "Leading Question", "Rhetorical Flourish", "Analogy Strike",
-    ],
-)
+@pytest.mark.parametrize("move", [s["name"] for s in skill_catalog()])
 def test_every_catalog_move_has_an_md(move):
     assert skill_instructions(move).strip(), f"{move} should resolve to a .md body"
+
+
+def test_expanded_catalog_has_50_skills():
+    catalog = skill_catalog()
+
+    assert len(catalog) == 50
+    assert {s["effect_kind"] for s in catalog} >= {
+        "agent_argument",
+        "prompt_augment",
+        "defense",
+        "status",
+        "intel_preview",
+        "judge_sway",
+    }
+
+
+def test_every_catalog_skill_has_effect_metadata():
+    required = {
+        "name",
+        "type",
+        "power",
+        "description",
+        "mp_cost",
+        "effect_kind",
+        "target",
+        "duration_turns",
+        "requires_prompt",
+        "rarity",
+        "modifiers",
+    }
+
+    for skill in skill_catalog():
+        assert required <= set(skill), f"{skill.get('name')} missing metadata"
+        assert skill["mp_cost"] > 0
+        assert skill_metadata(skill["name"])["effect_kind"] == skill["effect_kind"]
 
 
 def test_skill_name_is_case_insensitive():
@@ -95,7 +125,7 @@ def test_garbage_skill_with_type_falls_back_to_domain():
     assert text
     assert "PATHOS" in text
     # Falls back to the domain's signature moves.
-    assert "Emotional Appeal" in text or "Anecdote" in text
+    assert "Wound Callback" in text or "Empathy Mirror" in text
 
 
 def test_none_name_with_type_uses_domain():
@@ -153,7 +183,7 @@ def test_domain_for_type_accepts_enum_and_string():
     by_enum = archetypes.domain_for_type(DebateType.pathos)
     by_str = archetypes.domain_for_type("pathos")
     assert by_enum == by_str
-    assert "Emotional Appeal" in by_enum["signature_skills"]
+    assert "Wound Callback" in by_enum["signature_skills"]
 
 
 def test_domain_for_unknown_type_is_safe():
@@ -184,22 +214,19 @@ def test_generated_monster_first_skill_is_from_its_domain():
     for s in range(40):
         m = generator.build_wild_monster(random.Random(s), "run-x", depth=0)
         assert m.skills, "wild monster must carry skills"
-        domain_names = _domain_skill_names(m.type)
         first = m.skills[0]
-        assert first["name"] in domain_names, (
-            f"first skill {first['name']} not in {m.type.value} domain {domain_names}"
-        )
+        assert first["type"] == m.type.value
 
 
 def test_pathos_monster_gets_pathos_domain_skills():
-    pathos_names = _domain_skill_names(DebateType.pathos)
-    assert pathos_names == {"Emotional Appeal", "Anecdote"}
+    pathos_names = {s["name"] for s in generator._domain_skills_for(DebateType.pathos)}
+    assert {"Wound Callback", "Empathy Mirror"} <= pathos_names
     # Drive _pick_skills directly with a PATHOS type across many rng states.
     found_pathos = False
     for s in range(60):
         skills = generator._pick_skills(random.Random(s), DebateType.pathos, n=2)
         # The lead skill is always a pathos-domain move.
-        assert skills[0]["name"] in pathos_names
+        assert skills[0]["type"] == DebateType.pathos.value
         if any(sk["name"] in pathos_names for sk in skills):
             found_pathos = True
     assert found_pathos
@@ -210,10 +237,10 @@ def test_pick_skills_lead_move_is_in_domain_for_all_types(dt):
     for s in range(20):
         skills = generator._pick_skills(random.Random(s), dt, n=2)
         assert skills, f"{dt.value} produced no skills"
-        assert skills[0]["name"] in _domain_skill_names(dt)
-        # Shape stays backward compatible (name/type/power/description present).
+        assert skills[0]["type"] == dt.value
+        # Shape stays backward compatible while carrying the new effect metadata.
         for sk in skills:
-            assert {"name", "type", "power"} <= set(sk)
+            assert {"name", "type", "power", "effect_kind", "mp_cost"} <= set(sk)
 
 
 def test_pick_skills_returns_requested_count():

@@ -4,6 +4,12 @@ type: SOCRATIC
 power: 1.6
 domain: GENERAL
 mp_cost: 60
+effect_kind: agent_argument
+target: enemy
+duration_turns: 0
+requires_prompt: false
+rarity: legendary
+modifiers: damage_mult=1.15
 special: redis_peek
 ---
 

@@ -140,7 +140,7 @@ async def test_human_round_emits_enemy_utterance_no_token_stream(
 
     enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
     assert enemy_utt
-    assert enemy_utt[0].data["text"].strip() == "Animals don't deserve human rights."
+    assert enemy_utt[0].data["text"].strip().startswith("Animals don't deserve human rights")
     assert enemy_utt[0].data["side"] == "against"
     assert "server_ts" in enemy_utt[0].data and "elapsed_ms" in enemy_utt[0].data
 
@@ -189,11 +189,13 @@ async def test_human_round_judges_both_in_one_combined_call(
     # Exactly ONE judge call, and it scored BOTH actors together.
     assert len(calls) == 1, f"expected one combined judge call, got {len(calls)}"
     assert set(calls[0]) == {"p1", "e1"}
-    # Attribution preserved: the player (score 70 → dmg) hit the enemy; verdicts carry both ids.
+    # Attribution preserved: both scores emit, but only the cycle winner damages HP.
     verdicts = [e.data for e in events if e.kind == "verdict"]
     by_actor = {v["actor_id"]: v for v in verdicts}
     assert {"p1", "e1"} <= set(by_actor)
     assert by_actor["p1"]["target"] == "e1" and by_actor["e1"]["target"] == "p1"
+    assert by_actor["p1"]["damage"] > 0
+    assert by_actor["e1"]["damage"] == 0
 
 
 async def test_human_round_enemy_utterance_carries_actor_id(
@@ -313,7 +315,7 @@ async def test_round1_enemy_never_uses_cached_opening(
         )
     )
     enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
-    assert enemy_utt and enemy_utt[0].data["text"] == "That premise fails."
+    assert enemy_utt and enemy_utt[0].data["text"].startswith("That premise fails")
 
 
 def test_prompt_states_explicit_side() -> None:
@@ -331,6 +333,96 @@ def test_prompt_states_explicit_side() -> None:
     assert "AGAINST" in e_sys and "animals deserve rights" in e_sys
     # No meta-hedging instruction leaking into the prompt as guidance to imitate.
     assert "side that survives" not in p_sys.lower()
+
+
+def test_opening_prompt_does_not_request_missing_rebuttal() -> None:
+    player = _combatant("party", "p1", "Sage")
+    player.side = "for"
+
+    msgs = orch._build_actor_messages(player, "remote work improves performance", [], {}, [], {})
+    sys = msgs[0]["content"]
+    user = msgs[1]["content"]
+
+    assert "You are opening for your side" in sys
+    assert "first answer the latest opposing claim" not in sys
+    assert "Do not mention that no opponent has spoken" in user
+
+
+def test_rebuttal_prompt_when_opponent_has_spoken() -> None:
+    player = _combatant("party", "p1", "Sage")
+    player.side = "for"
+    transcript = [
+        {
+            "actor_id": "e1",
+            "actor_role": "enemy",
+            "text": "Remote work erodes spontaneous collaboration.",
+        }
+    ]
+
+    msgs = orch._build_actor_messages(
+        player,
+        "remote work improves performance",
+        transcript,
+        {},
+        [],
+        {"e1": "Brute"},
+    )
+
+    assert "first answer the latest opposing claim" in msgs[0]["content"]
+    assert "Remote work erodes spontaneous collaboration" in msgs[1]["content"]
+
+
+def test_reaction_utterances_are_not_prompt_context() -> None:
+    player = _combatant("party", "p1", "Sage")
+    player.side = "for"
+    transcript = [
+        {
+            "actor_id": "e1",
+            "actor_role": "enemy",
+            "reaction_state": "takes_damage",
+            "text": "That hit stings but does not settle the case.",
+        },
+        {
+            "actor_id": "e1",
+            "actor_role": "enemy",
+            "text": "Remote work erodes spontaneous collaboration.",
+        },
+    ]
+
+    msgs = orch._build_actor_messages(
+        player,
+        "remote work improves performance",
+        transcript,
+        {},
+        [],
+        {"e1": "Brute"},
+    )
+
+    assert "first answer the latest opposing claim" in msgs[0]["content"]
+    assert "Remote work erodes spontaneous collaboration" in msgs[1]["content"]
+    assert "That hit stings" not in msgs[1]["content"]
+
+
+def test_reaction_utterances_emit_damage_and_low_hp_lines() -> None:
+    party = _combatant("party", "p1", "Sage")
+    party.persona = {"tone": "earnest", "voice": "A clear team advocate."}
+    enemy = _combatant("enemy", "e1", "Brute")
+    enemy.hp = 20
+    enemy.persona = {"tone": "combative", "voice": "A wandering contrarian."}
+    verdicts = [{"actor_id": "p1", "target": "e1", "damage": 30}]
+
+    reactions = orch._reaction_utterances([party, enemy], verdicts, turn_no=4)
+
+    assert [r["reaction_state"] for r in reactions] == [
+        "deals_damage",
+        "takes_damage",
+        "enemy_low_hp",
+    ]
+    assert reactions[0]["actor_id"] == "p1"
+    assert reactions[1]["actor_id"] == "e1"
+    assert reactions[2]["actor_id"] == "p1"
+    assert all(r["skill_used"].startswith("reaction:") for r in reactions)
+    assert all(r["text"] for r in reactions)
 
 
 # --------------------------------------------------------------------------- #
@@ -425,6 +517,18 @@ def test_side_helper_defaults_from_role() -> None:
     assert orch._side_for(c) == "for"
 
 
+def test_simultaneous_ko_is_not_reported_as_party_win() -> None:
+    party = _combatant("party", "p1", "Sage")
+    enemy = _combatant("enemy", "e1", "Brute")
+    party.hp = 0
+    enemy.hp = 0
+
+    phase, capturable = orch._phase_for([party, enemy])
+
+    assert phase == "lost"
+    assert capturable == []
+
+
 def test_apply_round_damage_uses_autonomous_skill_power() -> None:
     party = _combatant("party", "p1", "Sage", "LOGOS")
     enemy = _combatant("enemy", "e1", "Brute", "LOGOS")
@@ -439,11 +543,164 @@ def test_apply_round_damage_uses_autonomous_skill_power() -> None:
                 "solid",
                 {},
                 {"attack_type": "LOGOS", "skill_mult": 2.0},
-            )
+            ),
+            (enemy, 40.0, "weak", {}, {"attack_type": "LOGOS", "skill_mult": 1.0}),
         ],
         momentum,
         topic="remote work",
     )
 
-    assert verdicts[0]["damage"] == 40
-    assert enemy.hp == 60
+    expected = round(
+        orch.compute_damage(
+            score=100.0,
+            attacker_type="LOGOS",
+            defender_type="LOGOS",
+            skill_mult=2.0,
+        )
+        * orch._battle_damage_multiplier()
+    )
+    assert verdicts[0]["damage"] == expected
+    assert verdicts[1]["damage"] == 0
+    assert enemy.hp == 100 - expected
+    assert party.hp == 100
+
+
+def test_apply_round_damage_only_enemy_winner_hits_party() -> None:
+    party = _combatant("party", "p1", "Sage", "LOGOS")
+    enemy = _combatant("enemy", "e1", "Brute", "LOGOS")
+    momentum = {"party": 1.0, "enemy": 1.0}
+
+    verdicts = orch._apply_round_damage(
+        [party, enemy],
+        [
+            (party, 68.0, "solid", {}, {"attack_type": "LOGOS", "skill_mult": 1.0}),
+            (enemy, 82.0, "strong", {}, {"attack_type": "LOGOS", "skill_mult": 1.0}),
+        ],
+        momentum,
+        topic="remote work",
+    )
+
+    assert verdicts[0]["damage"] == 0
+    assert verdicts[1]["damage"] > 0
+    assert party.hp < 100
+    assert enemy.hp == 100
+
+
+def test_apply_round_damage_tie_scores_no_one_hits() -> None:
+    party = _combatant("party", "p1", "Sage", "LOGOS")
+    enemy = _combatant("enemy", "e1", "Brute", "LOGOS")
+    momentum = {"party": 1.0, "enemy": 1.0}
+
+    verdicts = orch._apply_round_damage(
+        [party, enemy],
+        [
+            (party, 70.0, "solid", {}, {"attack_type": "LOGOS", "skill_mult": 1.0}),
+            (enemy, 70.0, "solid", {}, {"attack_type": "LOGOS", "skill_mult": 1.0}),
+        ],
+        momentum,
+        topic="remote work",
+    )
+
+    assert [v["damage"] for v in verdicts] == [0, 0]
+    assert party.hp == 100
+    assert enemy.hp == 100
+
+
+def test_cycle_damage_score_scales_with_judge_margin() -> None:
+    close = orch._cycle_damage_score("party", 70.0, {"party": [70.0], "enemy": [60.0]})
+    decisive = orch._cycle_damage_score("party", 90.0, {"party": [90.0], "enemy": [50.0]})
+
+    assert close == 80.0
+    assert decisive == 100.0
+
+
+def test_sanitize_strips_markdown_labels_and_caps_to_two_sentences() -> None:
+    raw = """**Against Remote Work**
+
+Claim: Remote work weakens spontaneous collaboration.
+Support: When teams lose fast hallway correction, decisions slow down.
+Rebuttal: Async tools help, but they do not replace live trust.
+"""
+
+    text = orch._sanitize(raw)
+
+    assert "**" not in text
+    assert "Claim:" not in text
+    assert "Support:" not in text
+    assert "Against Remote Work" not in text
+    assert text.count(".") == 2
+
+
+def test_sanitize_removes_meta_instruction_leaks() -> None:
+    raw = (
+        'The user wants me to open the debate as the FOR side supporting "Remote work". '
+        "I need to output exactly two plain sentences."
+    )
+
+    assert orch._sanitize(raw) == ""
+
+
+def test_sanitize_keeps_substantive_sentence_after_no_opponent_meta() -> None:
+    raw = (
+        "There is no opposing claim for me to answer yet. "
+        "Remote work improves team performance because quiet focus blocks let people finish deep work."
+    )
+
+    text = orch._sanitize(raw)
+
+    assert "no opposing claim" not in text.lower()
+    assert text.startswith("Remote work improves")
+
+
+async def test_meta_only_generation_falls_back_to_real_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_complete(messages, model=None, **kwargs):
+        return (
+            "The user wants me to open the debate as the FOR side. "
+            "I need to output exactly two plain sentences."
+        )
+
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+    player = _combatant("party", "p1", "Sage")
+    player.side = "for"
+
+    text, used_fallback, reason = await orch._generate_utterance_traced(
+        player,
+        "remote work improves performance",
+        [],
+        {},
+        [],
+        {"p1": "Sage"},
+    )
+
+    assert used_fallback is True
+    assert reason == "empty"
+    assert "FOR" in text
+    assert "remote work improves performance" in text
+
+
+async def test_generated_actor_turn_gets_second_sentence_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_complete(messages, model=None, **kwargs):
+        return "Remote work increases productivity by 4. 8% in controlled studies."
+
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+    player = _combatant("party", "p1", "Sage")
+    player.side = "for"
+
+    text, used_fallback, reason = await orch._generate_utterance_traced(
+        player,
+        "remote work improves performance",
+        [],
+        {},
+        [],
+        {"p1": "Sage"},
+    )
+
+    assert used_fallback is False
+    assert reason is None
+    assert "4.8%" in text
+    assert text.endswith("team throughput.")
+    assert "team throughput" in text

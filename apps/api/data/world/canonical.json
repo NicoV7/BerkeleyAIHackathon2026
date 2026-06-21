@@ -19,11 +19,11 @@
         "interior_kind": null,
         "interior_seed": null,
         "kind": "start",
-        "name": "Greenward Trailhead",
+        "name": "Aldermere Commons",
         "npc_anchors": [],
         "scripted": true,
-        "x": 80,
-        "y": 656
+        "x": 208,
+        "y": 563
       },
       {
         "interior_kind": "town",
@@ -53,23 +53,63 @@
             "name": "Captain Veyl",
             "npc_id": "aldermere_captain",
             "x": 208,
+            "y": 563
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Bram Cellarwatch",
+            "npc_id": "aldermere_cellar_guard",
+            "x": 206,
+            "y": 561
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Edda Willowward",
+            "npc_id": "aldermere_willow_warden",
+            "x": 210,
+            "y": 561
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Lysa Road-Eye",
+            "npc_id": "aldermere_road_scout",
+            "x": 205,
             "y": 562
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Pip of the Pump",
+            "npc_id": "aldermere_gossip",
+            "x": 211,
+            "y": 562
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Noll Greenacre",
+            "npc_id": "aldermere_farmer",
+            "x": 207,
+            "y": 558
           },
           {
             "archetype": "figure",
             "figure_id": "socrates",
             "name": "Socrates",
             "npc_id": "socrates_anchor",
-            "x": 206,
-            "y": 561
+            "x": 209,
+            "y": 558
           },
           {
             "archetype": "figure",
             "figure_id": "curie",
             "name": "Marie Curie",
             "npc_id": "curie_anchor",
-            "x": 210,
-            "y": 561
+            "x": 208,
+            "y": 557
           }
         ],
         "scripted": true,
@@ -107,14 +147,14 @@
         "y": 600
       },
       {
-        "interior_kind": "cave",
-        "interior_seed": 1729464496,
+        "interior_kind": "dungeon",
+        "interior_seed": 1729166532,
         "kind": "den",
-        "name": "Glassroot Cave",
+        "name": "Old Mill Cellar",
         "npc_anchors": [],
         "scripted": true,
-        "x": 464,
-        "y": 496
+        "x": 166,
+        "y": 532
       },
       {
         "interior_kind": "town",
@@ -139,12 +179,28 @@
             "y": 287
           },
           {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Reeve Anik",
+            "npc_id": "reedmarket_reeve",
+            "x": 256,
+            "y": 291
+          },
+          {
             "archetype": "villager",
             "figure_id": null,
             "name": "Nessa of the Reeds",
             "npc_id": "reedmarket_villager",
-            "x": 256,
-            "y": 290
+            "x": 254,
+            "y": 289
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Toma Netmaker",
+            "npc_id": "reedmarket_netmaker",
+            "x": 258,
+            "y": 289
           }
         ],
         "scripted": true,
@@ -174,12 +230,28 @@
             "y": 383
           },
           {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Foreman Pell",
+            "npc_id": "quarrycross_foreman",
+            "x": 608,
+            "y": 387
+          },
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Dessa Flintrest",
+            "npc_id": "quarrycross_mender",
+            "x": 606,
+            "y": 385
+          },
+          {
             "archetype": "figure",
             "figure_id": "mlk",
             "name": "Martin Luther King Jr.",
             "npc_id": "mlk_anchor",
-            "x": 608,
-            "y": 386
+            "x": 610,
+            "y": 385
           }
         ],
         "scripted": true,
@@ -288,6 +360,36 @@
       },
       {
         "interior_kind": "dungeon",
+        "interior_seed": 1729236628,
+        "kind": "den",
+        "name": "Willowdeep Shrine",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 236,
+        "y": 628
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729292552,
+        "kind": "den",
+        "name": "King's Road Catacomb",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 292,
+        "y": 552
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729464496,
+        "kind": "den",
+        "name": "Glassroot Cave",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 464,
+        "y": 496
+      },
+      {
+        "interior_kind": "dungeon",
         "interior_seed": 1729384192,
         "kind": "den",
         "name": "The Sunless Halls",
@@ -327,36 +429,6 @@
         "y": 160
       },
       {
-        "interior_kind": "cave",
-        "interior_seed": 1729680520,
-        "kind": "den",
-        "name": "Echoing Mine",
-        "npc_anchors": [],
-        "scripted": true,
-        "x": 680,
-        "y": 520
-      },
-      {
-        "interior_kind": "dungeon",
-        "interior_seed": 1729270430,
-        "kind": "den",
-        "name": "Redleaf Barrow",
-        "npc_anchors": [],
-        "scripted": true,
-        "x": 270,
-        "y": 430
-      },
-      {
-        "interior_kind": "dungeon",
-        "interior_seed": 1729900620,
-        "kind": "den",
-        "name": "Stormglass Spire",
-        "npc_anchors": [],
-        "scripted": true,
-        "x": 900,
-        "y": 620
-      },
-      {
         "interior_kind": "town",
         "interior_seed": 1729132792,
         "kind": "town",
@@ -379,12 +451,28 @@
             "y": 791
           },
           {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Watchman Cale",
+            "npc_id": "brightmill_watch",
+            "x": 132,
+            "y": 795
+          },
+          {
             "archetype": "villager",
             "figure_id": null,
             "name": "Ives the Listener",
             "npc_id": "brightmill_scholar",
-            "x": 132,
-            "y": 794
+            "x": 130,
+            "y": 793
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Ora Hearthloaf",
+            "npc_id": "brightmill_baker",
+            "x": 134,
+            "y": 793
           }
         ],
         "scripted": true,
@@ -419,7 +507,23 @@
             "name": "Warden Sol",
             "npc_id": "lakehaven_warden",
             "x": 360,
-            "y": 742
+            "y": 743
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Cera Keelhand",
+            "npc_id": "lakehaven_boatwright",
+            "x": 358,
+            "y": 741
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Sentinel Odrin",
+            "npc_id": "lakehaven_sentinel",
+            "x": 362,
+            "y": 741
           }
         ],
         "scripted": true,
@@ -454,7 +558,23 @@
             "name": "Orsik Coldpack",
             "npc_id": "northwatch_trader",
             "x": 656,
-            "y": 162
+            "y": 163
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Yara Beaconhand",
+            "npc_id": "northwatch_beacon",
+            "x": 654,
+            "y": 161
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Marshal Vonn",
+            "npc_id": "northwatch_marshal",
+            "x": 658,
+            "y": 161
           }
         ],
         "scripted": true,
@@ -489,7 +609,23 @@
             "name": "Tarn Deepcut",
             "npc_id": "ironroot_miner",
             "x": 824,
-            "y": 472
+            "y": 473
+          },
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Boro Underbeam",
+            "npc_id": "ironroot_innkeeper",
+            "x": 822,
+            "y": 471
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Pathfinder Keir",
+            "npc_id": "ironroot_pathfinder",
+            "x": 826,
+            "y": 471
           }
         ],
         "scripted": true,
@@ -524,12 +660,200 @@
             "name": "Archivist Fen",
             "npc_id": "starfall_archivist",
             "x": 760,
-            "y": 782
+            "y": 783
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Novice Mara",
+            "npc_id": "starfall_novice",
+            "x": 758,
+            "y": 781
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Sentinel Vael",
+            "npc_id": "starfall_sentinel",
+            "x": 762,
+            "y": 781
           }
         ],
         "scripted": true,
         "x": 760,
         "y": 780
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729088874,
+        "kind": "town",
+        "name": "Emberfen Ferry",
+        "npc_anchors": [
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Harl the Ferryman",
+            "npc_id": "emberfen_ferryman",
+            "x": 87,
+            "y": 874
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Watch-Captain Iri",
+            "npc_id": "emberfen_watch",
+            "x": 89,
+            "y": 873
+          },
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Sola Warmwater",
+            "npc_id": "emberfen_keeper",
+            "x": 88,
+            "y": 877
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Bex Reedcutter",
+            "npc_id": "emberfen_reedcutter",
+            "x": 86,
+            "y": 875
+          }
+        ],
+        "scripted": true,
+        "x": 88,
+        "y": 874
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729452846,
+        "kind": "town",
+        "name": "Mirror Orchard",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Enna Glassleaf",
+            "npc_id": "mirror_orchard_keeper",
+            "x": 451,
+            "y": 846
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Vintner Olan",
+            "npc_id": "mirror_orchard_grower",
+            "x": 453,
+            "y": 845
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Watcher Sel",
+            "npc_id": "mirror_orchard_watcher",
+            "x": 452,
+            "y": 849
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Tess of the Rows",
+            "npc_id": "mirror_orchard_child",
+            "x": 450,
+            "y": 847
+          }
+        ],
+        "scripted": true,
+        "x": 452,
+        "y": 846
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729574904,
+        "kind": "town",
+        "name": "Southwatch",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Moro Southgate",
+            "npc_id": "southwatch_keeper",
+            "x": 573,
+            "y": 904
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Kella Farpack",
+            "npc_id": "southwatch_trader",
+            "x": 575,
+            "y": 903
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Spear-Captain Jorn",
+            "npc_id": "southwatch_spear",
+            "x": 574,
+            "y": 907
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Pavi Lamplighter",
+            "npc_id": "southwatch_lamplighter",
+            "x": 572,
+            "y": 905
+          }
+        ],
+        "scripted": true,
+        "x": 574,
+        "y": 904
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729924424,
+        "kind": "town",
+        "name": "Stormroad Market",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Vera Stormporch",
+            "npc_id": "stormroad_host",
+            "x": 923,
+            "y": 424
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Quill Roadshare",
+            "npc_id": "stormroad_merchant",
+            "x": 925,
+            "y": 423
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Bailiff Orren",
+            "npc_id": "stormroad_bailiff",
+            "x": 924,
+            "y": 427
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Hask the Mason",
+            "npc_id": "stormroad_mason",
+            "x": 922,
+            "y": 425
+          }
+        ],
+        "scripted": true,
+        "x": 924,
+        "y": 424
       },
       {
         "interior_kind": null,
@@ -580,6 +904,36 @@
         "scripted": true,
         "x": 64,
         "y": 96
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729680520,
+        "kind": "den",
+        "name": "Echoing Mine",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 680,
+        "y": 520
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729270430,
+        "kind": "den",
+        "name": "Redleaf Barrow",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 270,
+        "y": 430
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729900620,
+        "kind": "den",
+        "name": "Stormglass Spire",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 900,
+        "y": 620
       },
       {
         "interior_kind": "dungeon",
@@ -847,11 +1201,11 @@
       "interior_kind": null,
       "interior_seed": null,
       "kind": "start",
-      "name": "Greenward Trailhead",
+      "name": "Aldermere Commons",
       "npc_anchors": [],
       "scripted": true,
-      "x": 80,
-      "y": 656
+      "x": 208,
+      "y": 563
     },
     "width": 1024
   }

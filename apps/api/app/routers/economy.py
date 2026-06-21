@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Item, ItemKind, PlayerInventory, Run, ShopStock
 from app.db.session import get_session
+from app.economy.catalog import DEFAULT_SHOP_NPC, upsert_shop
 from app.schemas import (
     BuyItemRequest,
     BuyItemResult,
@@ -83,6 +84,57 @@ async def _inventory_qty(session: AsyncSession, run_id: str, item_key: str) -> i
     )
     row = res.first()
     return int(row[0]) if row is not None else 0
+
+
+async def _shop_rows(session: AsyncSession, npc_id: str) -> list[tuple[ShopStock, Item]]:
+    """Return joined stock rows for a shop, ordered for stable UI display."""
+    res = await session.execute(
+        select(ShopStock, Item)
+        .join(Item, Item.key == ShopStock.item_key)
+        .where(ShopStock.npc_id == npc_id)
+        .order_by(Item.name)
+    )
+    return list(res.all())
+
+
+async def _materialize_default_shop_if_known(
+    session: AsyncSession, npc_id: str
+) -> bool:
+    """Seed default stock for a canonical merchant id on first visit."""
+    if not _is_known_merchant(npc_id):
+        return False
+    await upsert_shop(session, npc_id)
+    return True
+
+
+def _is_known_merchant(npc_id: str) -> bool:
+    """True when ``npc_id`` is the seed shop or a canonical merchant anchor."""
+    if npc_id == DEFAULT_SHOP_NPC:
+        return True
+    try:
+        from app.world import canonical as canonical_mod
+
+        specs = []
+        world = canonical_mod.get_canonical_world()
+        if world is not None:
+            specs.append(world.spec)
+        if canonical_mod.INTERIORS_DIR.exists():
+            for path in sorted(canonical_mod.INTERIORS_DIR.glob("*.json")):
+                parts = path.stem.split("_")
+                if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+                    continue
+                key = f"{parts[0]}:{parts[1]}:{parts[2]}"
+                interior = canonical_mod.get_canonical_interior(key)
+                if interior is not None:
+                    specs.append(interior.spec)
+        for spec in specs:
+            for poi in spec.pois:
+                for anchor in poi.npc_anchors:
+                    if anchor.npc_id == npc_id and anchor.archetype == "merchant":
+                        return True
+    except Exception:  # noqa: BLE001 - unknown ids simply are not shopkeepers
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -299,14 +351,10 @@ async def _apply_training(
 
 @router.get("/shop/{npc_id}", response_model=ShopState)
 async def get_shop(npc_id: str, session: Session) -> ShopState:
-    """Return an NPC's purchasable stock joined with catalog metadata."""
-    res = await session.execute(
-        select(ShopStock, Item)
-        .join(Item, Item.key == ShopStock.item_key)
-        .where(ShopStock.npc_id == npc_id)
-        .order_by(Item.name)
-    )
-    rows = res.all()
+    """Return an NPC's stock, lazily seeding known canonical merchants."""
+    rows = await _shop_rows(session, npc_id)
+    if not rows and await _materialize_default_shop_if_known(session, npc_id):
+        rows = await _shop_rows(session, npc_id)
     if not rows:
         raise HTTPException(status_code=404, detail="Shop not found")
     items = [
@@ -349,6 +397,13 @@ async def buy_item(
         )
     )
     stock = res.scalars().first()
+    if stock is None and await _materialize_default_shop_if_known(session, npc_id):
+        res = await session.execute(
+            select(ShopStock).where(
+                ShopStock.npc_id == npc_id, ShopStock.item_key == body.item_key
+            )
+        )
+        stock = res.scalars().first()
     if stock is None:
         raise HTTPException(status_code=404, detail="Item not sold here")
     cost = int(stock.price) * n

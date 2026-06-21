@@ -148,42 +148,42 @@ TYPE_DOMAINS: dict[str, dict[str, Any]] = {
             "The domain of logic and evidence. LOGOS debaters win with facts, "
             "tight reasoning, data, and structural rigour."
         ),
-        "signature_skills": ["Logical Thrust", "Steel Man"],
+        "signature_skills": ["Contradiction Ledger", "Evidence Echo"],
     },
     "PATHOS": {
         "description": (
             "The domain of emotion and story. PATHOS debaters move the audience "
             "with vivid human stakes, empathy, and felt consequence."
         ),
-        "signature_skills": ["Emotional Appeal", "Anecdote"],
+        "signature_skills": ["Wound Callback", "Empathy Mirror"],
     },
     "ETHOS": {
         "description": (
             "The domain of credibility and authority. ETHOS debaters borrow trust "
             "from expertise, institutions, and earned standing."
         ),
-        "signature_skills": ["Authority Cite", "Credential Drop"],
+        "signature_skills": ["Reputation Crosscheck", "Authority Reversal"],
     },
     "CHAOS": {
         "description": (
             "The domain of disruption and reframing. CHAOS debaters refuse the "
             "given frame, flip premises, and scramble the opponent's line."
         ),
-        "signature_skills": ["Reframe Attack", "Whataboutism"],
+        "signature_skills": ["Pattern Break", "Hypocrisy Hook"],
     },
     "SOCRATIC": {
         "description": (
             "The domain of questioning. SOCRATIC debaters win by asking precise "
             "questions that expose gaps and lead opponents to concede."
         ),
-        "signature_skills": ["Socratic Probe", "Leading Question"],
+        "signature_skills": ["Memory Trap", "Premise Recall"],
     },
     "RHETORIC": {
         "description": (
             "The domain of style and framing. RHETORIC debaters persuade with "
             "memorable phrasing, vivid analogy, and rhythmic force."
         ),
-        "signature_skills": ["Rhetorical Flourish", "Analogy Strike"],
+        "signature_skills": ["Callback Crescendo", "Phrase Reversal"],
     },
 }
 

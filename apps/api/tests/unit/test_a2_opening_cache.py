@@ -136,3 +136,36 @@ async def test_unknown_theme_falls_back_to_full_catalog(
     assert generated == len(all_topics)
     # A specific topic is now warm regardless of the bogus theme name.
     assert await mz.get_cached_opening(all_topics[0]) is not None
+
+
+async def test_opening_generation_uses_battle_output_sanitizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_complete(messages, model=None, **k):
+        return (
+            "The prompt asks me to argue against the topic. "
+            "Remote work weakens coordination because urgent context gets trapped in private chats. "
+            "Office teams solve ambiguous issues faster."
+        )
+
+    monkeypatch.setattr(mz.gateway, "complete", fake_complete)
+
+    text = await mz._generate_opening("Remote work improves team performance.", None)
+
+    assert "prompt asks" not in text.lower()
+    assert text.startswith("Remote work weakens coordination")
+    assert text.count(".") == 2
+
+
+async def test_opening_fallback_strips_topic_punctuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_complete(messages, model=None, **k):
+        return "The user wants me to output exactly two plain sentences."
+
+    monkeypatch.setattr(mz.gateway, "complete", fake_complete)
+
+    text = await mz._generate_opening("Remote work improves team performance.", None)
+
+    assert ".:" not in text
+    assert "AGAINST Remote work improves team performance:" in text

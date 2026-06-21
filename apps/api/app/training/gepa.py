@@ -231,7 +231,7 @@ async def _critique(
     convo = "\n".join(
         f"{u['actor_role'].upper()}: {u['text']}"
         for u in transcript
-        if u.get("actor_role") != "judge"
+        if u.get("actor_role") != "judge" and not u.get("reaction_state")
     )[:2000]
     prompt = (
         f"A debater performed weakly on the topic: {topic}\n\n"

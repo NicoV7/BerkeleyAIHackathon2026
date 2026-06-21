@@ -13,6 +13,7 @@ Public surface (stable — Wave 1 builds on this):
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -20,6 +21,7 @@ import httpx
 
 from app.config import settings
 from app.gateway.models import ModelRef, resolve
+from app.gateway import pareto
 
 Message = dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
 
@@ -74,6 +76,10 @@ class LLMGateway:
         settings.llm_call_timeout_s, then the legacy ceiling. A stuck call raises
         (httpx timeout) instead of hanging — callers fall back to templated text.
         """
+        if model in {"pareto", "pareto-actor", "pareto-judge"}:
+            return await self._complete_pareto(
+                messages, model, temperature, max_tokens, json_mode, timeout
+            )
         tmo = _resolve_timeout(timeout)
         ref = resolve(model)
         if ref.provider == "ollama":
@@ -82,6 +88,14 @@ class LLMGateway:
             return await self._anthropic_complete(ref, messages, temperature, max_tokens, tmo)
         if ref.provider == "openai":
             return await self._openai_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
+        if ref.provider == "groq":
+            return await self._groq_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
+        if ref.provider == "cerebras":
+            return await self._cerebras_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
+        if ref.provider == "gemini":
+            return await self._gemini_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
+        if ref.provider == "openrouter":
+            return await self._openrouter_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
         raise ValueError(f"Unknown provider: {ref.provider}")
 
     async def stream(
@@ -91,6 +105,11 @@ class LLMGateway:
         temperature: float = 0.7,
         max_tokens: int = 512,
     ) -> AsyncIterator[str]:
+        if model in {"pareto", "pareto-actor", "pareto-judge"}:
+            role = pareto.JUDGE_ROLE if model == "pareto-judge" else pareto.ACTOR_ROLE
+            async for chunk in self._stream_pareto(messages, role, temperature, max_tokens):
+                yield chunk
+            return
         ref = resolve(model)
         if ref.provider == "ollama":
             async for chunk in self._ollama_stream(ref, messages, temperature, max_tokens):
@@ -98,9 +117,12 @@ class LLMGateway:
         elif ref.provider == "openai":
             async for chunk in self._openai_stream(ref, messages, temperature, max_tokens):
                 yield chunk
+        elif ref.provider in {"groq", "cerebras", "openrouter"}:
+            async for chunk in self._openai_compat_stream(ref, messages, temperature, max_tokens):
+                yield chunk
         else:
-            # Anthropic streaming omitted for Wave 0 brevity — fall back to a
-            # single completion yielded as one chunk.
+            # Anthropic/Gemini streaming omitted for now — fall back to a single
+            # completion yielded as one chunk.
             yield await self.complete(messages, model, temperature, max_tokens)
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
@@ -143,6 +165,52 @@ class LLMGateway:
         r = await self._post(f"{settings.ollama_base_url}/api/chat", payload, timeout)
         r.raise_for_status()
         return r.json()["message"]["content"]
+
+    async def _complete_pareto(
+        self,
+        messages: list[Message],
+        model: str | None,
+        temperature: float,
+        max_tokens: int,
+        json_mode: bool,
+        timeout: float | None,
+    ) -> str:
+        role = pareto.JUDGE_ROLE if model == "pareto-judge" or json_mode else pareto.ACTOR_ROLE
+        last_error: Exception | None = None
+        for candidate in pareto.fallback_order(role, json_mode=json_mode):
+            try:
+                return await self.complete(
+                    messages, model=candidate, temperature=temperature,
+                    max_tokens=max_tokens, json_mode=json_mode, timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"No configured model candidates for {role}")
+
+    async def _stream_pareto(
+        self,
+        messages: list[Message],
+        role: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        last_error: Exception | None = None
+        for candidate in pareto.fallback_order(role, json_mode=role == pareto.JUDGE_ROLE):
+            try:
+                async for chunk in self.stream(
+                    messages, model=candidate, temperature=temperature, max_tokens=max_tokens
+                ):
+                    yield chunk
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"No configured streaming candidates for {role}")
 
     async def _post(self, url: str, payload: dict[str, Any], timeout: httpx.Timeout | None):
         """POST that forwards a per-call timeout when one was resolved. Kept tiny
@@ -246,9 +314,105 @@ class LLMGateway:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
+    # ---- Hosted OpenAI-compatible providers ----
+
+    async def _groq_complete(
+        self, ref: ModelRef, messages: list[Message], temperature: float,
+        max_tokens: int, json_mode: bool, timeout: httpx.Timeout | None = None,
+    ) -> str:
+        return await self._openai_compat_complete(
+            ref, settings.groq_base_url, self._api_key("groq"),
+            messages, temperature, max_tokens, json_mode, timeout,
+        )
+
+    async def _cerebras_complete(
+        self, ref: ModelRef, messages: list[Message], temperature: float,
+        max_tokens: int, json_mode: bool, timeout: httpx.Timeout | None = None,
+    ) -> str:
+        return await self._openai_compat_complete(
+            ref, settings.cerebras_base_url, self._api_key("cerebras"),
+            messages, temperature, max_tokens, json_mode, timeout,
+        )
+
+    async def _openrouter_complete(
+        self, ref: ModelRef, messages: list[Message], temperature: float,
+        max_tokens: int, json_mode: bool, timeout: httpx.Timeout | None = None,
+    ) -> str:
+        return await self._openai_compat_complete(
+            ref, settings.openrouter_base_url, self._api_key("openrouter"),
+            messages, temperature, max_tokens, json_mode, timeout,
+        )
+
+    async def _openai_compat_complete(
+        self, ref: ModelRef, base_url: str, api_key: str, messages: list[Message],
+        temperature: float, max_tokens: int, json_mode: bool,
+        timeout: httpx.Timeout | None = None,
+    ) -> str:
+        body: dict[str, Any] = {
+            "model": ref.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        kwargs = {
+            "headers": {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            "json": body,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            r = await self._client.post(f"{base_url.rstrip('/')}/chat/completions", **kwargs)
+        except TypeError:
+            kwargs.pop("timeout", None)
+            r = await self._client.post(f"{base_url.rstrip('/')}/chat/completions", **kwargs)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+    # ---- Gemini ----
+
+    async def _gemini_complete(
+        self, ref: ModelRef, messages: list[Message], temperature: float,
+        max_tokens: int, json_mode: bool, timeout: httpx.Timeout | None = None,
+    ) -> str:
+        api_key = self._api_key("gemini")
+        url = f"{settings.gemini_base_url.rstrip('/')}/models/{ref.model}:generateContent"
+        body: dict[str, Any] = {
+            "contents": [{"parts": [{"text": _flatten_messages(messages)}]}],
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+            },
+        }
+        if json_mode:
+            body["generationConfig"]["responseMimeType"] = "application/json"
+        kwargs: dict[str, Any] = {"params": {"key": api_key}, "json": body}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            r = await self._client.post(url, **kwargs)
+        except TypeError:
+            kwargs.pop("timeout", None)
+            r = await self._client.post(f"{url}?key={api_key}", json=body)
+        r.raise_for_status()
+        candidates = r.json().get("candidates") or []
+        parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+        return "".join(p.get("text", "") for p in parts)
+
     async def _openai_stream(
         self, ref: ModelRef, messages: list[Message], temperature: float, max_tokens: int,
     ) -> AsyncIterator[str]:
+        async for chunk in self._openai_compat_stream(ref, messages, temperature, max_tokens):
+            yield chunk
+
+    async def _openai_compat_stream(
+        self, ref: ModelRef, messages: list[Message], temperature: float, max_tokens: int,
+    ) -> AsyncIterator[str]:
+        base_url, api_key = self._chat_base_and_key(ref.provider)
         body = {
             "model": ref.model,
             "messages": messages,
@@ -258,8 +422,8 @@ class LLMGateway:
         }
         async with self._client.stream(
             "POST",
-            f"{settings.openai_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         ) as resp:
             resp.raise_for_status()
@@ -272,6 +436,31 @@ class LLMGateway:
                 delta = json.loads(data)["choices"][0]["delta"].get("content")
                 if delta:
                     yield delta
+
+    def _chat_base_and_key(self, provider: str) -> tuple[str, str]:
+        if provider == "openai":
+            return settings.openai_base_url, settings.openai_api_key
+        if provider == "groq":
+            return settings.groq_base_url, self._api_key("groq")
+        if provider == "cerebras":
+            return settings.cerebras_base_url, self._api_key("cerebras")
+        if provider == "openrouter":
+            return settings.openrouter_base_url, self._api_key("openrouter")
+        raise ValueError(f"Provider {provider} is not OpenAI-compatible")
+
+    def _api_key(self, provider: str) -> str:
+        key = getattr(settings, f"{provider}_api_key", "") or os.environ.get(
+            f"{provider.upper()}_API_KEY", ""
+        )
+        if not key:
+            raise RuntimeError(
+                f"{provider} model requested but {provider.upper()}_API_KEY is not set."
+            )
+        return key
+
+
+def _flatten_messages(messages: list[Message]) -> str:
+    return "\n\n".join(f"{m.get('role', 'user').title()}: {m.get('content', '')}" for m in messages)
 
 
 # Singleton used across the app.

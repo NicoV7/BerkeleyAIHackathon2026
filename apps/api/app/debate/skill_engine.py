@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 try:  # type/domain registry lives with the archetypes (single source of truth)
     from app.party.archetypes import TYPE_DOMAINS, domain_for_type
@@ -43,10 +44,11 @@ except Exception:  # noqa: BLE001 — never let an import problem break the engi
 #: Directory holding the per-move ``.md`` files (sibling ``app/skills``).
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
-#: slug -> instruction text (front-matter stripped). Populated lazily, once.
-_CACHE: dict[str, str] | None = None
+#: slug -> parsed skill metadata + prompt body. Populated lazily, once.
+_SPEC_CACHE: dict[str, dict[str, Any]] | None = None
 
-#: slug -> parsed MP cost (front-matter ``mp_cost``; 0 when absent). Gacha wave.
+#: Back-compat caches for the original public helpers.
+_CACHE: dict[str, str] | None = None
 _COST_CACHE: dict[str, int] | None = None
 
 
@@ -81,31 +83,161 @@ def _strip_front_matter(text: str) -> str:
     return _split_front_matter(text)[1]
 
 
-# Match ``mp_cost: <int>`` on its own front-matter line. Tolerates whitespace
-# and integer-only values (the rest of the front matter is ignored).
-_MP_COST_RE = re.compile(r"^\s*mp_cost\s*:\s*(-?\d+)\s*$", re.MULTILINE)
+_VALID_EFFECT_KINDS = {
+    "agent_argument",
+    "prompt_augment",
+    "defense",
+    "status",
+    "intel_preview",
+    "judge_sway",
+}
+
+_VALID_RARITIES = {"common", "rare", "legendary"}
 
 
-def _parse_mp_cost(front_matter: str) -> int:
-    """Pull ``mp_cost`` out of the raw front matter; default 0, never raise."""
-    if not front_matter:
-        return 0
-    m = _MP_COST_RE.search(front_matter)
-    if not m:
-        return 0
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _parse_float(value: Any, default: float = 0.0) -> float:
     try:
-        return max(0, int(m.group(1)))
+        return float(value)
     except (TypeError, ValueError):
-        return 0
+        return default
+
+
+def _parse_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_front_matter(front_matter: str) -> dict[str, str]:
+    """Parse the simple scalar frontmatter shape used by battle skill files."""
+    out: dict[str, str] = {}
+    for raw in (front_matter or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key:
+            out[key] = value
+    return out
+
+
+def _parse_modifiers(front: dict[str, str]) -> dict[str, Any]:
+    """Return effect modifiers from a compact ``modifiers`` string plus aliases.
+
+    The catalog intentionally avoids a YAML dependency. Authors can write
+    ``modifiers: damage_mult=1.2,score_delta=4`` and common top-level aliases
+    such as ``score_delta`` or ``enemy_sentence_limit`` are folded in too.
+    """
+    modifiers: dict[str, Any] = {}
+    raw = front.get("modifiers", "")
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            modifiers[key] = _coerce_modifier_value(value)
+    for key in (
+        "damage_mult",
+        "score_delta",
+        "defense_mult",
+        "enemy_sentence_limit",
+        "enemy_max_tokens",
+        "prompt_bonus",
+        "judge_reason",
+        "angle",
+    ):
+        if key in front and key not in modifiers:
+            modifiers[key] = _coerce_modifier_value(front[key])
+    return modifiers
+
+
+def _coerce_modifier_value(value: str) -> Any:
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if re.fullmatch(r"-?\d+\.\d+", value):
+        return float(value)
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    return value.strip("\"'")
+
+
+def _body_summary(body: str) -> str:
+    """Extract a compact UI description from a skill body when none is declared."""
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        if line.startswith("**Move type") or line.startswith("**Cost"):
+            continue
+        return line[:180]
+    return ""
+
+
+def _spec_from_file(path: Path, raw: str) -> tuple[str, dict[str, Any]] | None:
+    front_raw, body = _split_front_matter(raw)
+    if not body:
+        return None
+    front = _parse_front_matter(front_raw)
+    name = front.get("name") or path.stem.replace("_", " ").title()
+    slug = slugify(name) or path.stem.lower()
+    effect_kind = str(front.get("effect_kind") or front.get("special") or "agent_argument")
+    if effect_kind == "redis_memory_attack":
+        effect_kind = "agent_argument"
+    if effect_kind == "redis_peek":
+        effect_kind = "agent_argument"
+    if effect_kind not in _VALID_EFFECT_KINDS:
+        effect_kind = "agent_argument"
+    rarity = str(front.get("rarity") or "common").lower()
+    if rarity not in _VALID_RARITIES:
+        rarity = "common"
+    spec = {
+        "id": slug,
+        "slug": slug,
+        "name": name,
+        "type": str(front.get("type") or front.get("domain") or "").upper(),
+        "domain": str(front.get("domain") or front.get("type") or "").upper(),
+        "power": _parse_float(front.get("power"), 1.0),
+        "description": front.get("description") or _body_summary(body),
+        "prompt_fragment": body,
+        "mp_cost": max(0, _parse_int(front.get("mp_cost"), 0)),
+        "cost": max(0, _parse_int(front.get("mp_cost"), 0)),
+        "effect_kind": effect_kind,
+        "target": str(front.get("target") or "enemy"),
+        "duration_turns": max(0, _parse_int(front.get("duration_turns"), 0)),
+        "requires_prompt": _parse_bool(
+            front.get("requires_prompt"),
+            default=effect_kind in {"prompt_augment", "judge_sway", "defense", "status"},
+        ),
+        "rarity": rarity,
+        "modifiers": _parse_modifiers(front),
+    }
+    return slug, spec
 
 
 def _load_caches() -> tuple[dict[str, str], dict[str, int]]:
-    """Read every ``app/skills/*.md`` once; cache slug -> body AND slug -> cost."""
-    global _CACHE, _COST_CACHE
-    if _CACHE is not None and _COST_CACHE is not None:
+    """Read every ``app/skills/*.md`` once; cache specs, bodies, and costs."""
+    global _CACHE, _COST_CACHE, _SPEC_CACHE
+    if _CACHE is not None and _COST_CACHE is not None and _SPEC_CACHE is not None:
         return _CACHE, _COST_CACHE
     body_cache: dict[str, str] = {}
     cost_cache: dict[str, int] = {}
+    spec_cache: dict[str, dict[str, Any]] = {}
     try:
         if _SKILLS_DIR.is_dir():
             for path in sorted(_SKILLS_DIR.glob("*.md")):
@@ -113,16 +245,20 @@ def _load_caches() -> tuple[dict[str, str], dict[str, int]]:
                     raw = path.read_text(encoding="utf-8")
                 except Exception:  # noqa: BLE001 — skip unreadable file, keep going
                     continue
-                front, body = _split_front_matter(raw)
-                slug = path.stem.lower()
-                if body:
-                    body_cache[slug] = body
-                cost_cache[slug] = _parse_mp_cost(front)
+                parsed = _spec_from_file(path, raw)
+                if parsed is None:
+                    continue
+                slug, spec = parsed
+                body_cache[slug] = str(spec.get("prompt_fragment") or "")
+                cost_cache[slug] = int(spec.get("mp_cost", 0) or 0)
+                spec_cache[slug] = spec
     except Exception:  # noqa: BLE001 — directory iteration failure -> empty caches
         body_cache = {}
         cost_cache = {}
+        spec_cache = {}
     _CACHE = body_cache
     _COST_CACHE = cost_cache
+    _SPEC_CACHE = spec_cache
     return _CACHE, _COST_CACHE
 
 
@@ -133,9 +269,10 @@ def _load_cache() -> dict[str, str]:
 
 def reload_skills() -> None:
     """Drop the caches so the next call re-reads the ``.md`` files (tests/dev)."""
-    global _CACHE, _COST_CACHE
+    global _CACHE, _COST_CACHE, _SPEC_CACHE
     _CACHE = None
     _COST_CACHE = None
+    _SPEC_CACHE = None
 
 
 def _generic_type_instruction(attacker_type: str | None) -> str:
@@ -219,3 +356,39 @@ def skill_costs() -> dict[str, int]:
         return dict(costs)
     except Exception:  # noqa: BLE001 — never raise
         return {}
+
+
+def skill_metadata(skill_name: str | None) -> dict[str, Any]:
+    """Return a copy of one skill's parsed catalog metadata, or ``{}``.
+
+    The returned dict is safe for callers to mutate. It is intentionally flat and
+    JSON-serializable so it can be stored directly on ``Monster.skills``.
+    """
+    try:
+        slug = slugify(skill_name)
+        if not slug:
+            return {}
+        _load_caches()
+        spec = (_SPEC_CACHE or {}).get(slug)
+        if not spec:
+            return {}
+        return dict(spec)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def skill_catalog() -> list[dict[str, Any]]:
+    """Return the full battle skill catalog parsed from ``app/skills/*.md``."""
+    try:
+        _load_caches()
+        return [dict(s) for s in (_SPEC_CACHE or {}).values()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def skills_for_type(debate_type: Any) -> list[dict[str, Any]]:
+    """Return catalog skills whose ``type`` matches a DebateType or string."""
+    key = str(getattr(debate_type, "value", debate_type) or "").upper()
+    if not key:
+        return []
+    return [s for s in skill_catalog() if str(s.get("type", "")).upper() == key]

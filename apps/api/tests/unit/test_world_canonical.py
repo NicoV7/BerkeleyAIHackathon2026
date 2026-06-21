@@ -48,8 +48,8 @@ def _make_run(seed: int = 1729):
         debate_topic="Should canonical worlds replace procgen?",
         theme=None,
         seed=seed,
-        player_x=80,
-        player_y=656,
+        player_x=208,
+        player_y=563,
         status=RunStatus.active,
     )
 
@@ -97,10 +97,27 @@ def test_canonical_world_is_expansive_and_explorable():
     assert sum(1 for poi in spec.pois if poi.kind == "landmark") >= 18
 
     anchors = [anchor for poi in spec.pois for anchor in poi.npc_anchors]
-    assert len(anchors) >= 10
+    assert len(anchors) >= 150
     assert any(anchor.archetype == "merchant" for anchor in anchors)
     assert any(anchor.archetype == "quest_giver" for anchor in anchors)
     assert any(anchor.archetype == "figure" for anchor in anchors)
+    assert all(len(poi.npc_anchors) >= 12 for poi in spec.pois if poi.kind == "town")
+
+    assert spec.start is not None and spec.start.name == "Aldermere Commons"
+    starter_village = min(
+        (poi for poi in spec.pois if poi.kind == "town"),
+        key=lambda poi: math.hypot(poi.x - spec.start.x, poi.y - spec.start.y),
+    )
+    assert starter_village.name == "Aldermere Village"
+    assert math.hypot(starter_village.x - spec.start.x, starter_village.y - spec.start.y) <= 4
+    assert len(starter_village.npc_anchors) >= 24
+    assert sum(1 for anchor in starter_village.npc_anchors if anchor.archetype == "quest_giver") >= 3
+
+    nearby_dungeons = [
+        poi for poi in spec.pois
+        if poi.kind == "den" and math.hypot(poi.x - spec.start.x, poi.y - spec.start.y) <= 90
+    ]
+    assert len(nearby_dungeons) >= 3
 
     tile_values: set[int] = set()
     for y in range(0, spec.height, 128):
@@ -109,7 +126,7 @@ def test_canonical_world_is_expansive_and_explorable():
             assert window is not None
             tile_values.update(tile for row in window for tile in row)
     assert {3, 5, 6, 7, 8, 9}.issubset(tile_values)
-    assert spec.start is not None and spec.goal is not None
+    assert spec.goal is not None
     blocked = {1, 6, 7}
     assert canonical_mod.get_canonical_tile(spec.start.x, spec.start.y) not in blocked
     assert canonical_mod.get_canonical_tile(spec.goal.x, spec.goal.y) not in blocked
@@ -172,12 +189,7 @@ async def test_get_world_returns_canonical_when_present():
     out = await world_router.get_world("run-id", _FakeSession(_make_run(seed=42)))
     canon = canonical_mod.get_canonical_world()
     assert canon is not None
-    # /world additively injects a signpost ("waypost") near each town; strip those
-    # before comparing the rest to the canonical spec.
-    out_core = out.model_copy(update={"pois": [p for p in out.pois if p.kind != "waypost"]})
-    assert out_core.model_dump() == canon.spec.model_dump()
-    # And it injected at least one waypost (one per town).
-    assert any(p.kind == "waypost" for p in out.pois)
+    assert out.model_dump() == world_router.with_wayposts(canon.spec).model_dump()
 
 
 async def test_get_world_falls_back_to_procgen_when_canonical_missing(monkeypatch):
@@ -194,11 +206,13 @@ async def test_get_map_returns_chunked_canonical_window():
     """The map route pages nearby terrain instead of returning the whole world."""
     from app.routers import map as map_router
 
+    assert map_router.WILD_COUNT == 64
+
     out = await map_router.get_map(
         "run-id",
         _FakeSession(_make_run(seed=42)),
-        center_x=80,
-        center_y=656,
+        center_x=208,
+        center_y=563,
         chunk_size=96,
     )
 
@@ -210,7 +224,6 @@ async def test_get_map_returns_chunked_canonical_window():
     assert all(len(row) == 96 for row in out.tiles)
     assert 0 <= out.origin_x <= out.player_x <= out.origin_x + out.width
     assert 0 <= out.origin_y <= out.player_y <= out.origin_y + out.height
-
 
 async def test_get_map_recenters_after_invalid_persisted_player_tile():
     """A snapped player position must be inside the returned chunk window."""
@@ -249,7 +262,6 @@ def test_spawn_tile_prefers_starter_village():
     assert map_router._spawn_tile_for(1729) == (starter_village.x, starter_village.y)
 
 
-
 # --------------------------------------------------------------------------- #
 # /interior route — canonical interior wins when the key matches
 # --------------------------------------------------------------------------- #
@@ -266,6 +278,8 @@ async def test_get_interior_returns_canonical_for_known_key():
     # The first region carries the curated lore.
     assert out.regions[0].lore is not None
     assert "innkeeper" in (out.regions[0].lore or "").lower() or out.regions[0].name
+    anchors = [anchor for poi in out.pois for anchor in poi.npc_anchors]
+    assert len(anchors) >= 24
 
 
 async def test_get_interior_falls_back_when_canonical_key_unknown(monkeypatch):
@@ -285,9 +299,6 @@ async def test_get_interior_falls_back_when_canonical_key_unknown(monkeypatch):
 
 def test_bake_then_load_is_deterministic(tmp_path, monkeypatch):
     """Bake the artifact twice; the second load should match the first byte-for-byte."""
-    from pathlib import Path
-
-    src_canon = canonical_mod.CANONICAL_PATH
     # Snapshot the current artifact, then re-load via the loader twice with
     # cache resets, verifying byte-identical specs both times.
     first = canonical_mod.get_canonical_world()

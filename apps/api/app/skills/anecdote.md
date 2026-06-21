@@ -4,6 +4,12 @@ type: PATHOS
 power: 0.8
 domain: PATHOS
 mp_cost: 15
+effect_kind: agent_argument
+target: enemy
+duration_turns: 0
+requires_prompt: false
+rarity: common
+modifiers: damage_mult=1.0
 ---
 
 # Anecdote

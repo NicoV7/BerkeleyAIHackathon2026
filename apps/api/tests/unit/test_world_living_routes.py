@@ -64,6 +64,13 @@ class _Dialogue:
     cache_key = "npctalk:test"
 
 
+ALDERMERE_NEARBY_DUNGEONS = {
+    "den:166:532",
+    "den:236:628",
+    "den:292:552",
+}
+
+
 def _run(seed: int = 1729):
     from app.db.models import Run, RunStatus
 
@@ -166,27 +173,130 @@ async def test_accept_quest_uses_canonical_dungeon_candidates(
 ) -> None:
     out = await world_router.accept_quest(
         "living-route-run",
-        world_router.QuestAcceptRequest(npc_id="town_208_560__1"),
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
         _FakeSession(_run()),
     )
 
     quest = out["quest"]
     assert quest["objective"] == "clear_dungeon"
-    assert quest["target"] in {
-        "den:112:160",
-        "den:160:480",
-        "den:270:430",
-        "den:384:192",
-        "den:464:496",
-        "den:566:620",
-        "den:680:520",
-        "den:700:76",
-        "den:784:320",
-        "den:848:128",
-        "den:900:620",
-        "den:912:112",
-    }
+    assert quest["target"] in ALDERMERE_NEARBY_DUNGEONS
     assert "Clear" in quest["title"]
+
+
+async def test_aldermere_quest_givers_spread_nearby_dungeon_targets(
+    fake_redis: _FakeRedis,
+) -> None:
+    targets = set()
+    for npc_id in ("town_208_560__2", "town_208_560__3", "town_208_560__4"):
+        out = await world_router.accept_quest(
+            "living-route-run",
+            world_router.QuestAcceptRequest(npc_id=npc_id),
+            _FakeSession(_run()),
+        )
+        targets.add(out["quest"]["target"])
+
+    assert targets <= ALDERMERE_NEARBY_DUNGEONS
+    assert len(targets) >= 2
+
+
+async def test_accept_quest_rejects_merchants(fake_redis: _FakeRedis) -> None:
+    with pytest.raises(HTTPException) as err:
+        await world_router.accept_quest(
+            "living-route-run",
+            world_router.QuestAcceptRequest(npc_id="town_208_560__1"),
+            _FakeSession(_run()),
+        )
+
+    assert err.value.status_code == 409
+
+
+async def test_accept_quest_skips_cleared_nearby_dungeons(
+    fake_redis: _FakeRedis,
+) -> None:
+    await event_log.append("living-route-run", "dungeon_cleared", poi="den:166:532")
+    await event_log.append("living-route-run", "dungeon_cleared", poi="den:236:628")
+
+    out = await world_router.accept_quest(
+        "living-route-run",
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
+        _FakeSession(_run()),
+    )
+
+    assert out["quest"]["target"] == "den:292:552"
+
+
+async def test_accept_quest_returns_none_when_nearby_pool_is_exhausted(
+    fake_redis: _FakeRedis,
+) -> None:
+    for target in ALDERMERE_NEARBY_DUNGEONS:
+        await event_log.append("living-route-run", "dungeon_cleared", poi=target)
+
+    out = await world_router.accept_quest(
+        "living-route-run",
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
+        _FakeSession(_run()),
+    )
+
+    assert out["quest"] is None
+
+
+async def test_available_quests_marks_active_and_available_quest_givers(
+    fake_redis: _FakeRedis,
+) -> None:
+    accepted = await world_router.accept_quest(
+        "living-route-run",
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
+        _FakeSession(_run()),
+    )
+
+    out = await world_router.list_available_quest_offers(
+        "living-route-run", _FakeSession(_run())
+    )
+    offers = {offer["npc_id"]: offer for offer in out["offers"]}
+
+    assert offers["town_208_560__2"]["status"] == "active"
+    assert offers["town_208_560__2"]["quest_id"] == accepted["quest"]["quest_id"]
+    assert offers["town_208_560__3"]["status"] == "available"
+    assert "town_208_560__1" not in offers
+
+
+async def test_available_quests_excludes_exhausted_quest_givers(
+    fake_redis: _FakeRedis,
+) -> None:
+    for target in ALDERMERE_NEARBY_DUNGEONS:
+        await event_log.append("living-route-run", "dungeon_cleared", poi=target)
+
+    out = await world_router.list_available_quest_offers(
+        "living-route-run", _FakeSession(_run())
+    )
+    offers = {offer["npc_id"]: offer for offer in out["offers"]}
+
+    assert "town_208_560__2" not in offers
+
+
+async def test_clearing_active_target_removes_that_target_from_future_offers(
+    fake_redis: _FakeRedis,
+) -> None:
+    accepted = await world_router.accept_quest(
+        "living-route-run",
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
+        _FakeSession(_run()),
+    )
+    target = accepted["quest"]["target"]
+
+    await world_router.append_world_event(
+        "living-route-run",
+        world_router.WorldEventRequest(kind="dungeon_cleared", data={"poi": target}),
+        _FakeSession(_run()),
+    )
+    out = await world_router.accept_quest(
+        "living-route-run",
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
+        _FakeSession(_run()),
+    )
+
+    assert out["quest"] is not None
+    assert out["quest"]["target"] != target
 
 
 async def test_world_event_completion_updates_quest_status(
@@ -194,7 +304,7 @@ async def test_world_event_completion_updates_quest_status(
 ) -> None:
     accepted = await world_router.accept_quest(
         "living-route-run",
-        world_router.QuestAcceptRequest(npc_id="town_208_560__1"),
+        world_router.QuestAcceptRequest(npc_id="town_208_560__2"),
         _FakeSession(_run()),
     )
     target = accepted["quest"]["target"]

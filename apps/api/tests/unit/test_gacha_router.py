@@ -219,6 +219,9 @@ def test_pull_creates_monster_with_persona_defaults(monkeypatch: pytest.MonkeyPa
     assert m.mp == persona.default_mp
     assert m.max_mp == persona.default_mp
     assert m.max_hp == persona.default_max_hp
+    assert len(m.skills) == 2
+    assert all(skill["type"] == DebateType.logos.value for skill in m.skills)
+    assert all("effect_kind" in skill for skill in m.skills)
     assert m.domain == MonsterDomain.PHILOSOPHY
     assert m.wiki_url == persona.wiki_url
     assert m.wiki_hydrated is False

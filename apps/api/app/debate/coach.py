@@ -214,7 +214,11 @@ async def _last_enemy_argument(eid: str) -> str:
 
         transcript = await get_transcript_safe(eid)
         for utt in reversed(transcript or []):
-            if utt.get("actor_role") == "enemy" and utt.get("text"):
+            if (
+                utt.get("actor_role") == "enemy"
+                and utt.get("text")
+                and not utt.get("reaction_state")
+            ):
                 return str(utt["text"]).strip()
     except Exception:  # noqa: BLE001
         pass

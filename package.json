@@ -4,6 +4,8 @@
   "private": true,
   "description": "AI Debate RPG — Pokémon-style roguelike where you debate enemy LLM agents",
   "scripts": {
+    "install:game": "bash scripts/install.sh",
+    "game:start": "bash scripts/start-game.sh",
     "dev:web": "pnpm --filter web dev",
     "build:web": "pnpm --filter web build",
     "gen:types": "pnpm --filter web gen:types",

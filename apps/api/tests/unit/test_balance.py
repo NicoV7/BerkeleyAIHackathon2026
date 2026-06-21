@@ -9,7 +9,8 @@ Pure-logic coverage, NO live DB / Redis / model gateway. Exercises:
   * ``app.training.genome``      — ``append_fragment`` is append-only & idempotent.
   * ``app.debate.damage``        — overridable type chart returns the SAME
                                     multipliers as before for known pairs.
-  * ``app.scripts.seed_catalog`` — seeding is idempotent (running twice = no dup).
+  * ``app.scripts.seed_catalog`` — seeding mirrors the Markdown catalog and is
+                                    idempotent (running twice = no dup).
 
 Style: Arrange-Act-Assert with descriptive names.
 """
@@ -369,7 +370,7 @@ class TestSeedCatalog:
         rows = seed_catalog.catalog()
         valid_types = {"LOGOS", "PATHOS", "ETHOS", "CHAOS", "SOCRATIC", "RHETORIC"}
         # Assert
-        assert len(rows) >= 6
+        assert len(rows) == 50
         names = [r["name"] for r in rows]
         assert len(names) == len(set(names))  # unique names
         for r in rows:
@@ -392,7 +393,7 @@ class TestSeedCatalog:
         created1, updated1 = asyncio.run(seed_catalog.seed_skill_catalog(session))
         created2, updated2 = asyncio.run(seed_catalog.seed_skill_catalog(session))
         # Assert: first run creates all, second updates all (zero new dupes)
-        n = len(seed_catalog.SKILL_CATALOG)
+        n = len(seed_catalog.catalog())
         assert created1 == n
         assert updated1 == 0
         assert created2 == 0          # nothing created on re-run
