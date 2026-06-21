@@ -27,13 +27,15 @@ import {
 import { PostFX } from "./PostFX";
 import { SceneRouter, type RegionSpec, type RoutablePOI } from "./SceneRouter";
 import { WorldSim, type MoveIntent } from "./WorldSim";
+import {
+  chunkEdgeMarginTilesForViewport,
+  chunkWindowTilesForViewport,
+} from "./chunkWindow";
 import { TILE_SIZE } from "./constants";
 export { TILE_SIZE } from "./constants";
 
 /** How often (ms) to persist the player's absolute position to the server. */
 const SYNC_DEBOUNCE_MS = 1500;
-const CHUNK_FETCH_RADIUS_TILES = 48;
-const CHUNK_EDGE_MARGIN_TILES = 18;
 const CHUNK_FETCH_THROTTLE_MS = 450;
 
 const TILE = {
@@ -354,7 +356,7 @@ export class OverworldScene extends Phaser.Scene {
     if (!this.cfg?.runId) return;
     try {
       const params = new URLSearchParams();
-      params.set("chunk_size", String(CHUNK_FETCH_RADIUS_TILES * 2));
+      params.set("chunk_size", String(this.chunkWindowTiles()));
       if (centerTile) {
         params.set("center_x", String(centerTile.x));
         params.set("center_y", String(centerTile.y));
@@ -367,6 +369,11 @@ export class OverworldScene extends Phaser.Scene {
       ]);
       if (!mapRes.ok) return;
       const data = (await mapRes.json()) as MapState;
+      const coveredTile = centerTile ?? { x: data.player_x, y: data.player_y };
+      if (!this.isUsableMap(data) || !this.mapCoversTile(data, coveredTile)) {
+        console.error("Ignoring unusable map payload:", data);
+        return;
+      }
       const world =
         this.worldData ??
         (worldRes?.ok ? ((await worldRes.json()) as WorldState) : null);
@@ -422,6 +429,34 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
+  private chunkWindowTiles(): number {
+    const cam = this.cameras.main;
+    return chunkWindowTilesForViewport(cam.width, cam.height);
+  }
+
+  private chunkEdgeMarginTiles(chunkTiles: number): number {
+    const cam = this.cameras.main;
+    return chunkEdgeMarginTilesForViewport(cam.width, cam.height, chunkTiles);
+  }
+
+  private isUsableMap(data: MapState): boolean {
+    if (!Number.isFinite(data.width) || !Number.isFinite(data.height)) return false;
+    if (data.width <= 0 || data.height <= 0) return false;
+    if (data.tiles.length !== data.height) return false;
+    return data.tiles.every((row) => row.length === data.width);
+  }
+
+  private mapCoversTile(data: MapState, tile: { x: number; y: number }): boolean {
+    const originX = data.origin_x ?? 0;
+    const originY = data.origin_y ?? 0;
+    return (
+      originX <= tile.x &&
+      tile.x < originX + data.width &&
+      originY <= tile.y &&
+      tile.y < originY + data.height
+    );
+  }
+
   private emitHudMap() {
     if (!this.mapData) return;
     const originX = this.mapData.origin_x ?? 0;
@@ -457,12 +492,14 @@ export class OverworldScene extends Phaser.Scene {
         const tile = this.mapData.tiles[y][x];
         const blocked = BLOCKED_TILES.has(tile);
         const camp = tile === TILE.CAMP;
-        const px = ((this.mapData.origin_x ?? 0) + x) * TILE_SIZE;
-        const py = ((this.mapData.origin_y ?? 0) + y) * TILE_SIZE;
+        const globalX = (this.mapData.origin_x ?? 0) + x;
+        const globalY = (this.mapData.origin_y ?? 0) + y;
+        const px = globalX * TILE_SIZE;
+        const py = globalY * TILE_SIZE;
 
         // Per-tile color variation breaks the "flat tilemap" read. Hash of
         // (x,y) maps to a -8..+8 RGB jitter; same map = same look every boot.
-        const jitter = tileJitter(x, y);
+        const jitter = tileJitter(globalX, globalY);
         const fill = terrainFill(tile, jitter);
         g.fillStyle(fill, 1);
         g.fillRect(px, py, TILE_SIZE, TILE_SIZE);
@@ -677,11 +714,12 @@ export class OverworldScene extends Phaser.Scene {
     const originY = this.mapData.origin_y ?? 0;
     const localX = this.sim.tileX - originX;
     const localY = this.sim.tileY - originY;
+    const edgeMargin = this.chunkEdgeMarginTiles(Math.max(this.mapData.width, this.mapData.height));
     const nearEdge =
-      localX < CHUNK_EDGE_MARGIN_TILES ||
-      localY < CHUNK_EDGE_MARGIN_TILES ||
-      localX >= this.mapData.width - CHUNK_EDGE_MARGIN_TILES ||
-      localY >= this.mapData.height - CHUNK_EDGE_MARGIN_TILES;
+      localX < edgeMargin ||
+      localY < edgeMargin ||
+      localX >= this.mapData.width - edgeMargin ||
+      localY >= this.mapData.height - edgeMargin;
     if (!nearEdge) return;
 
     this.chunkFetchPending = true;

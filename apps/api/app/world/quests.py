@@ -73,14 +73,33 @@ async def offer_quest(
     offered (the FE shows a "no work today" message).
     """
     candidates = candidate_dungeons or []
-    for poi_key, name in candidates:
-        if await event_log.has(run_id, "dungeon_cleared", poi=poi_key):
+    names_by_target = dict(candidates)
+    for evt in await event_log.recent(run_id, limit=event_log.MAX_EVENTS):
+        if evt.kind != "quest_accepted" or evt.data.get("npc_id") != npc_id:
             continue
+        qid = evt.data.get("quest_id")
+        target = evt.data.get("target")
+        objective = evt.data.get("objective")
+        if not qid or not target or not objective:
+            continue
+        if await is_active(run_id, str(qid)):
+            return _build_quest_obj(
+                str(qid),
+                npc_id,
+                str(objective),
+                str(target),
+                names_by_target.get(str(target), str(target)),
+            )
+
+    uncleared = [
+        (poi_key, name)
+        for poi_key, name in candidates
+        if not await event_log.has(run_id, "dungeon_cleared", poi=poi_key)
+    ]
+    for poi_key, name in _ordered_candidates_for_npc(npc_id, uncleared):
         objective = "clear_dungeon"
         target = poi_key
         qid = _quest_id(npc_id, objective, target)
-        if await is_active(run_id, qid):
-            return _build_quest_obj(qid, npc_id, objective, target, name)
         quest = _build_quest_obj(qid, npc_id, objective, target, name)
         await event_log.append(
             run_id,
@@ -92,6 +111,18 @@ async def offer_quest(
         )
         return quest
     return None
+
+
+def _ordered_candidates_for_npc(
+    npc_id: str, candidates: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Rotate the nearest dungeon candidates by NPC id so quest-givers spread out."""
+    if not candidates:
+        return []
+    nearby = candidates[: min(3, len(candidates))]
+    distant = candidates[len(nearby):]
+    start = int(hashlib.md5(npc_id.encode("utf-8")).hexdigest(), 16) % len(nearby)
+    return nearby[start:] + nearby[:start] + distant
 
 
 def _build_quest_obj(

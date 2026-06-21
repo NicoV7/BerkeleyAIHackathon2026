@@ -283,8 +283,15 @@ async def get_map(
 
     canonical = get_canonical_world()
     world_width, world_height = _world_dims_for(run.seed)
-    center_x = run.player_x if center_x is None else center_x
-    center_y = run.player_y if center_y is None else center_y
+    player_x = max(0, min(world_width - 1, run.player_x))
+    player_y = max(0, min(world_height - 1, run.player_y))
+    if _is_world_blocked(run.seed, player_x, player_y):
+        start = canonical.spec.start if canonical is not None else None
+        player_x = start.x if start is not None else 1
+        player_y = start.y if start is not None else 1
+
+    center_x = player_x if center_x is None else center_x
+    center_y = player_y if center_y is None else center_y
     center_x = max(0, min(world_width - 1, center_x))
     center_y = max(0, min(world_height - 1, center_y))
 
@@ -319,13 +326,6 @@ async def get_map(
         if origin_x <= p.x < origin_x + width and origin_y <= p.y < origin_y + height
     ]
     tiles = apply_camp_tiles(base_tiles, local_pois)
-    player_x = max(0, min(world_width - 1, run.player_x))
-    player_y = max(0, min(world_height - 1, run.player_y))
-    if _is_world_blocked(run.seed, player_x, player_y):
-        start = canonical.spec.start if canonical is not None else None
-        player_x = start.x if start is not None else 1
-        player_y = start.y if start is not None else 1
-
     return MapState(
         width=width,
         height=height,

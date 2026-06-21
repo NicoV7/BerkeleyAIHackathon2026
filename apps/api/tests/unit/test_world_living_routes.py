@@ -136,20 +136,27 @@ async def test_accept_quest_uses_canonical_dungeon_candidates(
     quest = out["quest"]
     assert quest["objective"] == "clear_dungeon"
     assert quest["target"] in {
-        "den:112:160",
-        "den:160:480",
-        "den:270:430",
-        "den:384:192",
-        "den:464:496",
-        "den:566:620",
-        "den:680:520",
-        "den:700:76",
-        "den:784:320",
-        "den:848:128",
-        "den:900:620",
-        "den:912:112",
+        "den:166:532",
+        "den:236:628",
+        "den:292:552",
     }
     assert "Clear" in quest["title"]
+
+
+async def test_aldermere_quest_givers_spread_nearby_dungeon_targets(
+    fake_redis: _FakeRedis,
+) -> None:
+    targets = set()
+    for npc_id in ("town_208_560__1", "town_208_560__2", "town_208_560__4"):
+        out = await world_router.accept_quest(
+            "living-route-run",
+            world_router.QuestAcceptRequest(npc_id=npc_id),
+            _FakeSession(_run()),
+        )
+        targets.add(out["quest"]["target"])
+
+    assert targets <= {"den:166:532", "den:236:628", "den:292:552"}
+    assert len(targets) >= 2
 
 
 async def test_world_event_completion_updates_quest_status(
