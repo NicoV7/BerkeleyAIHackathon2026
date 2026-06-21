@@ -24,6 +24,35 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
 
+    # Judge provider switch (additive; default keeps the judge fully local).
+    #
+    # Pin the judge to Claude to cut scoring variance while debaters stay on
+    # Ollama, WITHOUT touching the debater models. Two ways, in priority order:
+    #
+    #   1. Set ``JUDGE_MODEL`` (env, read by app.debate.judge) to a routable id
+    #      such as ``claude`` or ``anthropic/claude-sonnet-4-6``. This wins.
+    #   2. Or set ``judge_provider=anthropic`` here. ``judge_model_id`` then
+    #      resolves to ``<judge_provider>/<llm_judge_model>`` so the existing
+    #      ``judge`` alias / llm_judge_model can be escalated to Claude in one
+    #      place. Leaving ``judge_provider`` empty preserves the local default.
+    #
+    # An Anthropic judge requires ``anthropic_api_key``; if it's missing the
+    # gateway raises a clear error rather than silently degrading.
+    judge_provider: str = ""  # "" | "ollama" | "anthropic" | "openai"
+
+    @property
+    def judge_model_id(self) -> str:
+        """Routable model id for the judge, honoring the optional provider pin.
+
+        With no ``judge_provider`` set this returns ``llm_judge_model`` unchanged
+        (local default). With a provider set it returns ``<provider>/<model>``,
+        which gateway.resolve() routes to that provider's adapter.
+        """
+        prov = self.judge_provider.strip().lower()
+        if prov and prov in {"ollama", "anthropic", "openai"}:
+            return f"{prov}/{self.llm_judge_model}"
+        return self.llm_judge_model
+
     # Datastores
     database_url: str = "postgresql+asyncpg://debate:debate@postgres:5432/debate"
     redis_url: str = "redis://redis:6379/0"

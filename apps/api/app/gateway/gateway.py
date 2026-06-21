@@ -138,6 +138,15 @@ class LLMGateway:
     async def _anthropic_complete(
         self, ref: ModelRef, messages: list[Message], temperature: float, max_tokens: int,
     ) -> str:
+        # Local-first: never require an Anthropic key unless an anthropic model is
+        # actually requested. If one is requested without a key, fail with a clear,
+        # actionable error instead of a confusing 401 from the API.
+        if not settings.anthropic_api_key:
+            raise RuntimeError(
+                f"Anthropic model '{ref.model}' was requested but no API key is set. "
+                "Set ANTHROPIC_API_KEY (e.g. to pin the judge to Claude), or keep the "
+                "default Ollama models for local-only operation."
+            )
         system = " ".join(m["content"] for m in messages if m["role"] == "system")
         convo = [m for m in messages if m["role"] != "system"]
         r = await self._client.post(

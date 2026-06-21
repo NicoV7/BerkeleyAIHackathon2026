@@ -388,6 +388,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/monsters/{monster_id}/training/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Training History
+         * @description Legible training timeline for a monster, one entry per TrainingArtifact.
+         *
+         *     Each artifact records a before/after genome + score_delta + accepted flag. We
+         *     surface them oldest-first so the frontend can render an improvement curve. The
+         *     artifact schema has no genome_version column, so we reconstruct a monotonic
+         *     version label by counting *accepted* artifacts up to each row (matching how
+         *     ``apply_genome`` bumps ``Monster.genome_version`` only on acceptance).
+         */
+        get: operations["training_history_api_monsters__monster_id__training_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Run
+         * @description Stamp the run as saved (durable snapshot marker).
+         *
+         *     Player position + party already live in durable PG rows (written on every
+         *     move / capture), so "saving" stamps ``runs.saved_at`` to mark the run as
+         *     resumable. Returns the party size for a quick client-side sanity check.
+         */
+        post: operations["save_run_api_runs__run_id__save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Run
+         * @description Return the full durable run state so a session can be rehydrated.
+         */
+        get: operations["get_run_api_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -580,6 +650,14 @@ export interface components {
             rationale: string;
             /** Damage */
             damage: number;
+            /** Why */
+            why?: string | null;
+            /** Logic */
+            logic?: number | null;
+            /** Persuasion */
+            persuasion?: number | null;
+            /** Actor Id */
+            actor_id?: string | null;
         };
         /** MapState */
         MapState: {
@@ -716,6 +794,59 @@ export interface components {
              */
             judge_score: number;
         };
+        /**
+         * RunResumeState
+         * @description Full durable run state for GET /api/runs/{id} (survives restart).
+         *
+         *     Extends the in-flight RunState with the captured roster + a resume marker so
+         *     the frontend can rehydrate a session after a reload.
+         */
+        RunResumeState: {
+            /** Id */
+            id: string;
+            /** Debate Topic */
+            debate_topic: string;
+            /** Player X */
+            player_x: number;
+            /** Player Y */
+            player_y: number;
+            /** Status */
+            status: string;
+            /**
+             * Party
+             * @default []
+             */
+            party: components["schemas"]["MonsterSummary"][];
+            /**
+             * Captured
+             * @default []
+             */
+            captured: components["schemas"]["MonsterSummary"][];
+            /** Saved At */
+            saved_at?: string | null;
+            /**
+             * Resumable
+             * @default false
+             */
+            resumable: boolean;
+        };
+        /**
+         * RunSaveResult
+         * @description Result of POST /api/runs/{id}/save — snapshots run + party to durable PG.
+         */
+        RunSaveResult: {
+            /** Run Id */
+            run_id: string;
+            /** Saved */
+            saved: boolean;
+            /** Saved At */
+            saved_at: string;
+            /**
+             * Party Size
+             * @default 0
+             */
+            party_size: number;
+        };
         /** RunState */
         RunState: {
             /** Id */
@@ -733,6 +864,56 @@ export interface components {
              * @default []
              */
             party: components["schemas"]["MonsterSummary"][];
+        };
+        /**
+         * Scorecard
+         * @description Wave A: measurable before/after training delta against a fixed benchmark.
+         *
+         *     Units are explicit to avoid the legacy `TrainJob.score_delta` ambiguity:
+         *     win_rate_* are 0..1, judge_score_* are 0..100. Computed by the benchmark
+         *     harness (deterministic: temp=0 + fixed seed + N-run averaging).
+         */
+        Scorecard: {
+            /**
+             * Win Rate Before
+             * @default 0
+             */
+            win_rate_before: number;
+            /**
+             * Win Rate After
+             * @default 0
+             */
+            win_rate_after: number;
+            /**
+             * Win Rate Delta
+             * @default 0
+             */
+            win_rate_delta: number;
+            /**
+             * Judge Score Before
+             * @default 0
+             */
+            judge_score_before: number;
+            /**
+             * Judge Score After
+             * @default 0
+             */
+            judge_score_after: number;
+            /**
+             * Judge Score Delta
+             * @default 0
+             */
+            judge_score_delta: number;
+            /**
+             * Genome Diff
+             * @default
+             */
+            genome_diff: string;
+            /**
+             * N Benchmark Runs
+             * @default 0
+             */
+            n_benchmark_runs: number;
         };
         /** TileEnemy */
         TileEnemy: {
@@ -766,6 +947,7 @@ export interface components {
             status: "queued" | "running" | "awaiting_preference" | "done" | "failed";
             /** Score Delta */
             score_delta?: number | null;
+            scorecard?: components["schemas"]["Scorecard"] | null;
         };
         /** TrainRequest */
         TrainRequest: {
@@ -774,6 +956,37 @@ export interface components {
              * @default 4
              */
             rounds: number;
+        };
+        /** TrainingHistory */
+        TrainingHistory: {
+            /** Monster Id */
+            monster_id: string;
+            /**
+             * Entries
+             * @default []
+             */
+            entries: components["schemas"]["TrainingHistoryEntry"][];
+        };
+        /** TrainingHistoryEntry */
+        TrainingHistoryEntry: {
+            /** Genome Version */
+            genome_version: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "gepa" | "grpo" | "evolution" | "seed";
+            /** Created At */
+            created_at: string;
+            /** Judge Score */
+            judge_score?: number | null;
+            /** Win Rate */
+            win_rate?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** TurnResult */
         TurnResult: {
@@ -1499,6 +1712,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TrainJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    training_history_api_monsters__monster_id__training_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainingHistory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_run_api_runs__run_id__save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSaveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_api_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResumeState"];
                 };
             };
             /** @description Validation Error */

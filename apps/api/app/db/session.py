@@ -30,6 +30,9 @@ async def init_db() -> None:
             "ALTER TABLE encounters ADD COLUMN IF NOT EXISTS transcript JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE encounters ADD COLUMN IF NOT EXISTS verdicts JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE encounters ADD COLUMN IF NOT EXISTS final_hp JSONB DEFAULT '{}'::jsonb",
+            # WS-A persistence: run save/resume marker. TIMESTAMP WITHOUT TIME
+            # ZONE to match the other naive-UTC timestamp columns.
+            "ALTER TABLE runs ADD COLUMN IF NOT EXISTS saved_at TIMESTAMP",
         ):
             await conn.execute(text(stmt))
 
