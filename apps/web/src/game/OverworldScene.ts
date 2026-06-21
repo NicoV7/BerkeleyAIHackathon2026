@@ -27,8 +27,6 @@ import {
 import { PostFX } from "./PostFX";
 import {
   chunkKey,
-  neighborPrefetchCentres,
-  windowCoversViewport,
   windowsWithinRenderHalo,
   shouldSwapChunk,
   type ChunkWindow,
@@ -65,12 +63,15 @@ const CHUNK_FETCH_RADIUS_TILES = 32;
 // How far (tiles) a cached chunk may sit from the anchor and still be painted
 // into the live buffer, so the area around the player is gap-free.
 const CHUNK_RENDER_HALO_TILES = 2;
+// Chunks tile the world on a fixed grid of this side length (= radius*2). Snapping
+// requests to this grid keeps chunk origins stable, so neighbours are fetched once
+// and cached (not re-requested every tile) and re-centres happen only on cell cross.
+const CHUNK_SIZE = CHUNK_FETCH_RADIUS_TILES * 2;
 // Lead (in tiles) added around the ACTUAL viewport when deciding to re-centre.
 // Each buffer renders a single chunk window (no neighbour halo), so we must swap
 // before the visible area spills past the chunk edge. Triggering off the real
 // camera viewport (+ this lead) is gap-free on any display size; prefetch keeps
 // the swap instant.
-const CHUNK_VIEW_LEAD_TILES = 6;
 const CHUNK_FETCH_THROTTLE_MS = 450;
 
 const TILE = {
@@ -331,7 +332,11 @@ export class OverworldScene extends Phaser.Scene {
   // so a swap is usually instant. Bounded to keep memory flat as the player roams.
   private prefetchedChunks = new Map<string, MapState>();
   private prefetchInFlight = new Set<string>();
-  private lastPrefetchTile = { x: Number.NaN, y: Number.NaN };
+  /** Grid cell we last warmed neighbours for — prefetch re-fires only when the
+   *  player crosses into a new chunk cell, not every tile. */
+  private lastPrefetchCell = { x: Number.NaN, y: Number.NaN };
+  /** Grid cell the live chunk is centred on — re-centre only on a cell change. */
+  private activeCell = { x: Number.NaN, y: Number.NaN };
   private static readonly PREFETCH_CACHE_LIMIT = 24;
 
   constructor() {
@@ -573,12 +578,39 @@ export class OverworldScene extends Phaser.Scene {
   /** Build the /map request URL for a chunk centred on an optional tile. */
   private mapUrl(centerTile?: { x: number; y: number }): string {
     const params = new URLSearchParams();
-    params.set("chunk_size", String(CHUNK_FETCH_RADIUS_TILES * 2));
+    params.set("chunk_size", String(CHUNK_SIZE));
     if (centerTile) {
-      params.set("center_x", String(centerTile.x));
-      params.set("center_y", String(centerTile.y));
+      // Snap to the chunk-GRID cell centre so chunks tile the world on a fixed
+      // grid (stable origins) instead of shifting per-tile with the player.
+      const cc = this.cellCenter(centerTile.x, centerTile.y);
+      params.set("center_x", String(cc.x));
+      params.set("center_y", String(cc.y));
     }
     return `/api/runs/${this.cfg.runId}/map?${params.toString()}`;
+  }
+
+  /** Grid cell index for a tile coord. */
+  private cellOf(tile: number): number {
+    return Math.floor(tile / CHUNK_SIZE);
+  }
+
+  /** Centre tile of the grid cell containing (tx, ty). */
+  private cellCenter(tx: number, ty: number): { x: number; y: number } {
+    const half = Math.floor(CHUNK_SIZE / 2);
+    return {
+      x: this.cellOf(tx) * CHUNK_SIZE + half,
+      y: this.cellOf(ty) * CHUNK_SIZE + half,
+    };
+  }
+
+  /** True if a cached chunk already covers this centre tile (skip re-fetch). */
+  private chunkCovering(x: number, y: number): boolean {
+    for (const d of this.prefetchedChunks.values()) {
+      const ox = d.origin_x ?? 0;
+      const oy = d.origin_y ?? 0;
+      if (x >= ox && y >= oy && x < ox + d.width && y < oy + d.height) return true;
+    }
+    return false;
   }
 
   private windowOf(data: MapState): ChunkWindow {
@@ -685,6 +717,7 @@ export class OverworldScene extends Phaser.Scene {
         startTileY: start.y,
       });
       this.lastSyncedTile = { x: start.x, y: start.y };
+      this.activeCell = { x: this.cellOf(start.x), y: this.cellOf(start.y) };
 
       this.liveWindow = this.drawMapInto(this.frontBuffer, data);
       this.buildSigns();
@@ -1384,17 +1417,14 @@ export class OverworldScene extends Phaser.Scene {
     if (this.chunkFetchPending) return;
     if (time - this.lastChunkFetchAtMs < CHUNK_FETCH_THROTTLE_MS) return;
 
-    // Re-centre when the live chunk would stop covering the ACTUAL camera
-    // viewport (expanded by a small lead). The swap populates the BACK buffer
-    // first (front stays visible) and is instant when the target was prefetched,
-    // so the new chunk lands before any edge is exposed — gap-free on any display.
-    const view = this.cameras.main.worldView;
-    const lead = CHUNK_VIEW_LEAD_TILES;
-    const viewOX = Math.floor(view.x / TILE_SIZE) - lead;
-    const viewOY = Math.floor(view.y / TILE_SIZE) - lead;
-    const viewW = Math.ceil(view.width / TILE_SIZE) + lead * 2;
-    const viewH = Math.ceil(view.height / TILE_SIZE) + lead * 2;
-    if (windowCoversViewport(this.liveWindow, viewOX, viewOY, viewW, viewH)) return;
+    // Re-centre ONLY when the player crosses into a new grid cell. The new 3×3
+    // neighbourhood overlaps the old by 2/3 so the swap is seamless, and cached
+    // neighbours make it instant. (Coverage-based re-centring fired far too often
+    // with small chunks, causing visible swap/re-render churn.)
+    const cellX = this.cellOf(tx);
+    const cellY = this.cellOf(ty);
+    if (cellX === this.activeCell.x && cellY === this.activeCell.y) return;
+    this.activeCell = { x: cellX, y: cellY };
 
     this.chunkFetchPending = true;
     this.lastChunkFetchAtMs = time;
@@ -1411,19 +1441,22 @@ export class OverworldScene extends Phaser.Scene {
    * fetchMapAndDraw is the safety net).
    */
   private maybePrefetchNeighbors(tx: number, ty: number) {
-    if (tx === this.lastPrefetchTile.x && ty === this.lastPrefetchTile.y) return;
-    this.lastPrefetchTile = { x: tx, y: ty };
+    // Fire only when the player crosses into a NEW grid cell — not every tile.
+    // (Per-tile, player-relative prefetch re-requested the same neighbours
+    // hundreds of times per second; grid cells are stable and cache cleanly.)
+    const cellX = this.cellOf(tx);
+    const cellY = this.cellOf(ty);
+    if (cellX === this.lastPrefetchCell.x && cellY === this.lastPrefetchCell.y) return;
+    this.lastPrefetchCell = { x: cellX, y: cellY };
 
-    const stride = CHUNK_FETCH_RADIUS_TILES; // re-centre when one radius away
-    const centres = neighborPrefetchCentres(
-      tx,
-      ty,
-      stride,
-      this.mapData?.world_width ?? undefined,
-      this.mapData?.world_height ?? undefined
-    );
-    for (const c of centres) {
-      void this.prefetchChunk(c.x, c.y);
+    const half = Math.floor(CHUNK_SIZE / 2);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const cx = (cellX + dx) * CHUNK_SIZE + half;
+        const cy = (cellY + dy) * CHUNK_SIZE + half;
+        if (cx < 0 || cy < 0) continue;
+        void this.prefetchChunk(cx, cy);
+      }
     }
   }
 
@@ -1432,6 +1465,9 @@ export class OverworldScene extends Phaser.Scene {
     // Dedupe by center so two near-tiles don't double-fetch the same region.
     const reqKey = chunkKey(centerX, centerY);
     if (this.prefetchInFlight.has(reqKey)) return;
+    // Skip if a cached chunk already covers this centre — this is the guard that
+    // stops the runaway re-fetching of already-warm neighbours.
+    if (this.chunkCovering(centerX, centerY)) return;
     this.prefetchInFlight.add(reqKey);
     try {
       const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
