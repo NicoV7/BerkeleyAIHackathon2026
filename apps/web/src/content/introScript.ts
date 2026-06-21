@@ -124,3 +124,19 @@ export const EMPTY_PARTY_COPY = {
 } as const;
 
 export type EmptyPartyCopy = typeof EMPTY_PARTY_COPY;
+
+/**
+ * Greeting + the diegetic action a merchant/innkeeper NPC offers in the dialogue
+ * menu (WS-3, #13). NPCDialogue renders the greeting as the line and the action
+ * label as a ListMenu choice that opens the matching diegetic surface (Shop /
+ * Camp). These are pure data so the dialogue menu stays declarative.
+ */
+export const MERCHANT_DIALOGUE = {
+  greeting: "Goods for the road, traveler? Coin talks louder than any rebuttal here.",
+  actionLabel: "Browse the wares.",
+} as const;
+
+export const INNKEEPER_DIALOGUE = {
+  greeting: "Weary? Pitch a tent, rest your party, and sharpen your arguments.",
+  actionLabel: "Make camp.",
+} as const;
