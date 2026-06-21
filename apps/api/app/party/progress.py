@@ -36,9 +36,18 @@ def xp_needed(level: int) -> int:
 def award_xp(session, monster: "Monster", amount: int) -> dict:
     """Add XP to a party monster; level up if threshold reached.
 
-    Returns a dict describing what happened so callers can surface it.
-    Works synchronously — caller must flush the session (add/commit).
-    Does NOT commit; the caller owns the transaction.
+    Returns a dict describing what happened so callers can surface it. Works
+    synchronously — caller must flush the session (add/commit). Does NOT
+    commit; the caller owns the transaction.
+
+    Gacha-wave additions: every level-up also applies +ATK/+DEF/+MP gains (see
+    :mod:`app.party.balance`) and fully refills the monster's current MP. The
+    returned dict carries a ``stat_gains`` sub-dict — the sum of per-level
+    bonuses across the entire dump — so the WS layer / frontend cinematic can
+    surface "+N ATK / +N DEF / +N MP / +N HP" without re-deriving from the
+    diff. The atk/def_/max_mp/mp writes are tolerant of objects that don't
+    declare those attributes (older test fakes) so the legacy contract is
+    preserved.
     """
     if monster is None:
         return {"levelled": False}
@@ -46,6 +55,9 @@ def award_xp(session, monster: "Monster", amount: int) -> dict:
     levelled_up = False
     skill_unlocked: list[str] = []
     evolved = False
+    # Per-level bonuses accumulate across a multi-level dump (e.g. 300 XP from
+    # level 1 banks two level-ups → +2*HP_PER_LEVEL, +2*ATK_PER_LEVEL, etc).
+    stat_gains = {"atk": 0, "def": 0, "mp": 0, "hp": 0}
 
     monster.xp += amount
 
@@ -54,6 +66,26 @@ def award_xp(session, monster: "Monster", amount: int) -> dict:
         monster.xp -= xp_needed(monster.level)
         monster.level += 1
         monster.max_hp += balance.HP_PER_LEVEL
+        stat_gains["hp"] += balance.HP_PER_LEVEL
+
+        # ---- Gacha-wave stat gains ----
+        # ATK / DEF / max_mp are Monster columns added in Wave 0. Guard with
+        # hasattr so unit-test fakes (FakeMonster in test_progress.py) that
+        # only model the original HP/XP/level fields keep working unchanged.
+        if hasattr(monster, "atk"):
+            monster.atk = int(getattr(monster, "atk", 0) or 0) + balance.ATK_PER_LEVEL
+            stat_gains["atk"] += balance.ATK_PER_LEVEL
+        if hasattr(monster, "def_"):
+            monster.def_ = int(getattr(monster, "def_", 0) or 0) + balance.DEF_PER_LEVEL
+            stat_gains["def"] += balance.DEF_PER_LEVEL
+        if hasattr(monster, "max_mp"):
+            monster.max_mp = int(getattr(monster, "max_mp", 0) or 0) + balance.MP_PER_LEVEL
+            stat_gains["mp"] += balance.MP_PER_LEVEL
+            # Full refill on level-up — the player just earned a moment of
+            # power, so abilities should be usable right away.
+            if hasattr(monster, "mp"):
+                monster.mp = monster.max_mp
+
         levelled_up = True
         log.info("Monster %s levelled up to %d", monster.id, monster.level)
 
@@ -75,6 +107,9 @@ def award_xp(session, monster: "Monster", amount: int) -> dict:
         "new_level": monster.level,
         "skills_unlocked": skill_unlocked,
         "evolved": evolved,
+        # Sum across all level-ups in this dump. Zero for a no-op (sub-threshold
+        # XP gain) so the WS layer can `if any(stat_gains.values())` cheaply.
+        "stat_gains": stat_gains,
     }
 
 

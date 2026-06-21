@@ -57,6 +57,7 @@ import {
   Utterance,
   useEncounterStream,
 } from "../ws/useEncounterStream";
+import LevelUpOverlay from "./LevelUpOverlay";
 
 // ---------------------------------------------------------------------------
 // Debate sides — the player's monster argues FOR the topic, the enemy AGAINST.
@@ -845,6 +846,12 @@ export function BattleDebateView() {
 
   return (
     <div className="flex flex-col h-full max-h-screen overflow-hidden relative">
+      {/* Gacha Wave D — listens for `{type: "LevelUp"}` WS events from the
+          encounter finalize and plays a 3s "+ATK/+DEF/+MP/+HP" cinematic.
+          Self-handles its own event subscription; mounting it is the wiring.
+          Combatants are passed so the headline can read "{name} LEVEL N". */}
+      <LevelUpOverlay combatants={combatants} />
+
       {captureFlash && (
         <div
           className="capture-flash absolute inset-0 z-50 pointer-events-none"

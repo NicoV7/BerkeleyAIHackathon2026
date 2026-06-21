@@ -104,7 +104,7 @@ async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
 # ---- Finalize (idempotent) --------------------------------------------------
 
 
-async def _finalize(eid: str, result: EncounterResult) -> None:
+async def _finalize(eid: str, result: EncounterResult) -> list[dict]:
     """Persist the battle durably, write per-party BATTLE memories, then evict
     the conversation from Redis. Idempotent: a second call is a no-op.
 
@@ -112,6 +112,12 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
     them onto the Encounter row and into each party member's memory (so GEPA/RAG
     have real battle data that outlives the cache), and only then evict the heavy
     Redis keys to avoid context pollution.
+
+    Returns a list of LevelUp event payloads (one per party monster that
+    levelled this finalize). Callers that have a WS open (the /stream handler)
+    forward these as ``{"type": "LevelUp", ...}`` messages so the frontend
+    cinematic fires; REST callers may safely ignore the return value. A second
+    (idempotent) finalize returns ``[]``.
     """
     from app.redis_state import clear_conversation, get_hp_map, get_redis, k_judge
 
@@ -123,12 +129,14 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
     topic = meta.get("topic", "")
     roster = json.loads(meta.get("combatants", "[]"))
 
+    level_up_events: list[dict] = []
+
     async with SessionLocal() as session:
         enc = await session.get(Encounter, eid)
         if not enc:
-            return
+            return []
         if enc.result != EncounterResult.ongoing:
-            return  # already finalized
+            return []  # already finalized
         enc.result = result
         enc.transcript = transcript
         enc.verdicts = verdicts
@@ -152,8 +160,80 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
                     eid, enc.run_id, dropped.id, dropped.tier,
                 )
 
+        # Wave D: award XP + apply per-level stat gains. Best-effort —
+        # progression must never block finalize. Each party monster that
+        # levels emits a LevelUp event the WS /stream handler forwards to the
+        # frontend cinematic.
+        try:
+            level_up_events = await _award_party_xp(session, enc, roster, result)
+        except Exception:  # noqa: BLE001
+            level_up_events = []
+
     # Conversation is durably stored — free the cache.
     await clear_conversation(eid)
+    return level_up_events
+
+
+async def _award_party_xp(
+    session: AsyncSession,
+    enc: Encounter,
+    roster: list[dict],
+    result: EncounterResult,
+) -> list[dict]:
+    """Apply XP rewards to every party monster and emit LevelUp events.
+
+    XP scales with the highest enemy level in the roster (so a tougher fight
+    gives more XP). A win pays full reward, a loss/flee pays the consolation
+    multiplier — both routes through ``balance.xp_reward``. The dict returned
+    by ``progress.award_xp`` is normalized into a WS-friendly LevelUp payload
+    only when the monster actually levelled.
+    """
+    from app.party import balance, progress
+
+    # Highest enemy level drives the reward curve; default to 1 if no enemies
+    # are recorded in the roster (defensive).
+    enemy_level = 1
+    for c in roster:
+        if c.get("role") == "enemy":
+            try:
+                lvl = int(c.get("level", 1) or 1)
+                if lvl > enemy_level:
+                    enemy_level = lvl
+            except (TypeError, ValueError):
+                continue
+
+    won = result == EncounterResult.win
+    amount = balance.xp_reward(enemy_level, won=won)
+    if amount <= 0:
+        return []
+
+    from app.db.models import Monster
+
+    events: list[dict] = []
+    for pid in enc.party_ids or []:
+        m = await session.get(Monster, pid)
+        if m is None:
+            continue
+        outcome = progress.award_xp(session, m, amount)
+        if not outcome.get("levelled"):
+            continue
+        events.append(
+            {
+                "type": "LevelUp",
+                "monster_id": m.id,
+                "new_level": int(outcome.get("new_level", m.level)),
+                "stat_gains": outcome.get(
+                    "stat_gains", {"atk": 0, "def": 0, "mp": 0, "hp": 0}
+                ),
+            }
+        )
+
+    try:
+        await session.commit()
+    except Exception:  # noqa: BLE001 — never let a commit failure 500 finalize
+        await session.rollback()
+        return []
+    return events
 
 
 # ---- Wave A: SummonItem post-battle drop -----------------------------------
@@ -903,7 +983,18 @@ async def stream(ws: WebSocket, eid: str) -> None:
                     phase=final_phase["phase"],
                 )
                 if final_phase["phase"] in _PHASE_TO_RESULT:
-                    await _finalize(eid, _PHASE_TO_RESULT[final_phase["phase"]])
+                    level_ups = await _finalize(
+                        eid, _PHASE_TO_RESULT[final_phase["phase"]]
+                    )
+                    # Forward each LevelUp event on the same WS channel as the
+                    # existing hp/phase events; the frontend overlay listens
+                    # for `{"type": "LevelUp", ...}`. Defensive: a send failure
+                    # must not crash the WS loop.
+                    for lu in level_ups:
+                        try:
+                            await ws.send_json(lu)
+                        except Exception:  # noqa: BLE001
+                            break
                     break
 
             await ws.send_json({"type": "round_done", "data": {"phase": (await get_meta(eid)).get("phase")}})

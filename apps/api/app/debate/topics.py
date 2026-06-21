@@ -105,28 +105,41 @@ _TOPIC_DOMAIN_OVERRIDES: dict[str, str] = {
     "Cryptocurrency is the future of money.": "ENGINEERING",
     "The internet has made us less intelligent.": "ENGINEERING",
     "Robots will take more jobs than they create.": "ENGINEERING",
+    "Social media platforms should verify every user's identity.": "ENGINEERING",
     # Science
     "Humans will colonize Mars within 50 years.": "SCIENCE",
     "Nuclear energy is the key to fighting climate change.": "SCIENCE",
     "Genetically modified food is safe and necessary.": "SCIENCE",
     "Climate change is the defining issue of our time.": "SCIENCE",
     "Vaccination should be mandatory.": "SCIENCE",
+    "Space exploration is a waste of money.": "SCIENCE",
+    "Aliens have already visited Earth.": "SCIENCE",
     # Ethics
     "The death penalty should be abolished.": "ETHICS",
     "Free will is an illusion.": "ETHICS",
     "Humans are inherently selfish.": "ETHICS",
     "Animals deserve the same rights as humans.": "ETHICS",
     "Censorship is sometimes justified.": "ETHICS",
+    "Zoos are unethical and should be closed.": "ETHICS",
     # Philosophy / society
     "Money can buy happiness.": "PHILOSOPHY",
+    "Time travel, if possible, would do more harm than good.": "PHILOSOPHY",
+    "Privacy is dead and that's okay.": "PHILOSOPHY",
+    "Social media does more harm than good.": "PHILOSOPHY",
+    "Voting should be mandatory.": "PHILOSOPHY",
     # Business
     "A four-day work week should be the standard.": "BUSINESS",
     "Universal basic income should be adopted everywhere.": "BUSINESS",
     "Tipping culture should be abolished.": "BUSINESS",
+    "Remote work is better than working in an office.": "BUSINESS",
+    "Professional athletes are paid too much.": "BUSINESS",
+    "College is no longer worth the cost.": "BUSINESS",
     # Art / culture
     "Video games are a legitimate art form.": "ART",
     "Books are better than their movie adaptations.": "ART",
     "Reading fiction is more valuable than reading non-fiction.": "ART",
+    "Pineapple belongs on pizza.": "ART",
+    "Fast fashion should be banned.": "ART",
 }
 
 
