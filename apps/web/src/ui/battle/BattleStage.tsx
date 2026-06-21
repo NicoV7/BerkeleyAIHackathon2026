@@ -1,4 +1,5 @@
 import type { Utterance } from "../../ws/useEncounterStream";
+import { PlayerPixelSprite } from "./PlayerPixelSprite";
 import { SpeechBubble } from "./SpeechBubble";
 
 const SPRITE_SRC = "/sprites/roguelikeChar_transparent.png";
@@ -176,16 +177,15 @@ export function BattleStage({
           />
         </div>
 
-        <CharacterSprite frame={10} flip={false} />
-
-        {/* Name tag */}
+        {/* Name tag floats above the sprite */}
         {leadPartyName && (
           <div
-            className="font-hud text-[9px] mt-1 px-1 whitespace-nowrap"
+            className="font-hud text-[8px] mb-1 px-1 whitespace-nowrap"
             style={{
               color: "var(--party)",
               textShadow: "1px 1px 0 #000",
-              background: "rgba(0,0,0,0.5)",
+              background: "rgba(0,0,0,0.55)",
+              border: "1px solid rgba(92,200,255,0.25)",
             }}
           >
             {leadPartyName}
@@ -194,6 +194,8 @@ export function BattleStage({
             )}
           </div>
         )}
+
+        <PlayerPixelSprite />
       </div>
 
       {/* ENEMY — right band, sprite faces left (toward player) */}
@@ -214,15 +216,15 @@ export function BattleStage({
           />
         </div>
 
-        <CharacterSprite frame={7} flip />
-
+        {/* Name tag floats above the sprite */}
         {leadEnemyName && (
           <div
-            className="font-hud text-[9px] mt-1 px-1 whitespace-nowrap"
+            className="font-hud text-[8px] mb-1 px-1 whitespace-nowrap"
             style={{
               color: "var(--enemy)",
               textShadow: "1px 1px 0 #000",
-              background: "rgba(0,0,0,0.5)",
+              background: "rgba(0,0,0,0.55)",
+              border: "1px solid rgba(255,93,108,0.25)",
             }}
           >
             {leadEnemyName}
@@ -231,6 +233,8 @@ export function BattleStage({
             )}
           </div>
         )}
+
+        <CharacterSprite frame={7} flip />
       </div>
 
       {/* VS divider */}

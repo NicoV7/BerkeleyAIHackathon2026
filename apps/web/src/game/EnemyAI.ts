@@ -224,17 +224,20 @@ export class Enemy {
 export class EnemyManager {
   private enemies: Map<string, Enemy> = new Map();
   private sprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
+  private labels: Map<string, Phaser.GameObjects.Text> = new Map();
 
   /** Build entities from seeded spawns. Pass a sprite factory from the scene. */
   spawn(
     spawns: EnemySpawn[],
-    makeSprite: (enemy: Enemy) => Phaser.GameObjects.Sprite
+    makeSprite: (enemy: Enemy) => Phaser.GameObjects.Sprite,
+    makeLabel?: (enemy: Enemy) => Phaser.GameObjects.Text
   ): void {
     for (const s of spawns) {
       if (this.enemies.has(s.id)) continue;
       const enemy = new Enemy(s);
       this.enemies.set(s.id, enemy);
       this.sprites.set(s.id, makeSprite(enemy));
+      if (makeLabel) this.labels.set(s.id, makeLabel(enemy));
     }
   }
 
@@ -253,6 +256,11 @@ export class EnemyManager {
       enemy.update(deltaMs, playerX, playerY, isBlocked);
       const spr = this.sprites.get(enemy.id);
       if (spr) spr.setPosition(enemy.x, enemy.y);
+      const lbl = this.labels.get(enemy.id);
+      if (lbl) {
+        lbl.setPosition(enemy.x, enemy.y - TILE_SIZE * 0.65);
+        lbl.setColor(enemy.state === "chase" ? "#ff5d6c" : "#e8e6d8");
+      }
       if (collided === null && enemy.touchesPlayer(playerX, playerY)) {
         collided = enemy.id;
       }
@@ -265,6 +273,9 @@ export class EnemyManager {
     const spr = this.sprites.get(id);
     if (spr) spr.destroy();
     this.sprites.delete(id);
+    const lbl = this.labels.get(id);
+    if (lbl) lbl.destroy();
+    this.labels.delete(id);
     this.enemies.delete(id);
   }
 
@@ -272,6 +283,8 @@ export class EnemyManager {
   destroy(): void {
     for (const spr of this.sprites.values()) spr.destroy();
     this.sprites.clear();
+    for (const lbl of this.labels.values()) lbl.destroy();
+    this.labels.clear();
     this.enemies.clear();
   }
 }

@@ -60,6 +60,25 @@ const CHAR_SHEET = "/sprites/roguelikeChar_transparent.png";
 const SHEET_TILE = 16;
 const ENEMY_FRAME = 7;
 
+const SIGN_INTERACT_PX = TILE_SIZE * 1.8;
+const SIGN_POOL = [
+  "Beware: Wild Debaters ahead!",
+  "Village of Logos — 3 tiles east",
+  "Campsite nearby. Rest your arguments.",
+  "Danger: Sophists in the mountains",
+  "Ancient Rhetoric Grove",
+  "Trade Post — bring strong claims",
+  "Warning: Ad Hominem territory",
+  "The Great Debate Plains",
+  "Here be Strawmen",
+  "Socratic Springs — refreshing questions",
+  "Pathos Peaks — emotional terrain ahead",
+  "Ethos Ridge — credibility required",
+  "Farmlands of Reason",
+  "Mind the logical gap",
+  "Fallacy Fields — tread carefully",
+] as const;
+
 /**
  * Deterministic per-tile 32-bit hash. Used to drive sub-tile color jitter so
  * the overworld stops looking like a flat grid without any noise libraries.
@@ -112,6 +131,7 @@ function terrainFill(tile: number, jitter: number): number {
 
 export interface OverworldConfig {
   runId: string;
+  playerName?: string;
   onEncounter: (wildId: string) => void;
   onNpcTalk?: (npc: NPCAnchorView) => void;
   onMapLoaded?: (m: {
@@ -165,8 +185,18 @@ export class OverworldScene extends Phaser.Scene {
 
   // Graphics objects
   private tileGraphics!: Phaser.GameObjects.Graphics;
+  private detailGraphics!: Phaser.GameObjects.Graphics;
+  private shadowGraphics!: Phaser.GameObjects.Graphics;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
+  private playerLabel: Phaser.GameObjects.Text | null = null;
+  private lastDetailTile = { x: -1, y: -1 };
+
+  // Sign system
+  private signs: Array<{ key: string; tileX: number; tileY: number; text: string; spr: Phaser.GameObjects.Sprite }> = [];
+  private signPopupBg: Phaser.GameObjects.Graphics | null = null;
+  private signPopupText: Phaser.GameObjects.Text | null = null;
+  private nearestSignKey = "";
 
   // Client-side world simulation + roaming enemy runtime
   private sim: WorldSim | null = null;
@@ -304,10 +334,28 @@ export class OverworldScene extends Phaser.Scene {
       g.generateTexture("npc", SIZE, SIZE);
       g.destroy();
     }
+
+    // --- Sign: wooden post with message board ---
+    if (!this.textures.exists("sign")) {
+      const g = this.make.graphics({ x: 0, y: 0 }, false);
+      px(g, 0x5c3a1e, 7, 7, 2, 9);   // post
+      px(g, 0x7a4f28, 1, 1, 14, 6);   // board back
+      px(g, 0xd4a96a, 2, 2, 12, 4);   // board face
+      px(g, 0x5c3a1e, 2, 4, 12, 1);   // board midline
+      px(g, 0x8b5e30, 1, 7, 1, 1);    // left post bracket
+      px(g, 0x8b5e30, 14, 7, 1, 1);   // right post bracket
+      g.generateTexture("sign", SIZE, SIZE);
+      g.destroy();
+    }
   }
 
   async create() {
     this.tileGraphics = this.add.graphics();
+    this.detailGraphics = this.add.graphics();
+    this.detailGraphics.setDepth(2);
+    this.shadowGraphics = this.add.graphics();
+    this.shadowGraphics.setDepth(9);
+    this.lastDetailTile = { x: -1, y: -1 };
     this.cameras.main.setBackgroundColor("#1a1a2e");
 
     // Bake the procedural pixel-art sprites once (no external assets).
@@ -320,6 +368,20 @@ export class OverworldScene extends Phaser.Scene {
     this.playerSprite.setDisplaySize(TILE_SIZE, TILE_SIZE);
     this.playerSprite.setDepth(10);
     this.playerAnimator = new PlayerSpriteAnimator(this.playerSprite);
+
+    // Floating name tag above the player's head.
+    this.playerLabel?.destroy();
+    if (this.cfg.playerName) {
+      this.playerLabel = this.add.text(0, 0, this.cfg.playerName.toUpperCase(), {
+        fontFamily: "Silkscreen, monospace",
+        fontSize: "10px",
+        color: "#5cc8ff",
+        stroke: "#0e1018",
+        strokeThickness: 4,
+      });
+      this.playerLabel.setOrigin(0.5, 1);
+      this.playerLabel.setDepth(11);
+    }
 
     // Input
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -386,6 +448,8 @@ export class OverworldScene extends Phaser.Scene {
       if (this.sim) {
         this.sim.setTiles(data.tiles, originX, originY);
         this.drawMap();
+        this.lastDetailTile = { x: -1, y: -1 };
+        this.buildSigns();
         this.spawnEnemies(data.enemies);
         this.spawnNpcs();
         this.emitHudMap();
@@ -409,6 +473,7 @@ export class OverworldScene extends Phaser.Scene {
       this.lastSyncedTile = { x: start.x, y: start.y };
 
       this.drawMap();
+      this.buildSigns();
       this.spawnEnemies(data.enemies);
       this.spawnNpcs();
 
@@ -564,31 +629,60 @@ export class OverworldScene extends Phaser.Scene {
       tileY: e.y,
     }));
 
-    this.enemies.spawn(spawns, (enemy: Enemy) => {
-      const spr = this.textures.exists("chars")
-        ? this.add.sprite(enemy.x, enemy.y, "chars", ENEMY_FRAME)
-        : this.add.sprite(enemy.x, enemy.y, "enemy");
-      spr.setDisplaySize(TILE_SIZE, TILE_SIZE);
-      spr.setDepth(5);
+    const labelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: "Silkscreen, monospace",
+      fontSize: "10px",
+      color: "#e8e6d8",
+      stroke: "#0e1018",
+      strokeThickness: 4,
+    };
 
-      // Pulsing animation (relative to the baked display scale).
-      const baseScale = spr.scaleX;
-      this.tweens.add({
-        targets: spr,
-        scaleX: baseScale * 1.15,
-        scaleY: baseScale * 1.15,
-        duration: 700,
-        yoyo: true,
-        repeat: -1,
-        ease: "Sine.easeInOut",
-      });
-      return spr;
-    });
+    this.enemies.spawn(
+      spawns,
+      (enemy: Enemy) => {
+        const spr = this.textures.exists("chars")
+          ? this.add.sprite(enemy.x, enemy.y, "chars", ENEMY_FRAME)
+          : this.add.sprite(enemy.x, enemy.y, "enemy");
+        spr.setDisplaySize(TILE_SIZE, TILE_SIZE);
+        spr.setDepth(5);
+
+        // Pulsing animation (relative to the baked display scale).
+        const baseScale = spr.scaleX;
+        this.tweens.add({
+          targets: spr,
+          scaleX: baseScale * 1.15,
+          scaleY: baseScale * 1.15,
+          duration: 700,
+          yoyo: true,
+          repeat: -1,
+          ease: "Sine.easeInOut",
+        });
+        return spr;
+      },
+      (enemy: Enemy) => {
+        const lbl = this.add.text(
+          enemy.x,
+          enemy.y - TILE_SIZE * 0.65,
+          "???",
+          labelStyle
+        );
+        lbl.setOrigin(0.5, 1);
+        lbl.setDepth(6);
+        return lbl;
+      }
+    );
   }
 
   private spawnNpcs() {
     this.npcs.destroy();
     const anchors = this.worldPois().flatMap((poi) => poi.npc_anchors ?? []);
+    const npcLabelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: "Silkscreen, monospace",
+      fontSize: "10px",
+      color: "#ffcf3f",
+      stroke: "#0e1018",
+      strokeThickness: 4,
+    };
     for (const anchor of anchors) {
       const spr = this.add.sprite(
         anchor.x * TILE_SIZE + TILE_SIZE / 2,
@@ -597,7 +691,16 @@ export class OverworldScene extends Phaser.Scene {
       );
       spr.setDisplaySize(TILE_SIZE - 8, TILE_SIZE - 8);
       spr.setDepth(7);
-      this.npcs.add(anchor, spr);
+      const displayName = (anchor.name ?? anchor.archetype).toUpperCase();
+      const lbl = this.add.text(
+        spr.x,
+        spr.y - TILE_SIZE * 0.65,
+        displayName,
+        npcLabelStyle
+      );
+      lbl.setOrigin(0.5, 1);
+      lbl.setDepth(8);
+      this.npcs.add(anchor, spr, lbl);
     }
   }
 
@@ -625,8 +728,30 @@ export class OverworldScene extends Phaser.Scene {
       velocity: { vx: this.sim.vx, vy: this.sim.vy },
       deltaMs: delta,
     });
+    if (this.playerLabel) {
+      const bob = Math.sin(time / 420) * 1.5;
+      this.playerLabel.setPosition(this.sim.x, this.sim.y - TILE_SIZE * 0.65 + bob);
+    }
+
+    // Player ground shadow — soft ellipse, updates every frame.
+    this.shadowGraphics.clear();
+    this.shadowGraphics.fillStyle(0x0e1018, 0.32);
+    this.shadowGraphics.fillEllipse(
+      this.sim.x, this.sim.y + TILE_SIZE * 0.36,
+      TILE_SIZE * 0.72, TILE_SIZE * 0.24
+    );
+
+    // Local terrain decorations — only redrawn when the player crosses a tile.
+    const dtx = this.sim.tileX;
+    const dty = this.sim.tileY;
+    if (dtx !== this.lastDetailTile.x || dty !== this.lastDetailTile.y) {
+      this.lastDetailTile = { x: dtx, y: dty };
+      this.redrawLocalDetail(dtx, dty);
+    }
+
     this.emitPlayerTile();
     this.npcs.update(time, this.sim.x, this.sim.y);
+    this.updateNearestSign();
     this.maybeTriggerNpcTalk(time);
     this.maybeEnterInterior();
     this.maybeRefreshChunk(time);
@@ -770,8 +895,340 @@ export class OverworldScene extends Phaser.Scene {
     this.encounterPending = false;
   }
 
+  /** Redraw rich sub-tile decorations across the full visible screen. */
+  private redrawLocalDetail(_centerTx: number, _centerTy: number) {
+    if (!this.mapData) return;
+    const g = this.detailGraphics;
+    g.clear();
+    const originX = this.mapData.origin_x ?? 0;
+    const originY = this.mapData.origin_y ?? 0;
+    const cam = this.cameras.main;
+
+    // Cover every tile visible in the camera viewport, plus one tile of padding
+    // to avoid pop-in at edges as the camera scrolls.
+    const leftTile   = Math.floor(cam.scrollX / TILE_SIZE) - 1;
+    const topTile    = Math.floor(cam.scrollY / TILE_SIZE) - 1;
+    const rightTile  = Math.ceil((cam.scrollX + cam.width)  / TILE_SIZE) + 1;
+    const bottomTile = Math.ceil((cam.scrollY + cam.height) / TILE_SIZE) + 1;
+
+    for (let ty = topTile; ty <= bottomTile; ty++) {
+      for (let tx = leftTile; tx <= rightTile; tx++) {
+        const lx = tx - originX;
+        const ly = ty - originY;
+        if (ly < 0 || ly >= this.mapData.tiles.length) continue;
+        const row = this.mapData.tiles[ly];
+        if (!row || lx < 0 || lx >= row.length) continue;
+        const tile = row[lx];
+        const px = tx * TILE_SIZE;
+        const py = ty * TILE_SIZE;
+        const j = tileJitter(tx, ty);
+        this.drawTileDetail(g, tile, px, py, j);
+      }
+    }
+  }
+
+  private drawTileDetail(
+    g: Phaser.GameObjects.Graphics,
+    tile: number,
+    px: number,
+    py: number,
+    j: number
+  ) {
+    switch (tile) {
+      case TILE.GRASS:    this.detailGrass(g, px, py, j);    break;
+      case TILE.FOREST:   this.detailForest(g, px, py, j);   break;
+      case TILE.MOUNTAIN: this.detailMountain(g, px, py, j); break;
+      case TILE.ROAD:     this.detailRoad(g, px, py, j);     break;
+      case TILE.FEATURE:  this.detailFeature(g, px, py, j);  break;
+      case TILE.TOWN:     this.detailTown(g, px, py, j);     break;
+      case TILE.WATER:    this.detailWater(g, px, py, j);    break;
+      case TILE.CAVE:     this.detailCave(g, px, py, j);     break;
+    }
+  }
+
+  private detailGrass(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // ~12% of grass tiles become farmland (crop rows).
+    if ((j & 0x1f) < 4) {
+      this.detailFarm(g, px, py, j);
+      return;
+    }
+    // Two or three blade pairs scattered across the tile.
+    g.fillStyle(0x567a38, 0.75);
+    const b1x = px + 4 + (j & 0x7);
+    const b1y = py + TILE_SIZE - 7;
+    g.fillRect(b1x,     b1y,     1, 4);
+    g.fillRect(b1x + 2, b1y + 1, 1, 3);
+    const b2x = px + 14 + ((j >> 4) & 0x7);
+    g.fillRect(b2x,     b1y,     1, 5);
+    g.fillRect(b2x - 2, b1y + 2, 1, 3);
+    if ((j & 0x3) === 0) {
+      g.fillRect(px + 22 + ((j >> 8) & 0x5), b1y + 1, 1, 4);
+    }
+    // Occasional small flower dot.
+    if ((j & 0xf) < 3) {
+      g.fillStyle(0xffe080, 0.85);
+      g.fillRect(px + 10 + ((j >> 8) & 0xf), py + TILE_SIZE - 9, 2, 2);
+    }
+  }
+
+  private detailFarm(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // Plowed soil rows.
+    const rowH = 4;
+    const soilColor  = 0x6b4226;
+    const cropColor  = 0x4a9130;
+    const crop2Color = 0x7ec850;
+    for (let row = 0; row < 4; row++) {
+      const ry = py + 4 + row * (rowH + 2);
+      g.fillStyle(soilColor, 0.55);
+      g.fillRect(px + 2, ry + rowH - 1, TILE_SIZE - 4, 2); // soil furrow
+      g.fillStyle(cropColor, 0.7);
+      g.fillRect(px + 2, ry, TILE_SIZE - 4, rowH - 1);    // crop strip
+      // Crop plant symbols (small + shapes)
+      const plantX = px + 4 + ((j >> (row * 3)) & 0x9);
+      g.fillStyle(crop2Color, 0.9);
+      g.fillRect(plantX,     ry + 1, 3, 1); // horizontal
+      g.fillRect(plantX + 1, ry,     1, 3); // vertical
+      const plantX2 = plantX + 10 + ((j >> (row * 2 + 5)) & 0x5);
+      g.fillRect(plantX2,     ry + 1, 3, 1);
+      g.fillRect(plantX2 + 1, ry,     1, 3);
+    }
+  }
+
+  private detailForest(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    const cx = px + TILE_SIZE / 2 + ((j & 0x3) - 1);
+    // Trunk
+    g.fillStyle(0x3d2c22, 0.9);
+    g.fillRect(cx - 2, py + TILE_SIZE - 9, 4, 9);
+    // Shadow beneath crown
+    g.fillStyle(0x1a3018, 0.3);
+    g.fillEllipse(cx, py + TILE_SIZE / 2 + 4, 20, 8);
+    // Crown — two layers for depth
+    g.fillStyle(0x1e4d20, 0.82);
+    g.fillCircle(cx, py + TILE_SIZE / 2 - 2, 9);
+    g.fillStyle(0x2d6b2a, 0.5);
+    g.fillCircle(cx - 2, py + TILE_SIZE / 2 - 4, 5);
+  }
+
+  private detailMountain(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // Scattered pebbles.
+    g.fillStyle(0x9a9e9e, 0.65);
+    g.fillRect(px + 4  + (j & 0x7),        py + TILE_SIZE - 9 + ((j >> 3) & 0x3), 3, 2);
+    g.fillRect(px + 16 + ((j >> 5) & 0x7), py + TILE_SIZE - 7 + ((j >> 8) & 0x3), 2, 2);
+    g.fillRect(px + 10 + ((j >> 10) & 0x5),py + TILE_SIZE - 5,                     2, 3);
+    // Snow speck near the peak if high-jitter tile.
+    if ((j & 0x1f) < 8) {
+      g.fillStyle(0xdedbd0, 0.5);
+      g.fillRect(px + TILE_SIZE / 2 - 1 + ((j >> 2) & 0x3), py + 8, 3, 2);
+    }
+  }
+
+  private detailRoad(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // Worn wheel-track lines running left-right.
+    g.fillStyle(0x7a5c32, 0.42);
+    g.fillRect(px + 3, py + 6  + ((j >> 2) & 0x3), TILE_SIZE - 6, 1);
+    g.fillRect(px + 3, py + TILE_SIZE - 9 + ((j >> 5) & 0x3), TILE_SIZE - 6, 1);
+    // Center worn strip.
+    g.fillStyle(0x8c6a42, 0.18);
+    g.fillRect(px + 8, py + 4, TILE_SIZE - 16, TILE_SIZE - 8);
+  }
+
+  private detailTown(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    const style = j & 0x3; // 0=house 1=shop 2=inn 3=barn
+    if (style === 3) {
+      // Barn: wide reddish planks + loft window
+      g.fillStyle(0x8b3a1e, 0.6);
+      g.fillRect(px + 2, py + 4, TILE_SIZE - 4, TILE_SIZE - 10);
+      g.fillStyle(0xd4a96a, 0.4);
+      g.fillRect(px + 2, py + 4, TILE_SIZE - 4, 1); // top plank line
+      g.fillRect(px + 2, py + 10, TILE_SIZE - 4, 1);
+      g.fillStyle(0xfff4b0, 0.5);
+      g.fillRect(px + TILE_SIZE / 2 - 3, py + 5, 6, 4); // loft window
+    } else {
+      // House/shop/inn: standard window + optional chimney
+      const windowX = px + 4 + ((j >> 4) & 0x5);
+      g.fillStyle(0xfff4b0, style === 1 ? 0.7 : 0.5);
+      g.fillRect(windowX, py + 4, 7, 6);
+      g.fillStyle(0x5c4a20, 0.65);
+      g.fillRect(windowX + 3, py + 4, 1, 6);
+      g.fillRect(windowX,     py + 6, 7, 1);
+      // Chimney on houses
+      if (style === 0) {
+        g.fillStyle(0x6b4226, 0.8);
+        g.fillRect(px + TILE_SIZE - 8, py, 4, 6);
+        g.fillStyle(0x3d2c22, 0.5);
+        g.fillRect(px + TILE_SIZE - 9, py, 6, 2); // chimney top
+      }
+      // Sign above shop door
+      if (style === 1) {
+        g.fillStyle(0xffcf3f, 0.55);
+        g.fillRect(px + 4, py + 2, 10, 2);
+      }
+      // Door
+      if ((j & 0x7) < 5) {
+        g.fillStyle(0x3d2c22, 0.75);
+        g.fillRect(px + TILE_SIZE - 10, py + TILE_SIZE - 9, 5, 9);
+      }
+    }
+    // Fence rail along bottom edge of most town tiles
+    if ((j & 0x3) !== 3) {
+      g.lineStyle(1, 0x8b6914, 0.5);
+      g.strokeRect(px + 1, py + TILE_SIZE - 5, TILE_SIZE - 2, 4);
+      g.fillStyle(0x8b6914, 0.6);
+      g.fillRect(px + 4,              py + TILE_SIZE - 5, 2, 4); // post
+      g.fillRect(px + TILE_SIZE - 7,  py + TILE_SIZE - 5, 2, 4); // post
+    }
+  }
+
+  private detailFeature(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // Feature tiles render as fence sections with posts.
+    g.fillStyle(0x8b6914, 0.75);
+    // Two posts
+    g.fillRect(px + 3,              py + 4, 3, TILE_SIZE - 8);
+    g.fillRect(px + TILE_SIZE - 7,  py + 4, 3, TILE_SIZE - 8);
+    // Top rail
+    g.fillRect(px + 1, py + 6, TILE_SIZE - 2, 2);
+    // Bottom rail
+    g.fillRect(px + 1, py + TILE_SIZE - 9, TILE_SIZE - 2, 2);
+    // Post caps
+    g.fillStyle(0xd4a96a, 0.6);
+    g.fillRect(px + 3, py + 4, 3, 2);
+    g.fillRect(px + TILE_SIZE - 7, py + 4, 3, 2);
+  }
+
+  private detailWater(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // Two ripple arc hints at phase-shifted positions.
+    g.lineStyle(1, 0x91d4ef, 0.35);
+    const r1x = px + 6 + (j & 0x7);
+    const r1y = py + 8 + ((j >> 3) & 0x5);
+    g.strokeRect(r1x, r1y, 10, 4);
+    const r2x = px + 14 + ((j >> 6) & 0x7);
+    const r2y = py + TILE_SIZE - 12 + ((j >> 9) & 0x5);
+    g.strokeRect(r2x, r2y, 8, 3);
+  }
+
+  private detailCave(g: Phaser.GameObjects.Graphics, px: number, py: number, j: number) {
+    // Stalactite drip marks.
+    g.fillStyle(0x5a4a52, 0.55);
+    const s1x = px + 7 + (j & 0x7);
+    g.fillRect(s1x, py + 4, 2, 5 + ((j >> 3) & 0x3));
+    g.fillRect(s1x + 1, py + 9 + ((j >> 3) & 0x3), 1, 1);
+    const s2x = px + 18 + ((j >> 5) & 0x7);
+    g.fillRect(s2x, py + 6, 2, 4 + ((j >> 8) & 0x3));
+    // Drip pool dot.
+    if ((j & 0xf) < 5) {
+      g.fillStyle(0x2a3f5a, 0.6);
+      g.fillRect(s1x, py + TILE_SIZE - 6, 3, 2);
+    }
+  }
+
+  private buildSigns() {
+    this.destroySigns();
+    if (!this.mapData || !this.textures.exists("sign")) return;
+    const originX = this.mapData.origin_x ?? 0;
+    const originY = this.mapData.origin_y ?? 0;
+
+    for (let ly = 0; ly < this.mapData.height; ly++) {
+      for (let lx = 0; lx < this.mapData.width; lx++) {
+        const tile = this.mapData.tiles[ly][lx];
+        const tx = lx + originX;
+        const ty = ly + originY;
+        const j = tileJitter(tx, ty);
+        // Eligible: ROAD ~1%, FEATURE ~2%, GRASS ~0.4%
+        const isSign =
+          (tile === TILE.ROAD    && (j & 0x7f) === 3) ||
+          (tile === TILE.FEATURE && (j & 0x3f) === 7) ||
+          (tile === TILE.GRASS   && (j & 0x1ff) === 11);
+        if (!isSign) continue;
+
+        const key = `${tx},${ty}`;
+        const text = SIGN_POOL[Math.abs(j >> 4) % SIGN_POOL.length];
+        const wx = tx * TILE_SIZE + TILE_SIZE / 2;
+        const wy = ty * TILE_SIZE + TILE_SIZE / 2;
+        const spr = this.add.sprite(wx, wy - 6, "sign");
+        spr.setDisplaySize(TILE_SIZE * 0.8, TILE_SIZE * 0.8);
+        spr.setDepth(4);
+        this.signs.push({ key, tileX: tx, tileY: ty, text, spr });
+      }
+    }
+  }
+
+  private destroySigns() {
+    for (const s of this.signs) s.spr.destroy();
+    this.signs = [];
+    this.hideSignPopup();
+    this.nearestSignKey = "";
+  }
+
+  private updateNearestSign() {
+    if (!this.sim) return;
+    let nearest: typeof this.signs[0] | null = null;
+    let bestDist = Infinity;
+    for (const s of this.signs) {
+      const wx = s.tileX * TILE_SIZE + TILE_SIZE / 2;
+      const wy = s.tileY * TILE_SIZE + TILE_SIZE / 2;
+      const d = Math.hypot(this.sim.x - wx, this.sim.y - wy);
+      if (d < SIGN_INTERACT_PX && d < bestDist) {
+        nearest = s;
+        bestDist = d;
+      }
+    }
+    const key = nearest?.key ?? "";
+    if (key !== this.nearestSignKey) {
+      this.nearestSignKey = key;
+      if (nearest) this.showSignPopup(nearest.text);
+      else this.hideSignPopup();
+    }
+  }
+
+  private showSignPopup(text: string) {
+    this.hideSignPopup();
+    const cam = this.cameras.main;
+    const W = Math.min(320, cam.width - 32);
+    const H = 56;
+    const sx = (cam.width - W) / 2;
+    const sy = cam.height - H - 24;
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x0e1018, 0.92);
+    bg.fillRect(sx, sy, W, H);
+    bg.lineStyle(2, 0xffcf3f, 0.9);
+    bg.strokeRect(sx, sy, W, H);
+    // Pin icon strip on left
+    bg.fillStyle(0xffcf3f, 0.25);
+    bg.fillRect(sx, sy, 18, H);
+    bg.lineStyle(0, 0, 0);
+    bg.fillStyle(0xffcf3f, 0.9);
+    bg.fillRect(sx + 7, sy + H / 2 - 5, 4, 4);  // pin head
+    bg.fillRect(sx + 8, sy + H / 2 - 1, 2, 8);  // pin post
+    bg.setScrollFactor(0);
+    bg.setDepth(500);
+
+    const txt = this.add.text(sx + 26, sy + H / 2, text, {
+      fontFamily: "Silkscreen, monospace",
+      fontSize: "8px",
+      color: "#e8e6d8",
+      wordWrap: { width: W - 32 },
+    });
+    txt.setOrigin(0, 0.5);
+    txt.setScrollFactor(0);
+    txt.setDepth(501);
+
+    this.signPopupBg = bg;
+    this.signPopupText = txt;
+  }
+
+  private hideSignPopup() {
+    this.signPopupBg?.destroy();
+    this.signPopupText?.destroy();
+    this.signPopupBg = null;
+    this.signPopupText = null;
+  }
+
   destroy() {
     this.enemies.destroy();
     this.npcs.destroy();
+    this.destroySigns();
+    this.playerLabel?.destroy();
+    this.playerLabel = null;
   }
 }
