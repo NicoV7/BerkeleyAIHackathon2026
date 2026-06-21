@@ -11,9 +11,12 @@
  */
 
 import Phaser from "phaser";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { buildEncounterBridge } from "../game/EncounterTrigger";
-import { OverworldScene, TILE_SIZE } from "../game/OverworldScene";
+import NPCDialogue from "../game/NPCDialogue";
+import type { NPCAnchorView } from "../game/NPCBehavior";
+import { TILE_SIZE } from "../game/constants";
+import { OverworldScene } from "../game/OverworldScene";
 import { useGame } from "../state/store";
 
 const MAP_WIDTH = 20;
@@ -25,6 +28,11 @@ export default function Overworld() {
   const { runId, setEncounter } = useGame();
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
+  const [activeNpc, setActiveNpc] = useState<NPCAnchorView | null>(null);
+
+  useEffect(() => {
+    setActiveNpc(null);
+  }, [runId]);
 
   useEffect(() => {
     if (!containerRef.current || !runId) return;
@@ -56,6 +64,9 @@ export default function Overworld() {
         onEncounter: (wildId: string) => {
           void bridge.onCollision(wildId);
         },
+        onNpcTalk: (npc: NPCAnchorView) => {
+          setActiveNpc(npc);
+        },
       });
     });
 
@@ -76,7 +87,7 @@ export default function Overworld() {
   }
 
   return (
-    <div className="flex flex-col items-center gap-2 p-2">
+    <div className="relative flex flex-col items-center gap-2 p-2">
       <div className="font-hud text-[10px]" style={{ color: "var(--muted)" }}>
         Arrow keys / WASD to move · Walk into a red enemy to battle
       </div>
@@ -85,6 +96,7 @@ export default function Overworld() {
         style={{ width: CANVAS_W, height: CANVAS_H, borderColor: "rgba(232,230,216,0.18)" }}
         className="overflow-hidden border-[3px]"
       />
+      <NPCDialogue runId={runId} npc={activeNpc} onClose={() => setActiveNpc(null)} />
     </div>
   );
 }

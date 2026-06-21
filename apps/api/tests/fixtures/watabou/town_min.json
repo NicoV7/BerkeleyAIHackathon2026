@@ -1,0 +1,39 @@
+{
+  "type": "FeatureCollection",
+  "properties": {
+    "version": "0.7.3",
+    "name": "Aldermere"
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "type": "inn" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [10, 10], [22, 10], [22, 16], [10, 16], [10, 10]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "type": "shop" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [30, 12], [42, 12], [42, 20], [30, 20], [30, 12]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "type": "guild" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [20, 30], [34, 30], [34, 38], [20, 38], [20, 30]
+        ]]
+      }
+    }
+  ]
+}

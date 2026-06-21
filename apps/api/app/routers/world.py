@@ -20,16 +20,20 @@ Tile legend (the map grid):
 from __future__ import annotations
 
 import random
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models import Run
 from app.db.session import get_session
-from app.schemas import POI, Region, WorldSpecLite
+from app.schemas import NPCAnchor, POI, Region, WorldSpecLite
+from app.world import boss_profile, event_log, figures, npcs, quests
 from app.world.algorithms import INTERIOR_KINDS, get_generator
+from app.world.algorithms.base import BLOCKED_TILES
 from app.world.algorithms.biomes import BiomeGenerator
 
 router = APIRouter(prefix="/api", tags=["world"])
@@ -92,7 +96,7 @@ def place_pois(
         if not (0 <= x < width and 0 <= y < height):
             return False
         # Treat campsite (2) as walkable too, though we place camps last.
-        return tiles[y][x] != 1
+        return tiles[y][x] not in BLOCKED_TILES
 
     pois: list[POI] = []
     used: set[tuple[int, int]] = set()
@@ -150,12 +154,12 @@ def _scatter_one(
         y = rng.randint(1, height - 2)
         if (x, y) in used:
             continue
-        if tiles[y][x] != 1:
+        if tiles[y][x] not in BLOCKED_TILES:
             return (x, y)
     # Deterministic fallback: first free walkable tile by scan order.
     for y in range(height):
         for x in range(width):
-            if (x, y) not in used and tiles[y][x] != 1:
+            if (x, y) not in used and tiles[y][x] not in BLOCKED_TILES:
                 return (x, y)
     return None
 
@@ -173,7 +177,11 @@ def _nearest_walkable(
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
                 x, y = tx + dx, ty + dy
-                if 0 <= x < width and 0 <= y < height and tiles[y][x] != 1:
+                if (
+                    0 <= x < width
+                    and 0 <= y < height
+                    and tiles[y][x] not in BLOCKED_TILES
+                ):
                     return (x, y)
     return (1, 1)
 
@@ -188,7 +196,7 @@ def apply_camp_tiles(tiles: list[list[int]], pois: list[POI]) -> list[list[int]]
     out = [row[:] for row in tiles]
     for poi in pois:
         if poi.kind == "camp" and 0 <= poi.y < len(out) and 0 <= poi.x < len(out[0]):
-            if out[poi.y][poi.x] != 1:
+            if out[poi.y][poi.x] not in BLOCKED_TILES:
                 out[poi.y][poi.x] = CAMP_TILE
     return out
 
@@ -336,6 +344,144 @@ def _clear_interior_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Living layer helpers (Wave 2) — NPCs, quests, figures, final-boss profile.
+# ---------------------------------------------------------------------------
+
+
+class SummonRequest(BaseModel):
+    """Request to summon a recruited historical figure for one battle turn."""
+
+    figure_id: str
+    battle_state: dict[str, Any] = Field(default_factory=dict)
+
+
+class QuestAcceptRequest(BaseModel):
+    """Accept or re-fetch the quest offered by an NPC."""
+
+    npc_id: str
+
+
+WorldEventKind = Literal[
+    "dungeon_cleared",
+    "boss_defeated",
+    "figure_recruited",
+    "region_entered",
+    "battle_won",
+    "fallacy_flagged",
+]
+
+
+class WorldEventRequest(BaseModel):
+    """Validated world event payload used by the living-layer event log."""
+
+    kind: WorldEventKind
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+async def _get_run_or_404(
+    run_id: str, session: AsyncSession
+) -> Run:
+    """Fetch a run or raise the router's standard 404."""
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+def _region_for_anchor(spec: WorldSpecLite, anchor: NPCAnchor) -> Region | None:
+    """Find the region that contains an NPC anchor, falling back to the first."""
+    for region in spec.regions:
+        bounds = region.bounds or []
+        if len(bounds) != 4:
+            continue
+        x0, y0, x1, y1 = bounds
+        if x0 <= anchor.x <= x1 and y0 <= anchor.y <= y1:
+            return region
+    return spec.regions[0] if spec.regions else None
+
+
+def _poi_key_from_interior_path(path: Path) -> str | None:
+    """Convert safe interior filenames like ``den_13_9.json`` to ``den:13:9``."""
+    parts = path.stem.split("_")
+    if len(parts) != 3:
+        return None
+    kind, x, y = parts
+    if not x.isdigit() or not y.isdigit():
+        return None
+    return f"{kind}:{x}:{y}"
+
+
+def _iter_canonical_specs() -> list[tuple[str, WorldSpecLite]]:
+    """Return the canonical overworld plus every loadable canonical interior."""
+    from app.world import canonical as canonical_mod
+
+    specs: list[tuple[str, WorldSpecLite]] = []
+    world = canonical_mod.get_canonical_world()
+    if world is not None:
+        specs.append(("world", world.spec))
+
+    if not canonical_mod.INTERIORS_DIR.exists():
+        return specs
+    for path in sorted(canonical_mod.INTERIORS_DIR.glob("*.json")):
+        key = _poi_key_from_interior_path(path)
+        if key is None:
+            continue
+        bundle = canonical_mod.get_canonical_interior(key)
+        if bundle is not None:
+            specs.append((key, bundle.spec))
+    return specs
+
+
+def _find_npc_anchor(npc_id: str) -> tuple[NPCAnchor, Region | None] | None:
+    """Find an NPC anchor by id across the canonical world and interiors."""
+    for _key, spec in _iter_canonical_specs():
+        for poi in spec.pois:
+            for anchor in poi.npc_anchors:
+                if anchor.npc_id == npc_id:
+                    return anchor, _region_for_anchor(spec, anchor)
+    return None
+
+
+def _candidate_dungeons() -> list[tuple[str, str]]:
+    """Dungeon candidates for dynamic quests, derived from canonical content."""
+    seen: dict[str, str] = {}
+    for key, spec in _iter_canonical_specs():
+        if key.startswith("den:"):
+            name = spec.regions[0].name if spec.regions else key
+            seen[key] = name
+        for poi in spec.pois:
+            if poi.kind == "den" or poi.interior_kind in {"cave", "dungeon"}:
+                seen.setdefault(poi_id(poi), poi.name or poi_id(poi))
+    return list(seen.items())
+
+
+def _figure_summary(fig: figures.Figure, recruited: bool = False) -> dict[str, Any]:
+    """Frontend-safe figure payload."""
+    return {
+        **fig.to_summary(),
+        "recruited": recruited,
+        "signature_topics": fig.signature_topics,
+        "recruit_trial_topic": fig.recruit_trial_topic,
+    }
+
+
+def _summon_prompt(fig: figures.Figure, battle_state: dict[str, Any]) -> str:
+    """Build the one-turn voice prompt for a summoned figure."""
+    topic = battle_state.get("topic") or battle_state.get("debate_topic") or "this debate"
+    quotes = " ".join(fig.famous_quotes[:3])
+    return (
+        f"You are {fig.name}, summoned for one ally turn in a debate about {topic}. "
+        f"Voice: {fig.voice} Signature quotes to echo without copying wholesale: {quotes} "
+        "Answer in one decisive turn that helps the player."
+    )
+
+
+def _event_to_dict(evt: event_log.Event) -> dict[str, Any]:
+    """Serialize an event-log entry for route responses."""
+    return {"kind": evt.kind, "data": evt.data, "ts": evt.ts}
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -345,23 +491,30 @@ async def get_world(
     run_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> WorldSpecLite:
-    """Return the seed-deterministic WorldSpecLite for a run.
+    """Return the WorldSpecLite for a run.
 
-    POIs are produced by the same ``place_pois`` helper the map router uses, so
-    ``/world`` and ``/map`` always agree for a given seed.
+    Priority order:
+      1. **Canonical world** — if ``apps/api/data/world/canonical.json`` exists,
+         return its hand-curated spec. Identity layer (named regions, scripted
+         POIs, npc_anchors) lives here.
+      2. **Agent-generated world** — gated by ``settings.world_gen_enabled``;
+         returns None on any failure so we never 500.
+      3. **Seed-procedural world** — the deterministic fallback. ``/world`` and
+         ``/map`` agree on POIs via the shared ``place_pois`` helper.
     """
     # Import here to avoid a circular import at module load (map imports world).
     from app.routers.map import MAP_HEIGHT, MAP_WIDTH, _generate_tiles
+    from app.world.canonical import get_canonical_world
 
-    run = await session.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+    run = await _get_run_or_404(run_id, session)
+
+    canonical = get_canonical_world()
+    if canonical is not None:
+        return canonical.spec
 
     tiles = _generate_tiles(run.seed)
 
-    # Wave 3 (gated, default OFF): try the agent generator first. It is cached
-    # per seed and returns None on ANY failure, so this can NEVER 500 or break
-    # determinism — on None (or an unexpected raise) we use the procedural world.
+    # Gated Wave-3 agent generator (default OFF).
     if settings.world_gen_enabled:
         try:
             from app.world.generator import generate_world
@@ -407,12 +560,16 @@ async def get_interior(
     a coord-stable seed, so the FE always gets a renderable scene.
     """
     from app.routers.map import MAP_HEIGHT, MAP_WIDTH, _generate_tiles
+    from app.world.canonical import get_canonical_interior
 
-    run = await session.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+    run = await _get_run_or_404(run_id, session)
 
-    # Resolve the POI from the deterministic world so we use the SAME
+    # 1) Canonical interior wins if present (hand-curated NPCs/lore).
+    canonical_interior = get_canonical_interior(poi_key)
+    if canonical_interior is not None:
+        return canonical_interior.spec
+
+    # 2) Resolve the POI from the deterministic world so we use the SAME
     # interior_seed/kind the FE saw on /world (no drift).
     tiles = _generate_tiles(run.seed)
     world = build_world(run.seed, tiles, MAP_WIDTH, MAP_HEIGHT)
@@ -423,9 +580,147 @@ async def get_interior(
             match.interior_seed, _clamp_interior_kind(match.interior_kind)
         )
 
-    # Graceful fallback: unknown/non-enterable POI. Derive a stable seed from the
-    # run + the requested key so the fallback interior is still deterministic.
+    # 3) Graceful fallback: unknown/non-enterable POI. Derive a stable seed from
+    # the run + the requested key so the fallback interior is still deterministic.
     fallback_seed = (
         run.seed * 1000003 + _stable_str_hash(poi_key)
     ) ^ _INTERIOR_SEED_MASK
     return build_interior(fallback_seed, "cave")
+
+
+@router.post("/runs/{run_id}/npc/{npc_id}/talk")
+async def talk_to_npc(
+    run_id: str,
+    npc_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Generate/cache dialogue for a canonical NPC anchor."""
+    await _get_run_or_404(run_id, session)
+    match = _find_npc_anchor(npc_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="NPC not found")
+
+    anchor, region = match
+    dialogue = await npcs.generate_dialogue(run_id, anchor, region)
+    return {
+        "npc_id": anchor.npc_id,
+        "name": anchor.name,
+        "archetype": anchor.archetype,
+        "text": dialogue.text,
+        "cached": dialogue.cached,
+        "cache_key": dialogue.cache_key,
+    }
+
+
+@router.get("/runs/{run_id}/figures")
+async def list_figures(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Return the historical figure roster with per-run recruitment state."""
+    await _get_run_or_404(run_id, session)
+    recruited = {fig.id for fig in await figures.recruited_list(run_id)}
+    return {
+        "figures": [
+            _figure_summary(fig, recruited=fig.id in recruited)
+            for fig in figures.all_figures()
+        ]
+    }
+
+
+@router.post("/runs/{run_id}/summon")
+async def summon_figure(
+    run_id: str,
+    body: SummonRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Summon a recruited figure for one battle turn."""
+    await _get_run_or_404(run_id, session)
+    fig = figures.get_figure(body.figure_id)
+    if fig is None:
+        raise HTTPException(status_code=404, detail="Figure not found")
+    if not await figures.is_recruited(run_id, body.figure_id):
+        raise HTTPException(status_code=409, detail="Figure is not recruited")
+
+    evt = await event_log.append(run_id, "figure_summoned", figure_id=body.figure_id)
+    return {
+        "summoned": True,
+        "figure": _figure_summary(fig, recruited=True),
+        "voice": fig.voice,
+        "turn_prompt": _summon_prompt(fig, body.battle_state),
+        "event": _event_to_dict(evt),
+    }
+
+
+@router.get("/runs/{run_id}/profile")
+async def get_profile(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Aggregate the playthrough profile consumed by the final boss."""
+    await _get_run_or_404(run_id, session)
+    profile = await boss_profile.compute_profile(run_id)
+    return {
+        "profile": profile.to_dict(),
+        "boss_prompt_blurbs": profile.boss_prompt_blurbs(),
+    }
+
+
+@router.post("/runs/{run_id}/quest/accept")
+async def accept_quest(
+    run_id: str,
+    body: QuestAcceptRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Accept or retrieve the active quest offered by an NPC."""
+    await _get_run_or_404(run_id, session)
+    match = _find_npc_anchor(body.npc_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="NPC not found")
+
+    anchor, _region = match
+    if anchor.archetype not in {"merchant", "quest_giver"}:
+        raise HTTPException(status_code=409, detail="NPC does not offer quests")
+
+    quest = await quests.offer_quest(
+        run_id, body.npc_id, candidate_dungeons=_candidate_dungeons()
+    )
+    return {"quest": quest.to_dict() if quest is not None else None}
+
+
+@router.get("/runs/{run_id}/quests")
+async def list_run_quests(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Return accepted/completed quests for a run."""
+    await _get_run_or_404(run_id, session)
+    return {"quests": await quests.list_quests(run_id)}
+
+
+@router.post("/runs/{run_id}/events")
+async def append_world_event(
+    run_id: str,
+    body: WorldEventRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Append a world event and complete matching event-log quests."""
+    await _get_run_or_404(run_id, session)
+
+    data = dict(body.data)
+    if body.kind == "figure_recruited":
+        figure_id = str(data.get("figure_id") or "")
+        if not figure_id:
+            raise HTTPException(status_code=400, detail="figure_id is required")
+        if not await figures.recruit(run_id, figure_id):
+            raise HTTPException(status_code=404, detail="Figure not found")
+        events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
+        evt = next(
+            e for e in reversed(events)
+            if e.kind == "figure_recruited" and e.data.get("figure_id") == figure_id
+        )
+    else:
+        evt = await event_log.append(run_id, body.kind, **data)
+
+    completed = await quests.maybe_complete_quests(run_id, body.kind, **data)
+    return {"event": _event_to_dict(evt), "completed_quests": completed}

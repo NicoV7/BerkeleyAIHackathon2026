@@ -14,7 +14,7 @@ import random
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,7 @@ from app.schemas import (
     RunState,
     TileEnemy,
 )
+from app.world.algorithms.base import BLOCKED_TILES
 
 router = APIRouter(prefix="/api", tags=["map"])
 
@@ -44,7 +45,8 @@ router = APIRouter(prefix="/api", tags=["map"])
 
 MAP_WIDTH = 20
 MAP_HEIGHT = 15
-WILD_COUNT = 5  # wild enemies placed on the map per run
+MAP_CHUNK_SIZE = 96
+WILD_COUNT = 32  # wild enemies placed globally per run
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +69,28 @@ def _monster_to_summary(m: Monster) -> MonsterSummary:
 
 
 def _generate_tiles(seed: int) -> list[list[int]]:
-    """Deterministic tile grid from seed.  0=walkable, 1=blocked."""
+    """Tile grid for the run.  0=walkable, 1=blocked, 2=campsite.
+
+    Prefers the hand-curated canonical world artifact when present
+    (``apps/api/data/world/canonical.json``); falls back to the seeded procgen
+    so any run without a canonical bake (tests, fresh checkouts) still works.
+    Canonical tiles are SEED-INDEPENDENT — the canonical bake is the shape we
+    ship; the seed only matters for wild-enemy placement on top of it.
+    """
+    # Lazy import: avoids tugging on data files at module load (tests + the
+    # bake script itself import map.py before any artifact exists).
+    from app.world.canonical import get_canonical_world
+
+    canonical = get_canonical_world()
+    if canonical is not None:
+        from app.world.canonical import get_canonical_tile_window
+
+        if canonical.tiles:
+            return [row[:] for row in canonical.tiles]
+        window = get_canonical_tile_window(0, 0, MAP_WIDTH, MAP_HEIGHT)
+        if window is not None:
+            return window
+
     rng = random.Random(seed)
     tiles = [[0] * MAP_WIDTH for _ in range(MAP_HEIGHT)]
     # Place some scattered wall tiles (~15% density)
@@ -83,20 +106,95 @@ def _generate_tiles(seed: int) -> list[list[int]]:
     return tiles
 
 
-def _place_wild_on_map(wild: list[Monster], seed: int) -> list[TileEnemy]:
+def _tile_dims(tiles: list[list[int]]) -> tuple[int, int]:
+    """Return (width, height) for a tile grid, falling back to legacy constants."""
+    if tiles and tiles[0]:
+        return len(tiles[0]), len(tiles)
+    return MAP_WIDTH, MAP_HEIGHT
+
+
+def _is_blocked_tile(tiles: list[list[int]], x: int, y: int) -> bool:
+    """True when a tile is outside the grid or is not player-walkable."""
+    if y < 0 or y >= len(tiles):
+        return True
+    if x < 0 or x >= len(tiles[y]):
+        return True
+    return tiles[y][x] in BLOCKED_TILES
+
+
+def _world_dims_for(seed: int) -> tuple[int, int]:
+    """Return full world dimensions for canonical or fallback worlds."""
+    from app.world.canonical import get_canonical_world
+
+    canonical = get_canonical_world()
+    if canonical is not None:
+        return canonical.spec.width, canonical.spec.height
+    return _tile_dims(_generate_tiles(seed))
+
+
+def _canonical_tile_window(
+    center_x: int,
+    center_y: int,
+    size: int,
+) -> tuple[list[list[int]], int, int, int, int] | None:
+    """Return a centered canonical tile window plus origin/full-world dims."""
+    from app.world.canonical import get_canonical_tile_window, get_canonical_world
+
+    canonical = get_canonical_world()
+    if canonical is None:
+        return None
+
+    world_width = canonical.spec.width
+    world_height = canonical.spec.height
+    window_w = max(1, min(size, world_width))
+    window_h = max(1, min(size, world_height))
+    origin_x = max(0, min(world_width - window_w, center_x - window_w // 2))
+    origin_y = max(0, min(world_height - window_h, center_y - window_h // 2))
+    tiles = get_canonical_tile_window(origin_x, origin_y, window_w, window_h)
+    if tiles is None:
+        return None
+    return tiles, origin_x, origin_y, world_width, world_height
+
+
+def _is_world_blocked(seed: int, x: int, y: int) -> bool:
+    """True when a global world coordinate is not player-walkable."""
+    from app.world.canonical import get_canonical_tile, get_canonical_world
+
+    canonical = get_canonical_world()
+    if canonical is not None:
+        tile = get_canonical_tile(x, y)
+        return tile is None or tile in BLOCKED_TILES
+
+    tiles = _generate_tiles(seed)
+    return _is_blocked_tile(tiles, x, y)
+
+
+def _place_wild_on_map(
+    wild: list[Monster],
+    seed: int,
+    *,
+    origin_x: int = 0,
+    origin_y: int = 0,
+    width: int | None = None,
+    height: int | None = None,
+) -> list[TileEnemy]:
     """Assign tile positions to wild enemies deterministically."""
     rng = random.Random(seed ^ 0xABCD)
-    tiles = _generate_tiles(seed)
+    world_width, world_height = _world_dims_for(seed)
     positions: list[tuple[int, int]] = []
     enemies: list[TileEnemy] = []
     for m in wild:
         attempts = 0
         while attempts < 200:
-            x = rng.randint(3, MAP_WIDTH - 2)
-            y = rng.randint(1, MAP_HEIGHT - 2)
-            if tiles[y][x] == 0 and (x, y) not in positions:
+            x = rng.randint(3, max(3, world_width - 2))
+            y = rng.randint(1, max(1, world_height - 2))
+            if not _is_world_blocked(seed, x, y) and (x, y) not in positions:
                 positions.append((x, y))
-                enemies.append(TileEnemy(id=m.id, x=x, y=y, sprite="enemy"))
+                if width is None or height is None or (
+                    origin_x <= x < origin_x + width
+                    and origin_y <= y < origin_y + height
+                ):
+                    enemies.append(TileEnemy(id=m.id, x=x, y=y, sprite="enemy"))
                 break
             attempts += 1
     return enemies
@@ -120,12 +218,27 @@ async def create_run(
     label it with the theme so existing readers (runs.py, RunState) never break.
     """
     debate_topic = body.topic or body.theme or ""
+    # New runs spawn at the canonical trailhead when a baked world is present;
+    # otherwise keep the legacy fallback spawn.
+    from app.world.canonical import get_canonical_world
+
+    canonical = get_canonical_world()
+    start_x = (
+        canonical.spec.start.x
+        if canonical is not None and canonical.spec.start
+        else 1
+    )
+    start_y = (
+        canonical.spec.start.y
+        if canonical is not None and canonical.spec.start
+        else 1
+    )
     run = Run(
         debate_topic=debate_topic,
         theme=body.theme,
         seed=body.seed,
-        player_x=1,
-        player_y=1,
+        player_x=start_x,
+        player_y=start_y,
         status=RunStatus.active,
         # Use naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
         created_at=datetime.utcnow(),
@@ -153,6 +266,9 @@ async def create_run(
 async def get_map(
     run_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    center_x: Annotated[int | None, Query(ge=0)] = None,
+    center_y: Annotated[int | None, Query(ge=0)] = None,
+    chunk_size: Annotated[int, Query(ge=32, le=160)] = MAP_CHUNK_SIZE,
 ) -> MapState:
     """Return deterministic tile grid + current player pos + wild enemy positions."""
     run = await session.get(Run, run_id)
@@ -168,21 +284,65 @@ async def get_map(
     )
     wilds = list(result.scalars().all())
 
-    base_tiles = _generate_tiles(run.seed)
-    enemies = _place_wild_on_map(wilds, run.seed)
+    from app.world.canonical import get_canonical_world
+
+    canonical = get_canonical_world()
+    world_width, world_height = _world_dims_for(run.seed)
+    center_x = run.player_x if center_x is None else center_x
+    center_y = run.player_y if center_y is None else center_y
+    center_x = max(0, min(world_width - 1, center_x))
+    center_y = max(0, min(world_height - 1, center_y))
+
+    canonical_window = _canonical_tile_window(center_x, center_y, chunk_size)
+    if canonical_window is not None:
+        base_tiles, origin_x, origin_y, world_width, world_height = canonical_window
+    else:
+        base_tiles = _generate_tiles(run.seed)
+        origin_x = 0
+        origin_y = 0
+        world_width, world_height = _tile_dims(base_tiles)
+    width, height = _tile_dims(base_tiles)
+    enemies = _place_wild_on_map(
+        wilds,
+        run.seed,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        width=width,
+        height=height,
+    )
 
     # Structured POIs (start/goal/camp/town/den/landmark) + campsite tiles (2).
     # Same helper the /world router uses, so the two endpoints always agree.
-    pois = place_pois(run.seed, base_tiles, MAP_WIDTH, MAP_HEIGHT)
-    tiles = apply_camp_tiles(base_tiles, pois)
+    pois = (
+        canonical.spec.pois
+        if canonical is not None
+        else place_pois(run.seed, base_tiles, width, height)
+    )
+    local_pois = [
+        p.model_copy(update={"x": p.x - origin_x, "y": p.y - origin_y})
+        for p in pois
+        if origin_x <= p.x < origin_x + width and origin_y <= p.y < origin_y + height
+    ]
+    tiles = apply_camp_tiles(base_tiles, local_pois)
+    player_x = max(0, min(world_width - 1, run.player_x))
+    player_y = max(0, min(world_height - 1, run.player_y))
+    if _is_world_blocked(run.seed, player_x, player_y):
+        start = canonical.spec.start if canonical is not None else None
+        player_x = start.x if start is not None else 1
+        player_y = start.y if start is not None else 1
 
     return MapState(
-        width=MAP_WIDTH,
-        height=MAP_HEIGHT,
+        width=width,
+        height=height,
         tiles=tiles,
-        player_x=run.player_x,
-        player_y=run.player_y,
+        player_x=player_x,
+        player_y=player_y,
         enemies=enemies,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        world_width=world_width,
+        world_height=world_height,
+        chunk_size=chunk_size,
         pois=pois,
     )
 
@@ -198,17 +358,17 @@ async def move_player(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    tiles = _generate_tiles(run.seed)
+    width, height = _world_dims_for(run.seed)
 
     new_x = run.player_x + body.dx
     new_y = run.player_y + body.dy
 
     # Clamp to map bounds
-    new_x = max(0, min(MAP_WIDTH - 1, new_x))
-    new_y = max(0, min(MAP_HEIGHT - 1, new_y))
+    new_x = max(0, min(width - 1, new_x))
+    new_y = max(0, min(height - 1, new_y))
 
     # Check tile walkability
-    if tiles[new_y][new_x] == 1:
+    if _is_world_blocked(run.seed, new_x, new_y):
         # Blocked — stay in place
         return MoveResult(player_x=run.player_x, player_y=run.player_y, encounter_id=None)
 
@@ -325,15 +485,16 @@ async def sync_position(
                 player_x=run.player_x, player_y=run.player_y, stale=True
             )
 
+    width, height = _world_dims_for(run.seed)
+
     # (a) Clamp to map bounds.
-    new_x = max(0, min(MAP_WIDTH - 1, body.x))
-    new_y = max(0, min(MAP_HEIGHT - 1, body.y))
+    new_x = max(0, min(width - 1, body.x))
+    new_y = max(0, min(height - 1, body.y))
 
     # (b) Validate walkability — if the client reports a blocked tile (desync /
     # tampering), keep the last good persisted position instead of corrupting it.
     # Mirrors the collision check in move_player.
-    tiles = _generate_tiles(run.seed)
-    if tiles[new_y][new_x] == 1:
+    if _is_world_blocked(run.seed, new_x, new_y):
         # The seq is still valid/newest — advance the high-water mark so a later
         # in-order sync to a good tile isn't itself dropped as stale.
         if body.seq is not None:
