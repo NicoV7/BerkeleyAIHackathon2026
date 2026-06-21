@@ -894,10 +894,15 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   private drawPois(g: Phaser.GameObjects.Graphics) {
-    for (const poi of this.worldPois()) {
+    const pois = this.worldPois();
+    for (const poi of pois) {
       if (poi.kind === "start") continue;
       const px = poi.x * TILE_SIZE;
       const py = poi.y * TILE_SIZE;
+      if (poi.kind === "waypost") {
+        this.drawWaypost(g, poi, px, py, pois);
+        continue;
+      }
       const color =
         poi.kind === "town"
           ? 0xffcf3f
@@ -911,6 +916,77 @@ export class OverworldScene extends Phaser.Scene {
       g.fillStyle(color, 0.18);
       g.fillRect(px + 8, py + 8, TILE_SIZE - 16, TILE_SIZE - 16);
     }
+  }
+
+  /**
+   * Draw a signpost: a wooden post + board, plus an arrow pointing toward the
+   * nearest town POI so the player can read which way the road leads. Direction
+   * is computed client-side from the POI list — the server only marks position.
+   */
+  private drawWaypost(
+    g: Phaser.GameObjects.Graphics,
+    poi: RoutablePOI,
+    px: number,
+    py: number,
+    pois: RoutablePOI[]
+  ) {
+    const cx = px + TILE_SIZE / 2;
+    const cy = py + TILE_SIZE / 2;
+    const board = 0xc9a25a;
+    const wood = 0x6b4423;
+    // post
+    g.fillStyle(wood, 1);
+    g.fillRect(cx - 1.5, cy - 4, 3, TILE_SIZE / 2);
+    // sign board
+    g.fillStyle(board, 1);
+    g.fillRect(cx - 9, cy - 9, 18, 8);
+    g.lineStyle(1, wood, 1);
+    g.strokeRect(cx - 9, cy - 9, 18, 8);
+
+    // Arrow on the board pointing toward the nearest town.
+    const town = this.nearestPoiOfKind(poi, pois, "town");
+    if (!town) return;
+    const ang = Math.atan2(town.y - poi.y, town.x - poi.x);
+    const bx = cx;
+    const by = cy - 5;
+    const len = 6;
+    const tipX = bx + Math.cos(ang) * len;
+    const tipY = by + Math.sin(ang) * len;
+    g.lineStyle(1.5, 0x3a2410, 1);
+    g.beginPath();
+    g.moveTo(bx - Math.cos(ang) * len, by - Math.sin(ang) * len);
+    g.lineTo(tipX, tipY);
+    g.strokePath();
+    // arrowhead
+    const head = 3;
+    g.fillStyle(0x3a2410, 1);
+    g.fillTriangle(
+      tipX,
+      tipY,
+      tipX - Math.cos(ang - 0.5) * head,
+      tipY - Math.sin(ang - 0.5) * head,
+      tipX - Math.cos(ang + 0.5) * head,
+      tipY - Math.sin(ang + 0.5) * head
+    );
+  }
+
+  /** Nearest POI of a given kind to `from` (squared tile distance); null if none. */
+  private nearestPoiOfKind(
+    from: RoutablePOI,
+    pois: RoutablePOI[],
+    kind: RoutablePOI["kind"]
+  ): RoutablePOI | null {
+    let best: RoutablePOI | null = null;
+    let bestD = Infinity;
+    for (const p of pois) {
+      if (p.kind !== kind) continue;
+      const d = (p.x - from.x) ** 2 + (p.y - from.y) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
   }
 
   /**

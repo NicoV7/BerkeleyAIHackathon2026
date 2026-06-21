@@ -32,7 +32,7 @@ export const INTERIOR_TILE = {
 
 /** Minimal POI shape the router needs (subset of the server POI schema). */
 export interface RoutablePOI {
-  kind: "camp" | "town" | "den" | "landmark" | "start" | "goal";
+  kind: "camp" | "town" | "den" | "landmark" | "start" | "goal" | "waypost";
   x: number; // overworld tile coords — also the return point
   y: number;
   name?: string;

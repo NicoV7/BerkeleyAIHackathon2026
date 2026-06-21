@@ -129,7 +129,7 @@ class NPCAnchor(BaseModel):
 
 class POI(BaseModel):
     """A point of interest on the map. `kind` is the structural role."""
-    kind: Literal["camp", "town", "den", "landmark", "start", "goal"]
+    kind: Literal["camp", "town", "den", "landmark", "start", "goal", "waypost"]
     x: int
     y: int
     name: str = ""

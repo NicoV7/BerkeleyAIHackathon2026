@@ -54,9 +54,10 @@ _BIOME_GEN = BiomeGenerator()
 _POI_MASK = 0x5EED  # POI placement stream
 
 # How many of each "extra" POI kind to scatter (besides start/goal).
+# C1: more villages + dungeons so the overworld feels populated.
 _CAMP_COUNT = 2
-_TOWN_COUNT = 1
-_DEN_COUNT = 1
+_TOWN_COUNT = 3
+_DEN_COUNT = 4
 _LANDMARK_COUNT = 2
 
 # Tile value for a campsite (camp POI). 0=walkable, 1=blocked, 2=campsite.
@@ -69,6 +70,7 @@ _KIND_NAMES = {
     "town": "Town",
     "den": "Monster Den",
     "landmark": "Landmark",
+    "waypost": "Signpost",
 }
 
 
@@ -135,6 +137,9 @@ def place_pois(
         suffix = f" {counters[kind]}" if plan.count(kind) > 1 else ""
         pois.append(POI(kind=kind, x=xy[0], y=xy[1], name=f"{_KIND_NAMES[kind]}{suffix}"))
 
+    # Wayposts are injected once at the /world endpoint via with_wayposts() so the
+    # canonical world (which doesn't pass through here) gets them too.
+
     # Decorate enterable POIs (town/den) with their deterministic interior fields
     # HERE, in the single shared placement helper, so /map and /world return
     # byte-for-byte identical POIs (interior fields included). Additive only:
@@ -165,6 +170,37 @@ def _scatter_one(
             if (x, y) not in used and tiles[y][x] not in BLOCKED_TILES:
                 return (x, y)
     return None
+
+
+def with_wayposts(spec: WorldSpecLite) -> WorldSpecLite:
+    """Additively inject one signpost POI near each town so the FE can draw an
+    arrow toward it. Works for the canonical world too (which doesn't go through
+    place_pois). Deterministic per-town; idempotent (skips if wayposts exist).
+    Non-enterable (no interior fields). Returns a new spec; never mutates input.
+    """
+    if any(p.kind == "waypost" for p in spec.pois):
+        return spec
+    towns = [p for p in spec.pois if p.kind == "town"]
+    if not towns:
+        return spec
+    used: set[tuple[int, int]] = {(p.x, p.y) for p in spec.pois}
+    extra: list[POI] = []
+    for t in towns:
+        rng = random.Random((((t.x & 0xFFFF) << 16) | (t.y & 0xFFFF)) ^ _POI_MASK)
+        for _ in range(40):
+            dx = rng.randint(-4, 4)
+            dy = rng.randint(-4, 4)
+            if abs(dx) < 2 and abs(dy) < 2:
+                continue
+            xy = (t.x + dx, t.y + dy)
+            if xy[0] < 0 or xy[1] < 0 or xy in used:
+                continue
+            used.add(xy)
+            extra.append(POI(kind="waypost", x=xy[0], y=xy[1], name=f"To {t.name}"))
+            break
+    if not extra:
+        return spec
+    return spec.model_copy(update={"pois": list(spec.pois) + extra})
 
 
 def _nearest_walkable(
@@ -551,7 +587,8 @@ async def get_world(
 
     canonical = get_canonical_world()
     if canonical is not None:
-        return canonical.spec
+        # C1: additively inject town signposts (the canonical world predates them).
+        return with_wayposts(canonical.spec)
 
     tiles = _generate_tiles(run.seed)
 
@@ -562,12 +599,12 @@ async def get_world(
 
             generated = await generate_world(run.seed, MAP_WIDTH, MAP_HEIGHT)
             if generated is not None:
-                return generated
+                return with_wayposts(generated)
         except Exception:  # noqa: BLE001 — generator must never break the route
             pass
 
     # Default / fallback path: the Wave-2 seed-deterministic procedural world.
-    return build_world(run.seed, tiles, MAP_WIDTH, MAP_HEIGHT)
+    return with_wayposts(build_world(run.seed, tiles, MAP_WIDTH, MAP_HEIGHT))
 
 
 def _stable_str_hash(s: str) -> int:
