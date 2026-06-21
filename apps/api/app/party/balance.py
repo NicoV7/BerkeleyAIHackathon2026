@@ -37,6 +37,21 @@ BASE_HP: int = 100
 #: max_hp gained on every single level-up.
 HP_PER_LEVEL: int = 10
 
+#: ATK gained on every single level-up (gacha wave).
+#: Feeds the ``attacker_atk`` term in ``compute_damage`` so each level visibly
+#: hits harder. Mirrors :data:`HP_PER_LEVEL`'s additive curve.
+ATK_PER_LEVEL: int = 2
+
+#: DEF gained on every single level-up (gacha wave).
+#: Feeds the ``defender_def`` term in ``compute_damage`` so each level absorbs
+#: a little more incoming damage.
+DEF_PER_LEVEL: int = 2
+
+#: max_mp (and a full MP refill) gained on every single level-up (gacha wave).
+#: Gates ability use, so an extra slice of MP per level keeps Memory Recall
+#: (60 MP) reachable as monsters grow.
+MP_PER_LEVEL: int = 5
+
 #: max_hp gained each time the monster crosses an evolution threshold.
 EVOLUTION_HP_BONUS: int = 20
 

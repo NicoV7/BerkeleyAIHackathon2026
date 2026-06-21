@@ -112,6 +112,27 @@ export interface MpInsufficient {
   detail: string;
 }
 
+/**
+ * Level-up event ({ type: "LevelUp", monster_id, new_level, stat_gains }).
+ *
+ * Emitted by the server when finalize awards XP that crosses a level boundary
+ * for a party monster. The fields are TOP-LEVEL (not nested under `data`) to
+ * match the encounter finalize emission contract in
+ * `apps/api/app/routers/debate.py::_finalize`.
+ *
+ * The hook re-broadcasts these as a global `CustomEvent("encounter:level-up")`
+ * on `window` so the cinematic overlay can subscribe without threading the
+ * event through React state. The detail payload is this interface.
+ */
+export interface LevelUpEvent {
+  monster_id: string;
+  new_level: number;
+  stat_gains: { atk: number; def: number; mp: number; hp: number };
+}
+
+/** Browser CustomEvent name the WS hook dispatches for level-up cinematics. */
+export const LEVEL_UP_EVENT = "encounter:level-up";
+
 export type EncounterPhase = "intro" | "debating" | "capturable" | "won" | "lost";
 
 /** Phase transition ({ type: "phase", data: PhaseUpdate }). */
@@ -553,6 +574,29 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
                 setRunning(false);
                 setRunningTurn(null);
               }
+            }
+          } else if (msg.type === "LevelUp") {
+            // Server emits the level-up payload at the TOP LEVEL of the
+            // message (not under `data`) so the gains can be read directly.
+            // Re-broadcast as a window CustomEvent so the overlay can mount
+            // anywhere in the tree without prop-drilling. Defensive: never
+            // let an event-dispatch failure crash the message loop.
+            try {
+              const detail: LevelUpEvent = {
+                monster_id: (msg as unknown as LevelUpEvent).monster_id,
+                new_level: (msg as unknown as LevelUpEvent).new_level,
+                stat_gains: (msg as unknown as LevelUpEvent).stat_gains ?? {
+                  atk: 0,
+                  def: 0,
+                  mp: 0,
+                  hp: 0,
+                },
+              };
+              window.dispatchEvent(
+                new CustomEvent<LevelUpEvent>(LEVEL_UP_EVENT, { detail })
+              );
+            } catch {
+              /* event dispatch is best-effort */
             }
           } else if (msg.type === "round_done") {
             // A drive() cycle finished. If more commands are still queued (e.g.
