@@ -104,7 +104,7 @@ async def _resolve_party(session: AsyncSession, run_id: str) -> list[Monster]:
     res = await session.execute(
         select(Monster).where(
             Monster.run_id == run_id, Monster.owner == MonsterOwner.player
-        )
+        ).order_by(Monster.is_avatar.desc(), Monster.created_at.asc())
     )
     party = list(res.scalars().all())
     if party:
@@ -149,6 +149,7 @@ def _to_combatant(m: Monster, role: str) -> Combatant:
         def_=int(getattr(m, "def_", 10) or 10),
         max_mp=int(getattr(m, "max_mp", 50) or 50),
         domain=str(getattr(m, "domain", "GENERAL") or "GENERAL"),
+        is_avatar=bool(getattr(m, "is_avatar", False)),
     )
 
 
@@ -201,6 +202,8 @@ async def seed_redis(
                         "def": c.def_,
                         "max_mp": c.max_mp,
                         "domain": c.domain,
+                        # Persist the avatar flag so the lead survives rehydration.
+                        "is_avatar": c.is_avatar,
                     }
                     for c in combatants
                 ]
@@ -250,6 +253,7 @@ async def load_combatants(eid: str) -> list[Combatant]:
                 def_=int(c.get("def", 10) or 10),
                 max_mp=int(c.get("max_mp", 50) or 50),
                 domain=str(c.get("domain", "GENERAL") or "GENERAL"),
+                is_avatar=bool(c.get("is_avatar", False)),
             )
         )
     return combatants
@@ -309,6 +313,7 @@ async def build_encounter_state(eid: str) -> EncounterState:
             atk=c.atk,
             def_=c.def_,
             domain=c.domain,
+            is_avatar=c.is_avatar,
         )
         for c in combatants
     ]

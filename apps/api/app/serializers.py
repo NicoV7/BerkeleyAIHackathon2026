@@ -28,5 +28,6 @@ def monster_summary(monster: Monster) -> MonsterSummary:
         domain=getattr(monster, "domain", MonsterDomain.GENERAL),
         wiki_url=getattr(monster, "wiki_url", None),
         wiki_hydrated=getattr(monster, "wiki_hydrated", False),
+        is_avatar=bool(getattr(monster, "is_avatar", False)),
         persona=dict(getattr(monster, "persona", {}) or {}),
     )

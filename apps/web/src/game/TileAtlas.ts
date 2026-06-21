@@ -111,8 +111,8 @@ export function overlayFor(tile: number, jitter: number): Overlay | null {
       return { frame: jitter & 0x40 ? FRAME.TREE_DARK : FRAME.TREE, alpha: 1 };
     case TILE.CAMP:
       return { frame: FRAME.CAMPFIRE, alpha: 1 };
-    case TILE.TOWN:
-      return { frame: FRAME.STRUCTURE, alpha: 0.9 };
+    // TOWN structures are drawn by the #24 detail overlay (house/shop/inn/barn),
+    // so we no longer stamp a generic Kenney structure tile here.
     default:
       return null;
   }

@@ -31,6 +31,13 @@ class CreateRunRequest(BaseModel):
     theme: Optional[str] = Field(
         default=None, description="Theme for this run; battles draw a random topic within it"
     )
+    # The avatar (debate type) the player selected on the start screen. When set
+    # to a valid DebateType (e.g. "PATHOS"), the starter party's main character is
+    # forced to that type + its signature moves and marked as the run's avatar.
+    # Optional/additive — when absent or invalid, starters roll random types.
+    avatar_type: Optional[str] = Field(
+        default=None, description="Selected avatar rhetorical type (DebateType value)"
+    )
 
 
 class MonsterSummary(BaseModel):
@@ -52,6 +59,8 @@ class MonsterSummary(BaseModel):
     domain: str = "GENERAL"
     wiki_url: Optional[str] = None
     wiki_hydrated: bool = False
+    # True for the player's chosen-avatar starter (the run's main character).
+    is_avatar: bool = False
     # Persona voice/tagline is additive but important for gacha reveal and battle
     # prompt visibility. Older responses can omit it and still validate.
     persona: dict[str, Any] = Field(default_factory=dict)
@@ -66,6 +75,7 @@ class RunState(BaseModel):
     debate_topic: str
     # Theme chosen at run start (additive/Optional for backward compat).
     theme: Optional[str] = None
+    avatar_type: Optional[str] = None
     player_name: str = "Player"
     player_x: int
     player_y: int
@@ -217,6 +227,9 @@ class CombatantState(BaseModel):
     atk: Optional[int] = None
     def_: Optional[int] = Field(default=None, alias="def", serialization_alias="def")
     domain: Optional[str] = None
+    # True for the player's chosen-avatar monster — the battle UI uses this to keep
+    # the main character's card + move buttons on the avatar regardless of stats.
+    is_avatar: bool = False
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -582,6 +595,7 @@ class RunResumeState(BaseModel):
     """
     id: str
     debate_topic: str
+    avatar_type: Optional[str] = None
     player_x: int
     player_y: int
     status: str

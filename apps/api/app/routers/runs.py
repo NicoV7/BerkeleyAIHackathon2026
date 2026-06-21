@@ -86,6 +86,7 @@ def _run_resume_state(
     return RunResumeState(
         id=run.id,
         debate_topic=run.debate_topic,
+        avatar_type=getattr(run, "avatar_type", None),
         player_x=run.player_x,
         player_y=run.player_y,
         status=run.status.value,

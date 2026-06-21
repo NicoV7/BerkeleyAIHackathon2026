@@ -139,6 +139,9 @@ class Run(SQLModel, table=True):
     # Theme chosen at run start; each battle draws a random topic within it.
     # Nullable/additive alongside debate_topic (which stays populated).
     theme: Optional[str] = Field(default=None)
+    # Avatar debate type selected on the start screen. Stored so empty-start
+    # onboarding can apply the selected type to the first pulled monster.
+    avatar_type: Optional[str] = Field(default=None)
     player_name: str = "Player"
     seed: int = 0
     player_x: int = 0
@@ -195,6 +198,11 @@ class Monster(SQLModel, table=True):
     # Flipped True once `app.party.hydrate` writes the distilled persona back.
     # Frontend polls on this flag after a gacha pull.
     wiki_hydrated: bool = Field(default=False)
+    # True for the player's chosen-avatar starter (set at run start from the
+    # Select-Avatar pick). Makes this monster the run's permanent "main character"
+    # — the lead that argues and whose type/moves the battle UI shows — regardless
+    # of later captures/levels. Additive/default-False so older rows backfill.
+    is_avatar: bool = Field(default=False)
 
     # Which gateway model this agent runs on (bottom-up: defaults to local).
     model: Optional[str] = None

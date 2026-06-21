@@ -26,7 +26,7 @@ function getOverworldScene(game: Phaser.Game | null): OverworldScene | null {
 }
 
 export default function Overworld() {
-  const { runId, activeEncounterId, setEncounter } = useGame();
+  const { runId, playerName, activeEncounterId, setEncounter } = useGame();
   const { transition } = useIrisTransition();
   const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -84,6 +84,7 @@ export default function Overworld() {
       if (cancelled || !gameRef.current) return;
       gameRef.current.scene.start("OverworldScene", {
         runId,
+        playerName,
         onEncounter: (wildId: string) => {
           void bridge.onCollision(wildId);
         },

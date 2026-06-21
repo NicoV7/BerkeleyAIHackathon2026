@@ -37,6 +37,9 @@ async def init_db() -> None:
             # THEME topics: per-run theme chosen at run start (battles draw a
             # random topic within it). Nullable/additive; debate_topic stays set.
             "ALTER TABLE runs ADD COLUMN IF NOT EXISTS theme VARCHAR",
+            # Avatar selection persists on the run so empty-start onboarding can
+            # apply the chosen type to the first pulled monster.
+            "ALTER TABLE runs ADD COLUMN IF NOT EXISTS avatar_type VARCHAR",
             # ---- Gacha wave: stat columns on monsters (additive) ----
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS atk INT NOT NULL DEFAULT 10",
             'ALTER TABLE monsters ADD COLUMN IF NOT EXISTS "def" INT NOT NULL DEFAULT 10',
@@ -45,6 +48,9 @@ async def init_db() -> None:
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS domain VARCHAR NOT NULL DEFAULT 'GENERAL'",
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_url VARCHAR",
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_hydrated BOOLEAN NOT NULL DEFAULT FALSE",
+            # Avatar selection: marks the player's chosen-avatar starter as the
+            # run's permanent main character (lead). Additive; defaults False.
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS is_avatar BOOLEAN NOT NULL DEFAULT FALSE",
             # ---- Economy wave (WS-1): coin wallet on the run ----
             # create_all never ALTERs the existing `runs` table, so the additive
             # coins column needs an explicit IF NOT EXISTS here. New economy

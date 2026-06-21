@@ -48,7 +48,7 @@ router = APIRouter(prefix="/api", tags=["map"])
 MAP_WIDTH = 20
 MAP_HEIGHT = 15
 MAP_CHUNK_SIZE = 96
-WILD_COUNT = 32  # wild enemies placed globally per run
+WILD_COUNT = 80  # wild enemies placed globally per run
 
 
 # ---------------------------------------------------------------------------
@@ -86,15 +86,13 @@ def _generate_tiles(seed: int) -> list[list[int]]:
 
     rng = random.Random(seed)
     tiles = [[0] * MAP_WIDTH for _ in range(MAP_HEIGHT)]
-    # Place some scattered wall tiles (~15% density)
     for y in range(MAP_HEIGHT):
         for x in range(MAP_WIDTH):
-            # Keep the edges clear and start zone clear
             if x == 0 or y == 0 or x == MAP_WIDTH - 1 or y == MAP_HEIGHT - 1:
                 continue
             if x <= 2 and y <= 2:
                 continue  # spawn zone always walkable
-            if rng.random() < 0.12:
+            if rng.random() < 0.25:
                 tiles[y][x] = 1
     return tiles
 
@@ -160,6 +158,53 @@ def _is_world_blocked(seed: int, x: int, y: int) -> bool:
 
     tiles = _generate_tiles(seed)
     return _is_blocked_tile(tiles, x, y)
+
+
+def _overlay_obstacles(
+    tiles: list[list[int]],
+    seed: int,
+    *,
+    origin_x: int = 0,
+    origin_y: int = 0,
+    density: float = 0.07,
+) -> list[list[int]]:
+    """Scatter extra blocked tiles on top of an existing grid (per-run seeded).
+
+    Only overwrites walkable (0) tiles so it never removes canonical roads,
+    camps, or existing terrain. Keeps a 4-tile safe zone around world origin
+    (start area) and avoids creating 2×2 solid blocks that trap the player.
+    Returns a new grid (does not mutate the input).
+    """
+    from app.world.algorithms.base import BLOCKED, BLOCKED_TILES, WALKABLE
+
+    rng = random.Random(seed ^ 0xFACE_B00C)
+    height = len(tiles)
+    width = len(tiles[0]) if tiles else 0
+    result = [row[:] for row in tiles]
+
+    for y in range(height):
+        for x in range(width):
+            wx, wy = x + origin_x, y + origin_y
+            if result[y][x] != WALKABLE:
+                continue
+            if wx < 4 and wy < 4:
+                continue  # protect start zone
+            if rng.random() >= density:
+                continue
+            # Avoid 2×2 solid blocks: skip if placing here would complete one.
+            would_box = any(
+                0 <= y + dy < height and 0 <= x + dx < width
+                and result[y + dy][x + dx] in BLOCKED_TILES
+                and 0 <= y + dy2 < height and 0 <= x + dx2 < width
+                and result[y + dy2][x + dx2] in BLOCKED_TILES
+                for (dy, dx, dy2, dx2) in [
+                    (-1, 0, -1, -1), (-1, 0, 0, -1),
+                    (0, -1, -1, -1), (-1, -1, 0, -1),
+                ]
+            )
+            if not would_box:
+                result[y][x] = BLOCKED
+    return result
 
 
 def _place_wild_on_map(
@@ -230,6 +275,7 @@ async def create_run(
     run = Run(
         debate_topic=debate_topic,
         theme=body.theme,
+        avatar_type=body.avatar_type,
         player_name=player_name,
         seed=body.seed,
         player_x=start_x,
@@ -248,7 +294,9 @@ async def create_run(
     if settings.empty_start_enabled:
         party: list[Monster] = []
     else:
-        party = await roll_starter_party(session, run.id, seed=body.seed)
+        party = await roll_starter_party(
+            session, run.id, seed=body.seed, avatar_type=body.avatar_type
+        )
     # Always seed wild enemies (so they exist in DB for map queries)
     await generate_wild(session, run.id, n=WILD_COUNT, seed=body.seed)
 
@@ -256,6 +304,7 @@ async def create_run(
         id=run.id,
         debate_topic=run.debate_topic,
         theme=run.theme,
+        avatar_type=getattr(run, "avatar_type", None),
         player_name=run.player_name,
         player_x=run.player_x,
         player_y=run.player_y,
@@ -297,12 +346,15 @@ async def get_map(
 
     canonical_window = _canonical_tile_window(center_x, center_y, chunk_size)
     if canonical_window is not None:
-        base_tiles, origin_x, origin_y, world_width, world_height = canonical_window
+        raw_tiles, origin_x, origin_y, world_width, world_height = canonical_window
     else:
-        base_tiles = _generate_tiles(run.seed)
+        raw_tiles = _generate_tiles(run.seed)
         origin_x = 0
         origin_y = 0
-        world_width, world_height = _tile_dims(base_tiles)
+        world_width, world_height = _tile_dims(raw_tiles)
+    base_tiles = _overlay_obstacles(
+        raw_tiles, run.seed, origin_x=origin_x, origin_y=origin_y
+    )
     width, height = _tile_dims(base_tiles)
     enemies = _place_wild_on_map(
         wilds,

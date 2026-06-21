@@ -612,6 +612,11 @@ export interface components {
             max_hp: number;
             /** Side */
             side?: ("for" | "against") | null;
+            /**
+             * Is Avatar
+             * @default false
+             */
+            is_avatar?: boolean;
         };
         /** CreateEncounterRequest */
         CreateEncounterRequest: {
@@ -644,6 +649,11 @@ export interface components {
              * @description Theme for this run; battles draw a random topic within it
              */
             theme?: string | null;
+            /**
+             * Avatar Type
+             * @description Selected avatar rhetorical type (DebateType value)
+             */
+            avatar_type?: string | null;
         };
         /** EncounterState */
         EncounterState: {
@@ -847,6 +857,11 @@ export interface components {
             wiki_url?: string | null;
             /** Wiki Hydrated @default false */
             wiki_hydrated?: boolean;
+            /**
+             * Is Avatar
+             * @default false
+             */
+            is_avatar?: boolean;
         };
         /**
          * GachaPullRequest
@@ -1164,6 +1179,8 @@ export interface components {
             id: string;
             /** Debate Topic */
             debate_topic: string;
+            /** Avatar Type */
+            avatar_type?: string | null;
             /**
              * Player Name
              * @default Player
@@ -1216,6 +1233,8 @@ export interface components {
             id: string;
             /** Debate Topic */
             debate_topic: string;
+            /** Avatar Type */
+            avatar_type?: string | null;
             /** Theme */
             theme?: string | null;
             /** Player X */
