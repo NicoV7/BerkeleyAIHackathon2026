@@ -84,6 +84,20 @@ export interface LiveUtterance {
   fallback: boolean;
 }
 
+/**
+ * A4 optimistic-judge estimate ({ type: "estimate", data: EstimateScore }).
+ * Emitted by the server immediately after the player submits — an instant
+ * heuristic DISPLAY score, before the slot-bound LLM judge returns. It carries
+ * NO damage and never moves HP; the UI shows it in an "estimating…" state and
+ * settles it to the authoritative `verdict` score (matched by turn+actor_id).
+ */
+export interface EstimateScore {
+  turn: number;
+  actor_id: string;
+  score: number;
+  actor_role?: "party" | "enemy" | "judge";
+}
+
 /** Live HP update for a single combatant ({ type: "hp", data: HpUpdate }). */
 export interface HpUpdate {
   monster_id: string;
@@ -136,6 +150,13 @@ export interface EncounterStreamState {
    * removed once their canonical `utterance` lands in `transcript`.
    */
   liveTokens: Record<string, LiveUtterance>;
+  /**
+   * A4 optimistic-judge estimates, keyed by `${turn}:${actor_id}`. An entry is
+   * the instant heuristic score shown right after submit; it is removed once the
+   * authoritative `verdict` for the same (turn, actor) lands, so the view can
+   * render an "estimating…" badge that settles to the real score.
+   */
+  estimates: Record<string, EstimateScore>;
   /** Latest known phase, tracked from `phase` events and `state` snapshots. */
   phase: EncounterPhase;
   /** True while a round is streaming (between drive() and round_done). */
@@ -172,6 +193,8 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [verdicts, setVerdicts] = useState<JudgeVerdict[]>([]);
   const [capturableIds, setCapturableIds] = useState<string[]>([]);
   const [liveTokens, setLiveTokens] = useState<Record<string, LiveUtterance>>({});
+  // A4: optimistic-judge estimates, keyed by `${turn}:${actor_id}`.
+  const [estimates, setEstimates] = useState<Record<string, EstimateScore>>({});
   const [phase, setPhase] = useState<EncounterPhase>("intro");
   // True while a round is streaming (between drive() and round_done).
   const [running, setRunning] = useState(false);
@@ -287,6 +310,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       setVerdicts([]);
       setCapturableIds([]);
       setLiveTokens({});
+      setEstimates({});
       setPhase("intro");
       phaseRef.current = "intro";
       return;
@@ -306,6 +330,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       setVerdicts([]);
       setCapturableIds([]);
       setLiveTokens({});
+      setEstimates({});
       setPhase("intro");
       phaseRef.current = "intro";
       turnRef.current = 0;
@@ -381,6 +406,13 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
               };
               return { ...prev, [key]: next };
             });
+          } else if (msg.type === "estimate") {
+            // A4: instant optimistic display score for the player's argument.
+            // Store it keyed by (turn, actor) so the view can show "estimating…"
+            // until the authoritative verdict lands and supersedes it.
+            const est = msg.data as EstimateScore;
+            const key = liveKey(est.turn, est.actor_id);
+            setEstimates((prev) => ({ ...prev, [key]: est }));
           } else if (msg.type === "utterance") {
             const u = msg.data as Utterance;
             if (u.turn > turnRef.current) turnRef.current = u.turn;
@@ -425,6 +457,17 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
               );
               return exists ? prev : [...prev, v];
             });
+            // A4 reconcile: the authoritative score has landed → retire the
+            // optimistic estimate for this (turn, actor) so the badge settles.
+            // The verdict is attributed to the speaker via `actor_id`.
+            if (v.actor_id) {
+              const key = liveKey(v.turn, v.actor_id);
+              setEstimates((prev) => {
+                if (!(key in prev)) return prev;
+                const { [key]: _removed, ...rest } = prev;
+                return rest;
+              });
+            }
           } else if (msg.type === "hp") {
             // Live per-combatant HP update — patch the matching combatant in place.
             // (Port from d5c4a6d: server now emits HpUpdate per combatant, not a map.)
@@ -485,7 +528,23 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
                 return changed ? next : prev;
               });
             }
-            if (s.verdicts?.length) setVerdicts(s.verdicts);
+            if (s.verdicts?.length) {
+              setVerdicts(s.verdicts);
+              // Drop any optimistic estimate already covered by a snapshot
+              // verdict (the authoritative score is present in the snapshot).
+              setEstimates((prev) => {
+                let changed = false;
+                const next: Record<string, EstimateScore> = {};
+                for (const [k, est] of Object.entries(prev)) {
+                  const covered = s.verdicts.some(
+                    (x) => x.turn === est.turn && x.actor_id === est.actor_id
+                  );
+                  if (covered) changed = true;
+                  else next[k] = est;
+                }
+                return changed ? next : prev;
+              });
+            }
             if (s.phase) {
               setPhase(s.phase);
               phaseRef.current = s.phase;
@@ -555,6 +614,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     verdicts,
     capturableIds,
     liveTokens,
+    estimates,
     phase,
     running,
     runningTurn,
