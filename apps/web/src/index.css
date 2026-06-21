@@ -266,10 +266,10 @@ select {
   overflow: hidden;
   isolation: isolate; /* keep the FX stacking context local to the menu */
   min-height: 100vh;
-  --avatar-color: var(--accent);
+  --menu-glow-color: var(--accent);
 }
 
-/* —— avatar-tinted radial vignette behind the title —— */
+/* —— accent-tinted radial vignette behind the title —— */
 .start-menu .sm-glow {
   position: absolute;
   inset: 0;
@@ -278,12 +278,12 @@ select {
   background:
     radial-gradient(
       58% 48% at 50% 34%,
-      color-mix(in srgb, var(--avatar-color) 18%, transparent),
+      color-mix(in srgb, var(--menu-glow-color) 18%, transparent),
       transparent 70%
     ),
     radial-gradient(
       42% 30% at 50% 26%,
-      color-mix(in srgb, var(--avatar-color) 12%, transparent),
+      color-mix(in srgb, var(--menu-glow-color) 12%, transparent),
       transparent 76%
     ),
     radial-gradient(120% 90% at 50% 50%, transparent 52%, rgba(0, 0, 0, 0.55));
@@ -327,13 +327,13 @@ select {
   background-image:
     radial-gradient(
       1.5px 1.5px at 40px 60px,
-      color-mix(in srgb, var(--avatar-color) 58%, transparent),
+      color-mix(in srgb, var(--menu-glow-color) 58%, transparent),
       transparent
     ),
     radial-gradient(1.5px 1.5px at 130px 20px, rgba(92, 200, 255, 0.4), transparent),
     radial-gradient(
       1.5px 1.5px at 100px 160px,
-      color-mix(in srgb, var(--avatar-color) 36%, transparent),
+      color-mix(in srgb, var(--menu-glow-color) 36%, transparent),
       transparent
     );
   background-size: 220px 260px;
@@ -447,8 +447,8 @@ select {
   animation: sm-rise 0.55s ease-out 0.16s backwards;
 }
 
-/* —— compact avatar selector —— */
-.start-menu .sm-avatar-open {
+/* —— title start command —— */
+.start-menu .sm-title-start {
   display: inline-grid;
   grid-template-columns: auto auto;
   gap: 1rem;
@@ -457,6 +457,7 @@ select {
   min-height: 4.35rem;
   margin: 0.2rem auto 1.25rem;
   padding: 0.85rem 1.55rem;
+  color: var(--accent);
   background: rgba(0, 0, 0, 0.35);
   border: 4px solid currentColor;
   box-shadow:
@@ -468,8 +469,8 @@ select {
     box-shadow 0.12s ease,
     background 0.12s ease;
 }
-.start-menu .sm-avatar-open:hover,
-.start-menu .sm-avatar-open:focus-visible {
+.start-menu .sm-title-start:hover:not(:disabled),
+.start-menu .sm-title-start:focus-visible {
   background: rgba(0, 0, 0, 0.5);
   transform: translateY(-2px);
   box-shadow:
@@ -477,11 +478,15 @@ select {
     6px 8px 0 #000,
     inset 0 0 0 2px rgba(0, 0, 0, 0.45);
 }
-.start-menu .sm-avatar-open span {
+.start-menu .sm-title-start:disabled {
+  cursor: progress;
+  opacity: 0.78;
+}
+.start-menu .sm-title-start span {
   color: var(--muted);
   font-size: 18px;
 }
-.start-menu .sm-avatar-open strong {
+.start-menu .sm-title-start strong {
   font-size: 24px;
   font-weight: 400;
 }
@@ -660,8 +665,8 @@ select {
     3px 5px 0 #000;
 }
 
-/* —— primary CTA: lift + gold bloom + a periodic gleam sweep —— */
-.start-menu .sm-start {
+/* —— random-name command: lift + gold bloom + a periodic gleam sweep —— */
+.start-menu .sm-random {
   position: relative;
   overflow: hidden;
   display: inline-flex;
@@ -675,26 +680,26 @@ select {
     box-shadow 0.12s ease,
     background 0.1s ease;
 }
-.start-menu .sm-start:hover:not(:disabled) {
+.start-menu .sm-random:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow:
     0 0 18px rgba(255, 207, 63, 0.5),
     3px 5px 0 #000;
 }
-.start-menu .sm-start:active:not(:disabled) {
+.start-menu .sm-random:active:not(:disabled) {
   transform: translate(2px, 2px);
   box-shadow:
     0 0 8px rgba(255, 207, 63, 0.4),
     0 0 0 #000;
 }
-.start-menu .sm-start > span:not(.sm-start__shine) {
+.start-menu .sm-random > span:not(.sm-random__shine) {
   position: relative;
   z-index: 1;
 }
-.start-menu .sm-start__icon {
+.start-menu .sm-random__icon {
   font-size: 0.8em;
 }
-.start-menu .sm-start__shine {
+.start-menu .sm-random__shine {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -798,55 +803,6 @@ select {
   font-size: 0.9rem;
   line-height: 1.7;
 }
-.start-menu .sm-avatar-panel {
-  width: min(100%, 58rem);
-}
-.start-menu .sm-avatar-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.8rem;
-}
-.start-menu .sm-avatar-card {
-  display: grid;
-  gap: 0.45rem;
-  min-height: 10.5rem;
-  padding: 0.9rem;
-  text-align: left;
-  background: var(--panel2);
-  border: 3px solid currentColor;
-  box-shadow:
-    4px 4px 0 #000,
-    inset 0 0 0 2px rgba(0, 0, 0, 0.35);
-  cursor: pointer;
-  transition:
-    transform 0.08s ease,
-    box-shadow 0.12s ease,
-    background 0.12s ease;
-}
-.start-menu .sm-avatar-card:hover,
-.start-menu .sm-avatar-card:focus-visible,
-.start-menu .sm-avatar-card--on {
-  background: rgba(255, 207, 63, 0.06);
-  transform: translateY(-2px);
-  box-shadow:
-    0 0 16px currentColor,
-    4px 6px 0 #000,
-    inset 0 0 0 2px rgba(0, 0, 0, 0.35);
-}
-.start-menu .sm-avatar-card__title {
-  font-size: 11px;
-}
-.start-menu .sm-avatar-card__role {
-  color: var(--muted);
-  font-size: 8px;
-}
-.start-menu .sm-avatar-card__copy {
-  color: var(--ink);
-  font-family: var(--font-body);
-  font-size: 0.78rem;
-  line-height: 1.55;
-}
-
 @media (max-width: 760px) {
   .start-menu {
     min-height: 100svh;
@@ -865,7 +821,7 @@ select {
   .start-menu .sm-command-row {
     grid-template-columns: 1fr;
   }
-  .start-menu .sm-avatar-open {
+  .start-menu .sm-title-start {
     grid-template-columns: 1fr;
     gap: 0.2rem;
     width: min(100%, 18rem);
@@ -873,17 +829,11 @@ select {
     min-height: 3.25rem;
     padding: 0.65rem 0.9rem;
   }
-  .start-menu .sm-avatar-open span {
+  .start-menu .sm-title-start span {
     font-size: 10px;
   }
-  .start-menu .sm-avatar-open strong {
+  .start-menu .sm-title-start strong {
     font-size: 14px;
-  }
-  .start-menu .sm-avatar-grid {
-    grid-template-columns: 1fr;
-  }
-  .start-menu .sm-avatar-card {
-    min-height: auto;
   }
   .start-menu .sm-name-input {
     min-height: 2.8rem;
@@ -898,7 +848,7 @@ select {
   .start-menu .sm-subtitle {
     font-size: 10px;
   }
-  .start-menu .sm-start,
+  .start-menu .sm-random,
   .start-menu .sm-command {
     min-height: 2.75rem;
     font-size: 9px;
@@ -920,10 +870,10 @@ select {
   .start-menu .sm-emblem,
   .start-menu .sm-title,
   .start-menu .sm-subtitle,
-  .start-menu .sm-avatar-open,
+  .start-menu .sm-title-start,
   .start-menu .sm-panel,
   .start-menu .sm-overlay-panel,
-  .start-menu .sm-start__shine {
+  .start-menu .sm-random__shine {
     animation: none !important;
   }
 }

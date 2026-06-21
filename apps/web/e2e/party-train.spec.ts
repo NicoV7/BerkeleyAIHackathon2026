@@ -56,7 +56,7 @@ async function stackIsUp(page: Page): Promise<boolean> {
 
 /**
  * Boot a run from the name-entry screen. The app shows a player-name <input> + a
- * "Start Run" button while runId is null; clicking it swaps to the in-run nav.
+ * "Start Game" button while runId is null; clicking it swaps to the in-run nav.
  * Returns once the in-run navigation (Party/Training tabs) is visible.
  */
 async function startRun(page: Page, playerName = DEFAULT_PLAYER_NAME): Promise<void> {
@@ -64,7 +64,7 @@ async function startRun(page: Page, playerName = DEFAULT_PLAYER_NAME): Promise<v
 
   // If a previous run is already active (persisted store), the nav tabs render
   // immediately; otherwise drive the name-entry screen.
-  const startButton = page.getByRole("button", { name: /start run/i });
+  const startButton = page.getByRole("button", { name: /start game/i });
   if (await startButton.isVisible().catch(() => false)) {
     const nameInput = page.getByRole("textbox", { name: /player name/i });
     await nameInput.fill(playerName).catch(() => undefined);
