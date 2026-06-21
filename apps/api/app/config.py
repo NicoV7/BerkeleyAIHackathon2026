@@ -55,8 +55,13 @@ class Settings(BaseSettings):
     #     round of complete() calls (4 * 28 = 112s) stays under ROUND_TIMEOUT_S.
     # Installed Ollama models, fastest-first-ish: gemma3:1b, llama3.2:3b,
     # qwen2.5:3b, phi3:mini, gemma3:4b.
-    actor_model: str = "llama3.2:3b"
-    judge_model_fast: str = "llama3.2:3b"
+    # ONE model for actors AND judge so single-slot CPU Ollama never swaps models
+    # mid-round (model-swap thrash was the measured ~75s/round bottleneck). gemma3:1b
+    # is the fastest installed model and its argument quality was validated good. The
+    # fabricated/wild enemies are already pinned to gemma3:1b, so everything aligns →
+    # one warm model, no swaps.
+    actor_model: str = "gemma3:1b"
+    judge_model_fast: str = "gemma3:1b"
     llm_call_timeout_s: int = 28
     first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
     actor_max_tokens: int = 64
