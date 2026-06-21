@@ -96,7 +96,7 @@ export function BattleStage({
         className="absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse at 50% 60%, rgba(79,122,54,0.08) 0%, transparent 70%), var(--bg)",
+            "radial-gradient(ellipse at 50% 60%, rgba(79,122,54,0.12) 0%, transparent 70%)",
         }}
       />
       {/* Pixel grid overlay for "zoomed world" feel */}
