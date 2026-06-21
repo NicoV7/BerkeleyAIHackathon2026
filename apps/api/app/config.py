@@ -6,12 +6,26 @@ Wave 1 workstreams share one source of truth for configuration.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# pydantic resolves a bare ``env_file=".env"`` relative to the PROCESS CWD, but
+# uvicorn runs from ``apps/api/`` while the real ``.env`` (with provider API
+# keys) lives at the repo root. That mismatch silently loaded zero keys, so the
+# gateway fell back to local Ollama and battles/NPC dialogue came out as canned
+# stubs. Resolve absolute candidate paths from this file's location instead, so
+# the keys load no matter where the API is started. ``apps/api/.env`` is kept as
+# a secondary location; os.environ (e.g. docker compose env_file) still wins.
+_API_DIR = Path(__file__).resolve().parents[1]  # apps/api
+_REPO_ROOT = Path(__file__).resolve().parents[3]  # repo root
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(_REPO_ROOT / ".env", _API_DIR / ".env"),
+        extra="ignore",
+    )
 
     # Model gateway
     llm_provider: str = "ollama"
