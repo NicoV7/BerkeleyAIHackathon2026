@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import random
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Encounter, EncounterResult
+from app.db.models import Encounter, EncounterResult, SummonItem
 from app.db.session import SessionLocal, get_session
 from app.debate.orchestrator import run_human_round_stream, run_round_stream
 from app.redis_state import get_transcript, k_meta
@@ -38,6 +41,8 @@ from app.schemas import (
     TurnResult,
     Utterance,
 )
+
+log = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
@@ -87,8 +92,66 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
         # available to GEPA training). Best-effort: never let this fail the battle.
         await _write_battle_memories(session, enc, topic, transcript, final_hp, roster, result)
 
+        # Wave A: on a win, roll for a SummonItem drop. The TurnResult schema
+        # does not carry this field today, so we only log it — the frontend
+        # picks the drop up via `GET /api/runs/{id}/summons`.
+        if result == EncounterResult.win:
+            dropped = await _maybe_drop_summon_item(session, enc.run_id)
+            if dropped is not None:
+                log.info(
+                    "gacha drop: encounter=%s run=%s item=%s tier=%s",
+                    eid, enc.run_id, dropped.id, dropped.tier,
+                )
+
     # Conversation is durably stored — free the cache.
     await clear_conversation(eid)
+
+
+# ---- Wave A: SummonItem post-battle drop -----------------------------------
+
+
+def _gacha_drop_rate() -> float:
+    """Drop rate is env-tunable (`GACHA_DROP_RATE`) with a 0.30 default."""
+    raw = os.getenv("GACHA_DROP_RATE", "0.30")
+    try:
+        rate = float(raw)
+    except ValueError:
+        return 0.30
+    return max(0.0, min(1.0, rate))
+
+
+# Tier weights for the post-battle drop. Slightly stingier than the starter
+# pull — most drops are common, legendary is a rare treat.
+_DROP_TIER_WEIGHTS: dict[str, int] = {"common": 80, "rare": 18, "legendary": 2}
+
+
+def _roll_drop_tier(rng: random.Random) -> str:
+    total = sum(_DROP_TIER_WEIGHTS.values())
+    pick = rng.uniform(0, total)
+    acc = 0.0
+    for tier, w in _DROP_TIER_WEIGHTS.items():
+        acc += w
+        if pick <= acc:
+            return tier
+    return "common"
+
+
+async def _maybe_drop_summon_item(
+    session: AsyncSession, run_id: str
+) -> SummonItem | None:
+    """Roll the drop chance; on a hit, persist a SummonItem and return it."""
+    try:
+        rng = random.Random()
+        if rng.random() > _gacha_drop_rate():
+            return None
+        item = SummonItem(run_id=run_id, tier=_roll_drop_tier(rng), consumed=False)
+        session.add(item)
+        await session.commit()
+        await session.refresh(item)
+        return item
+    except Exception as e:  # noqa: BLE001
+        log.info("gacha drop: skipped (%s)", e)
+        return None
 
 
 async def _write_battle_memories(
