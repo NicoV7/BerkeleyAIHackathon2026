@@ -35,6 +35,7 @@ from typing import Any, Optional
 from app.config import settings
 from app.debate.damage import compute_damage
 from app.debate.judge import heuristic_score, score_round
+from app.debate.latency_metrics import RoundTimer
 from app.debate.topics import domain_match_mult
 from app.gateway.gateway import gateway
 
@@ -485,15 +486,24 @@ def _build_actor_messages(
     ]
 
 
-async def _generate_utterance(
+async def _generate_utterance_traced(
     actor: Combatant,
     topic: str,
     transcript: list[dict[str, Any]],
     action: dict[str, Any],
     memories: list[str],
     name_lookup: dict[str, str],
-) -> str:
+) -> tuple[str, bool, str | None]:
+    """Non-streaming generation that also reports the fallback outcome.
+
+    Returns ``(text, used_fallback, fallback_reason)`` where ``fallback_reason`` is
+    "timeout" (the per-call budget fired) or "empty" (model returned nothing /
+    errored). Used by the headless self-play path so the latency metrics + spike
+    can attribute fallbacks. ``_generate_utterance`` wraps this for callers that
+    only want the text.
+    """
     messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
+    reason: str | None = None
     try:
         text = await gateway.complete(
             messages,
@@ -503,11 +513,32 @@ async def _generate_utterance(
             timeout=_actor_timeout(),
         )
         text = (text or "").strip()
+        if not text:
+            reason = "empty"
+    except asyncio.TimeoutError:  # per-call budget fired — slow/stalled model
+        text = ""
+        reason = "timeout"
     except Exception:  # noqa: BLE001 — stalled/failed model: fall back to real text
         text = ""
-    if not text:
+        reason = "empty"
+    used_fallback = not text
+    if used_fallback:
         text = _fallback_argument(actor, topic, turn_seed=len(transcript))
-    return _sanitize(text)
+    return _sanitize(text), used_fallback, reason
+
+
+async def _generate_utterance(
+    actor: Combatant,
+    topic: str,
+    transcript: list[dict[str, Any]],
+    action: dict[str, Any],
+    memories: list[str],
+    name_lookup: dict[str, str],
+) -> str:
+    text, _fb, _reason = await _generate_utterance_traced(
+        actor, topic, transcript, action, memories, name_lookup
+    )
+    return text
 
 
 def _sanitize(text: str) -> str:
@@ -544,9 +575,12 @@ async def _stream_utterance(
     the full text. Each yield is a dict:
 
       * `{"kind": "token", "text": <sanitized chunk>}` per streamed chunk, and
-      * exactly one terminating `{"kind": "done", "text": <full accumulated text>}`
+      * exactly one terminating `{"kind": "done", "text": <full accumulated text>,
+        "fallback": <bool>, "fallback_reason": <"timeout"|"empty"|None>}`
         carrying the canonical assembled utterance (with the same templated
-        fallback as `_generate_utterance` if the stream produced nothing).
+        fallback as `_generate_utterance` if the stream produced nothing). The
+        `fallback`/`fallback_reason` fields let callers (latency metrics) record
+        WHY a turn fell back without re-deriving it.
 
     A first-token timeout (`_first_token_timeout()`, the small
     `settings.first_token_timeout_s`) guards a stalled CPU model: if no token
@@ -556,6 +590,7 @@ async def _stream_utterance(
     """
     messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
     parts: list[str] = []
+    fallback_reason: str | None = None
     try:
         agen = gateway.stream(
             messages, model=_actor_model(actor), temperature=0.8,
@@ -585,16 +620,30 @@ async def _stream_utterance(
                 await aclose()
             except Exception:  # noqa: BLE001
                 pass
-    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-        # Stalled or errored stream: drop whatever partial text we have so the
-        # fallback below produces a clean, complete line.
+    except asyncio.TimeoutError:  # first-token guard fired — slow/stalled model
+        fallback_reason = "timeout"
+        parts = []
+    except Exception:  # noqa: BLE001 — errored stream
+        fallback_reason = "empty"
         parts = []
 
     full = "".join(parts).strip()
+    used_fallback = False
     if not full:
+        # Distinguish a clean-but-empty stream ("empty") from a timed-out one.
+        if fallback_reason is None:
+            fallback_reason = "empty"
+        used_fallback = True
         full = _fallback_argument(actor, topic, turn_seed=len(transcript))
+    else:
+        fallback_reason = None
     full = _sanitize(full)
-    yield {"kind": "done", "text": full}
+    yield {
+        "kind": "done",
+        "text": full,
+        "fallback": used_fallback,
+        "fallback_reason": fallback_reason,
+    }
 
 
 # ---- Core round logic (shared) ----------------------------------------------
@@ -812,6 +861,11 @@ async def run_round_stream(
     actor_by_id = {c.monster_id: c for c in combatants}
     damage_meta_by_id: dict[str, dict[str, Any]] = {}
 
+    # WS-0-LAT: time the whole round + each utterance generation, and record
+    # whether (and why) a templated fallback was used. Negligible overhead; emits
+    # one structured `battle.latency` log line at the end of the round.
+    rt = RoundTimer.start(eid, round_no=start_turn)
+
     # --- Speaking pass (sequential so each actor sees prior utterances) ---
     for actor in order:
         if not actor.alive:
@@ -855,22 +909,29 @@ async def run_round_stream(
         # `done` chunk carries the fallback-resolved text, so a stalled/empty
         # stream still produces a complete utterance (whole-utterance fallback).
         text = ""
-        async for chunk in _stream_utterance(
-            actor, topic, transcript, action, memories, name_lookup
-        ):
-            if chunk["kind"] == "token":
-                yield Event(
-                    "token",
-                    {
-                        "turn": turn_no,
-                        "actor_id": actor.monster_id,
-                        "side": actor.side,
-                        "text": chunk["text"],
-                        **_event_timing(actor_started),
-                    },
-                )
-            else:  # "done"
-                text = chunk["text"]
+        used_fallback = False
+        fallback_reason: str | None = None
+        with rt.utterance(actor.monster_id, actor.role, actor.side):
+            async for chunk in _stream_utterance(
+                actor, topic, transcript, action, memories, name_lookup
+            ):
+                if chunk["kind"] == "token":
+                    yield Event(
+                        "token",
+                        {
+                            "turn": turn_no,
+                            "actor_id": actor.monster_id,
+                            "side": actor.side,
+                            "text": chunk["text"],
+                            **_event_timing(actor_started),
+                        },
+                    )
+                else:  # "done"
+                    text = chunk["text"]
+                    used_fallback = bool(chunk.get("fallback"))
+                    fallback_reason = chunk.get("fallback_reason")
+            if used_fallback:
+                rt.utterances[-1].mark_fallback(fallback_reason or "empty")
 
         utt = {
             "turn": turn_no,
@@ -940,6 +1001,10 @@ async def run_round_stream(
     # blue MP bar in lockstep with HP without a separate poll.
     async for mp_ev in _regen_mp_and_emit(eid, combatants):
         yield mp_ev
+
+    # WS-0-LAT: emit the structured round-latency line (round_ms, per-actor gen_ms,
+    # fallback count + reasons). Best-effort — never raises into the round.
+    rt.finish()
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
@@ -1040,6 +1105,10 @@ async def run_human_round_stream(
     player.side = "for"
     enemy.side = "against"
 
+    # WS-0-LAT: round latency instrumentation. The player turn is human-typed (no
+    # model fallback), so we only time the ENEMY generation + judge here.
+    rt = RoundTimer.start(eid, round_no=start_turn)
+
     skill_name, attack_type, skill_power = _resolve_skill(player, skill_id)
     player_started = time.monotonic()
 
@@ -1118,44 +1187,53 @@ async def run_human_round_stream(
     # the opening path is safe only on the very first round (no prior exchange to
     # rebut). Later rounds fall through to the live streaming rebuttal below.
     enemy_text = ""
+    enemy_fallback = False
+    enemy_fallback_reason: str | None = None
     is_opening = start_turn == 0 and len(transcript) <= 1  # only the player's turn so far
-    if is_opening:
-        from app.debate.materialize import get_or_create_opening
+    with rt.utterance(enemy.monster_id, enemy.role, enemy.side) as enemy_metric:
+        if is_opening:
+            from app.debate.materialize import get_or_create_opening
 
-        enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
-        # Emit the materialized opening as a single token so WS clients still get
-        # the streamed-text event shape (no per-token cadence, but instant).
-        yield Event(
-            "token",
-            {
-                "turn": enemy_turn,
-                "actor_id": enemy.monster_id,
-                "side": enemy.side,
-                "text": enemy_text,
-                **_event_timing(enemy_started),
-            },
-        )
-    else:
-        try:
-            async for chunk in _stream_utterance(
-                enemy, topic, transcript, action, memories, name_lookup
-            ):
-                if chunk["kind"] == "token":
-                    yield Event(
-                        "token",
-                        {
-                            "turn": enemy_turn,
-                            "actor_id": enemy.monster_id,
-                            "side": enemy.side,
-                            "text": chunk["text"],
-                            **_event_timing(enemy_started),
-                        },
-                    )
-                else:  # "done"
-                    enemy_text = chunk["text"]
-        except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
-            if not enemy_text:
-                enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+            enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
+            # Emit the materialized opening as a single token so WS clients still get
+            # the streamed-text event shape (no per-token cadence, but instant).
+            yield Event(
+                "token",
+                {
+                    "turn": enemy_turn,
+                    "actor_id": enemy.monster_id,
+                    "side": enemy.side,
+                    "text": enemy_text,
+                    **_event_timing(enemy_started),
+                },
+            )
+        else:
+            try:
+                async for chunk in _stream_utterance(
+                    enemy, topic, transcript, action, memories, name_lookup
+                ):
+                    if chunk["kind"] == "token":
+                        yield Event(
+                            "token",
+                            {
+                                "turn": enemy_turn,
+                                "actor_id": enemy.monster_id,
+                                "side": enemy.side,
+                                "text": chunk["text"],
+                                **_event_timing(enemy_started),
+                            },
+                        )
+                    else:  # "done"
+                        enemy_text = chunk["text"]
+                        enemy_fallback = bool(chunk.get("fallback"))
+                        enemy_fallback_reason = chunk.get("fallback_reason")
+            except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
+                if not enemy_text:
+                    enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+                    enemy_fallback = True
+                    enemy_fallback_reason = "empty"
+        if enemy_fallback:
+            enemy_metric.mark_fallback(enemy_fallback_reason or "empty")
 
     turn_no = enemy_turn
     enemy_utt = {
@@ -1189,25 +1267,30 @@ async def run_human_round_stream(
         {"actor_id": player.monster_id, "text": text},
         {"actor_id": enemy.monster_id, "text": enemy_text},
     ]
-    try:
-        scores = await asyncio.wait_for(
-            score_round(topic, judge_items, fallback_model=fallback_model),
-            timeout=_human_judge_deadline(),
-        )
-    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — stalled/failed judge
-        # Settle from the heuristic so HP commits within the deadline. This is the
-        # SAME score already shown to the player by the optimistic `estimate`, so
-        # the displayed feedback is now authoritative rather than dangling.
-        from app.debate.judge import JudgeScore
-
-        scores = [
-            JudgeScore(
-                actor_id=it["actor_id"],
-                score=heuristic_score(topic, it["text"]),
-                rationale="Heuristic score (judge deadline reached).",
+    judge_fallback = False
+    with rt.utterance("__judge__", "judge", None) as judge_metric:
+        try:
+            scores = await asyncio.wait_for(
+                score_round(topic, judge_items, fallback_model=fallback_model),
+                timeout=_human_judge_deadline(),
             )
-            for it in judge_items
-        ]
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — stalled/failed judge
+            # Settle from the heuristic so HP commits within the deadline. This is the
+            # SAME score already shown to the player by the optimistic `estimate`, so
+            # the displayed feedback is now authoritative rather than dangling.
+            from app.debate.judge import JudgeScore
+
+            judge_fallback = True
+            scores = [
+                JudgeScore(
+                    actor_id=it["actor_id"],
+                    score=heuristic_score(topic, it["text"]),
+                    rationale="Heuristic score (judge deadline reached).",
+                )
+                for it in judge_items
+            ]
+        if judge_fallback:
+            judge_metric.mark_fallback("judge_deadline")
     score_by_id = {js.actor_id: js for js in scores}
 
     # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---
@@ -1281,6 +1364,9 @@ async def run_human_round_stream(
     # the human player and the AI use the exact same MP economy.
     async for mp_ev in _regen_mp_and_emit(eid, combatants):
         yield mp_ev
+
+    # WS-0-LAT: emit the structured round-latency line for the human round.
+    rt.finish()
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
@@ -1356,6 +1442,11 @@ async def _run_self_play_async(
         actor_by_id = {c.monster_id: c for c in combatants}
         damage_meta_by_id: dict[str, dict[str, Any]] = {}
 
+        # WS-0-LAT: time each headless round + record per-utterance fallbacks so the
+        # go/no-go spike + WS-F training share the same latency instrumentation as
+        # the live paths. (Headless uses the non-streaming `complete` path.)
+        rt = RoundTimer.start(f"selfplay:{party.monster_id}", round_no=turn_no)
+
         for actor in order:
             if not actor.alive:
                 continue
@@ -1371,9 +1462,12 @@ async def _run_self_play_async(
                 "skill_mult": skill_power,
             }
             memories: list[str] = []  # headless: skip RAG for determinism/speed
-            text = await _generate_utterance(
-                actor, topic, transcript, action, memories, name_lookup
-            )
+            with rt.utterance(actor.monster_id, actor.role, _side_for(actor)) as _m:
+                text, _used_fb, _fb_reason = await _generate_utterance_traced(
+                    actor, topic, transcript, action, memories, name_lookup
+                )
+                if _used_fb:
+                    _m.mark_fallback(_fb_reason or "empty")
             utt = {
                 "turn": turn_no,
                 "actor_id": actor.monster_id,
@@ -1403,6 +1497,9 @@ async def _run_self_play_async(
         round_verdicts = _apply_round_damage(combatants, scored, momentum)
         for v in round_verdicts:
             verdicts.append({**v, "turn": turn_no})
+
+        # WS-0-LAT: emit the structured round-latency line for this self-play round.
+        rt.finish()
 
         phase, _cap = _phase_for(combatants)
         if phase in ("won", "lost"):
