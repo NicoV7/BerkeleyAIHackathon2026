@@ -1,11 +1,18 @@
 # Debate RPG — BerkeleyAIHackathon2026
 
-A **Pokémon-style roguelike where you debate enemy AIs.** Walk a tile overworld,
-collide into 1–3 enemy LLM agents arguing a topic you choose, and win by being
-more persuasive. Your party are AI "monster" agents — you don't control them
-directly; you author **Final Fantasy 12 "Gambit"** behavior rules and **train /
-evolve** them (GEPA + GRPO human-in-the-loop) so they battle autonomously.
-Capture defeated wild agents like Pokémon. Local-first, runs entirely on your machine.
+Debate RPG is a local-first creature-collector RPG where the monsters are
+autonomous debate agents. Explore a tile overworld, meet villagers and rival
+agents, descend into nearby dungeons, and trigger turn-based argument battles
+against 1-3 enemy LLM personas. You do not micromanage every line your party
+says: you collect agents, give them gambit-style behavior rules, train their
+prompt genomes, and let them argue for you.
+
+The core loop blends Pokémon-style capture, old-school RPG overworld traversal,
+and AI debate tactics. Winning means making the stronger case, using agent
+skills at the right moment, remembering prior encounters, and evolving your
+party into faster, sharper rhetorical specialists. The stack runs locally with
+Ollama by default, with optional hosted model keys for lower-latency fallback
+providers.
 
 ## Stack
 - **Frontend:** Vite + React + Phaser 3 (overworld) + Tailwind. (`apps/web`)
@@ -15,20 +22,37 @@ Capture defeated wild agents like Pokémon. Local-first, runs entirely on your m
 
 ## Quickstart
 ```bash
-cp .env.example .env
-pnpm install                 # web deps (root workspace)
-pnpm up                      # docker compose: postgres, redis, ollama, api, web
-pnpm pull-models             # pull gemma3:4b, qwen3:4b, nomic-embed-text into ollama
-open http://localhost:5173   # web   (API docs: http://localhost:8000/docs)
-curl localhost:8000/api/health
+pnpm install:game
+pnpm game:start
+```
+
+`pnpm install:game` installs workspace dependencies, prepares `.env`, pulls and
+builds Docker dependencies, and opens API-key pages for any missing optional
+hosted model providers. The game still runs fully local with Ollama if you leave
+those keys blank.
+
+`pnpm game:start` starts Postgres, Redis, Ollama, the FastAPI server, and the
+Vite/Phaser web client. It also pulls the default Ollama models and opens
+<http://localhost:5173>. API docs are available at <http://localhost:8000/docs>.
+
+Useful commands:
+
+```bash
+pnpm install:game --no-open       # install without opening API-key pages
+pnpm game:start --no-open         # start services and print the game URL
+pnpm game:start --skip-model-pull # start faster if models are already local
+pnpm logs                         # follow Docker service logs
+pnpm down                         # stop the local stack
 ```
 
 ## Hosted Model Fallbacks
 
 The API gateway can route battle actors and judges through fast hosted providers
 with a local Ollama fallback. Put provider keys only in the ignored root `.env`
-file (`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `GEMINI_API_KEY`,
-`OPENROUTER_API_KEY`); `.env.example` intentionally contains placeholders only.
+file. Latency-first defaults can use `GROQ_API_KEY`, `CEREBRAS_API_KEY`,
+`GEMINI_API_KEY`, and `OPENROUTER_API_KEY`; `ANTHROPIC_API_KEY` and
+`OPENAI_API_KEY` are available for explicit provider routing. `.env.example`
+intentionally contains placeholders only.
 
 Default latency-first candidates are configured with:
 
