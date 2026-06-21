@@ -429,6 +429,8 @@ def _utt_fields(d: dict) -> dict:
         "skill_used": d.get("skill_used"),
         "text": d["text"],
         "ts": d["ts"],
+        "server_ts": d.get("server_ts"),
+        "elapsed_ms": d.get("elapsed_ms"),
     }
 
 

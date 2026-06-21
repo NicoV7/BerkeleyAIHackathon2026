@@ -292,6 +292,14 @@ class Event:
     data: dict[str, Any]
 
 
+def _event_timing(started_at: float | None = None) -> dict[str, Any]:
+    """Add optional server timing metadata to live events."""
+    out: dict[str, Any] = {"server_ts": time.time()}
+    if started_at is not None:
+        out["elapsed_ms"] = round((time.monotonic() - started_at) * 1000)
+    return out
+
+
 # ---- Context building -------------------------------------------------------
 
 
@@ -365,15 +373,36 @@ def _build_battle_state(
     }
 
 
+def _persona_value(value: Any) -> str:
+    """Compact persona JSON values for prompt injection."""
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(v) for v in value if str(v).strip())
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v}" for k, v in value.items() if str(v).strip())
+    return str(value).strip()
+
+
 def _persona_line(actor: Combatant) -> str:
+    """Render all supported persona flavors into a concise prompt line."""
     p = actor.persona or {}
+    if not isinstance(p, dict):
+        return ""
     bits = []
-    if p.get("style"):
-        bits.append(f"style: {p['style']}")
-    if p.get("voice"):
-        bits.append(f"voice: {p['voice']}")
-    if p.get("bio"):
-        bits.append(str(p["bio"]))
+    labels = {
+        "style": "style",
+        "voice": "voice",
+        "tagline": "tagline",
+        "bio": "bio",
+        "backstory": "backstory",
+        "tone": "tone",
+        "quirks": "quirks",
+        "evolution_notes": "evolution",
+    }
+    for key, label in labels.items():
+        value = p.get(key)
+        rendered = _persona_value(value) if value is not None else ""
+        if rendered:
+            bits.append(f"{label}: {rendered}")
     return "; ".join(bits)
 
 
@@ -582,9 +611,10 @@ def _apply_round_damage(
     Each scored utterance damages the opposing side, split across its living
     members. Momentum nudges based on net per-side scoring this round.
 
-    Each `scored` entry is `(actor, score, rationale)` and may carry an optional
-    4th element: a dict of extra verdict fields (e.g. why/logic/persuasion) that
-    is merged into the emitted verdict. Older 3-tuple callers stay supported.
+    Each `scored` entry is `(actor, score, rationale)` and may carry optional
+    dicts: the 4th element for extra verdict fields (e.g. why/logic/persuasion),
+    and the 5th for damage metadata (`attack_type`, `skill_mult`). Older
+    3-tuple callers stay supported.
 
     ``topic`` (gacha wave) flows into ``domain_match_mult`` so a domain-aligned
     attacker (e.g. SCIENCE monster on a SCIENCE topic) gets the +20% bonus and a
@@ -596,6 +626,9 @@ def _apply_round_damage(
     for entry in scored:
         actor, score, rationale = entry[0], entry[1], entry[2]
         extra: dict[str, Any] = entry[3] if len(entry) > 3 and isinstance(entry[3], dict) else {}
+        damage_meta: dict[str, Any] = (
+            entry[4] if len(entry) > 4 and isinstance(entry[4], dict) else {}
+        )
         side_net[actor.role] += (score - 50.0)
         enemy_role = "enemy" if actor.role == "party" else "party"
         targets = [c for c in combatants if c.role == enemy_role and c.alive]
@@ -603,14 +636,16 @@ def _apply_round_damage(
             continue
         mom = momentum.get(actor.role, 1.0)
         dmatch = domain_match_mult(getattr(actor, "domain", None) or "GENERAL", topic)
+        attack_type = str(damage_meta.get("attack_type") or actor.type)
+        skill_mult = float(damage_meta.get("skill_mult", 1.0) or 1.0)
         total_dmg = 0
         # Split damage across living defenders.
         for target in targets:
             dmg = compute_damage(
                 score=score,
-                attacker_type=actor.type,
+                attacker_type=attack_type,
                 defender_type=target.type,
-                skill_mult=1.0,
+                skill_mult=skill_mult,
                 momentum=mom,
                 attacker_level=actor.level,
                 defender_level=target.level,
@@ -775,16 +810,43 @@ async def run_round_stream(
 
     scored_inputs: list[dict[str, Any]] = []
     actor_by_id = {c.monster_id: c for c in combatants}
+    damage_meta_by_id: dict[str, dict[str, Any]] = {}
 
     # --- Speaking pass (sequential so each actor sees prior utterances) ---
     for actor in order:
         if not actor.alive:
             continue
+        actor_started = time.monotonic()
         turn_no += 1
         battle_state = _build_battle_state(
             actor, combatants, topic, turn_no, last_verdict_score, momentum
         )
         action = _decide_action(actor, battle_state)
+        skill_name, attack_type, skill_power = _resolve_skill(actor, action.get("skill"))
+        if skill_name:
+            cost = _skill_cost_safe(skill_name)
+            if cost > 0:
+                cur_mp = await _get_mp_safe(eid, actor.monster_id, actor.max_mp)
+                if cur_mp < cost:
+                    skill_name = None
+                    attack_type = actor.type
+                    skill_power = 1.0
+                else:
+                    await _set_mp_safe(eid, actor.monster_id, cur_mp - cost)
+                    yield Event(
+                        "mp",
+                        {
+                            "monster_id": actor.monster_id,
+                            "mp": cur_mp - cost,
+                            "max_mp": actor.max_mp,
+                            **_event_timing(actor_started),
+                        },
+                    )
+        action = {**action, "skill": skill_name}
+        damage_meta_by_id[actor.monster_id] = {
+            "attack_type": attack_type,
+            "skill_mult": skill_power,
+        }
         memories = await _gather_memories(actor, topic, run_id)
         transcript = await get_transcript_safe(eid)
 
@@ -804,6 +866,7 @@ async def run_round_stream(
                         "actor_id": actor.monster_id,
                         "side": actor.side,
                         "text": chunk["text"],
+                        **_event_timing(actor_started),
                     },
                 )
             else:  # "done"
@@ -817,6 +880,7 @@ async def run_round_stream(
             "skill_used": action.get("skill"),
             "text": text,
             "ts": time.time(),
+            **_event_timing(actor_started),
         }
         await append_utterance(eid, utt)
         scored_inputs.append({"actor_id": actor.monster_id, "text": text})
@@ -834,7 +898,13 @@ async def run_round_stream(
                 "logic": js.logic,
                 "persuasion": js.persuasion,
             }
-            scored.append((actor, js.score, js.rationale, extra))
+            scored.append((
+                actor,
+                js.score,
+                js.rationale,
+                extra,
+                damage_meta_by_id.get(actor.monster_id, {}),
+            ))
 
     verdicts = _apply_round_damage(combatants, scored, momentum, topic=topic)
 
@@ -971,6 +1041,7 @@ async def run_human_round_stream(
     enemy.side = "against"
 
     skill_name, attack_type, skill_power = _resolve_skill(player, skill_id)
+    player_started = time.monotonic()
 
     # Gacha Wave B: skill MP gate. If the player selected a skill they cannot
     # afford, strip the skill from THIS turn (the text still goes through —
@@ -991,6 +1062,7 @@ async def run_human_round_stream(
                         "monster_id": player.monster_id,
                         "mp": cur_mp - cost,
                         "max_mp": player.max_mp,
+                        **_event_timing(player_started),
                     },
                 )
 
@@ -1007,6 +1079,7 @@ async def run_human_round_stream(
         "skill_used": skill_name,
         "text": text,
         "ts": time.time(),
+        **_event_timing(player_started),
     }
     await append_utterance(eid, player_utt)
     yield Event("utterance", player_utt)
@@ -1024,10 +1097,12 @@ async def run_human_round_stream(
             "actor_id": player.monster_id,
             "side": player.side,
             "score": heuristic_score(topic, text),
+            **_event_timing(player_started),
         },
     )
 
     enemy_turn = turn_no + 1
+    enemy_started = time.monotonic()
 
     # --- Enemy rebuttal (autonomous) ---
     battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
@@ -1057,6 +1132,7 @@ async def run_human_round_stream(
                 "actor_id": enemy.monster_id,
                 "side": enemy.side,
                 "text": enemy_text,
+                **_event_timing(enemy_started),
             },
         )
     else:
@@ -1072,6 +1148,7 @@ async def run_human_round_stream(
                             "actor_id": enemy.monster_id,
                             "side": enemy.side,
                             "text": chunk["text"],
+                            **_event_timing(enemy_started),
                         },
                     )
                 else:  # "done"
@@ -1089,6 +1166,7 @@ async def run_human_round_stream(
         "skill_used": action.get("skill"),
         "text": enemy_text,
         "ts": time.time(),
+        **_event_timing(enemy_started),
     }
     await append_utterance(eid, enemy_utt)
     yield Event("utterance", enemy_utt)
@@ -1276,6 +1354,7 @@ async def _run_self_play_async(
         order = [c for c in combatants if c.alive]
         scored_inputs: list[dict[str, Any]] = []
         actor_by_id = {c.monster_id: c for c in combatants}
+        damage_meta_by_id: dict[str, dict[str, Any]] = {}
 
         for actor in order:
             if not actor.alive:
@@ -1285,6 +1364,12 @@ async def _run_self_play_async(
                 actor, combatants, topic, turn_no, last_score, momentum
             )
             action = _decide_action(actor, battle_state)
+            skill_name, attack_type, skill_power = _resolve_skill(actor, action.get("skill"))
+            action = {**action, "skill": skill_name}
+            damage_meta_by_id[actor.monster_id] = {
+                "attack_type": attack_type,
+                "skill_mult": skill_power,
+            }
             memories: list[str] = []  # headless: skip RAG for determinism/speed
             text = await _generate_utterance(
                 actor, topic, transcript, action, memories, name_lookup
@@ -1302,11 +1387,17 @@ async def _run_self_play_async(
 
         fb = next((c.model for c in combatants if c.model), None)
         scores = await score_round(topic, scored_inputs, fallback_model=fb)
-        scored: list[tuple[Combatant, float, str]] = []
+        scored: list[tuple] = []
         for js in scores:
             a = actor_by_id.get(js.actor_id)
             if a:
-                scored.append((a, js.score, js.rationale))
+                scored.append((
+                    a,
+                    js.score,
+                    js.rationale,
+                    {},
+                    damage_meta_by_id.get(a.monster_id, {}),
+                ))
                 if a.role == "party":
                     last_score = js.score
         round_verdicts = _apply_round_damage(combatants, scored, momentum)

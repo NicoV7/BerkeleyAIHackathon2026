@@ -27,6 +27,7 @@ const BLOCKED_TILE_VALUES = new Set([1, 6, 7]);
 export interface MoveIntent {
   dx: number;
   dy: number;
+  running?: boolean;
 }
 
 export interface WorldSimConfig {
@@ -50,6 +51,8 @@ export interface WorldSimConfig {
 export const WORLD_SIM_KNOBS = {
   /** Player speed in pixels/second. */
   playerSpeed: 150,
+  /** Holding the run key scales movement speed by this amount. */
+  playerRunMultiplier: 1.55,
   /** Collision box inset (px) on each side vs a full tile — corner forgiveness. */
   collisionInset: 6,
   /** Camera lerp factor (0..1); higher = snappier follow. */
@@ -153,7 +156,9 @@ export class WorldSim {
       dy = 0;
     }
 
-    const speed = WORLD_SIM_KNOBS.playerSpeed;
+    const speed =
+      WORLD_SIM_KNOBS.playerSpeed *
+      (intent.running ? WORLD_SIM_KNOBS.playerRunMultiplier : 1);
     this.vx = dx * speed;
     this.vy = dy * speed;
 

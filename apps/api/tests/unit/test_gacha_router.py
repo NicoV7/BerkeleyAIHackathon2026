@@ -223,6 +223,7 @@ def test_pull_creates_monster_with_persona_defaults(monkeypatch: pytest.MonkeyPa
     assert m.wiki_url == persona.wiki_url
     assert m.wiki_hydrated is False
     assert m.persona.get("key") == "socrates"
+    assert m.persona.get("tagline") == persona.tagline
 
     # Pull payload echoes the persona key (only candidate in the pool); the
     # rolled tier comes from `_roll_tier` and may be any of the three buckets
@@ -231,9 +232,34 @@ def test_pull_creates_monster_with_persona_defaults(monkeypatch: pytest.MonkeyPa
     assert result.persona_tier in {"common", "rare", "legendary"}
     # The returned MonsterSummary carries the un-hydrated flag for FE polling.
     assert result.monster.wiki_hydrated is False
+    assert result.monster.persona["tagline"] == persona.tagline
     # And hydration was scheduled with the seed tagline as the fallback.
     assert len(sched) == 1
     assert sched[0][2] == persona.tagline
+
+
+def test_pull_seed_makes_roll_reproducible(monkeypatch: pytest.MonkeyPatch) -> None:
+    def make_session() -> FakeSession:
+        s = FakeSession()
+        s.seed_run(_run("run-1"))
+        s.seed_personas([
+            _persona("alpha", "common"),
+            _persona("beta", "common"),
+            _persona("gamma", "rare"),
+        ])
+        return s
+
+    _stub_schedule_hydration(monkeypatch, [])
+
+    first = asyncio.run(
+        gacha.pull("run-1", GachaPullRequest(seed=2026), make_session())
+    )
+    second = asyncio.run(
+        gacha.pull("run-1", GachaPullRequest(seed=2026), make_session())
+    )
+
+    assert first.persona_key == second.persona_key
+    assert first.persona_tier == second.persona_tier
 
 
 def test_pull_consumes_summon_item_and_promotes_tier(monkeypatch: pytest.MonkeyPatch) -> None:

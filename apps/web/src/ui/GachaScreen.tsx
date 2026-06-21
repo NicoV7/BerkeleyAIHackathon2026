@@ -35,6 +35,11 @@ interface MonsterSummary {
   max_mp?: number;
   domain?: string;
   wiki_hydrated?: boolean;
+  persona?: {
+    voice?: string;
+    tagline?: string;
+    [key: string]: unknown;
+  };
 }
 
 interface GachaPullResult {
@@ -270,9 +275,7 @@ export default function GachaScreen({ summonItemId, onReady }: GachaScreenProps 
               className="font-body text-sm italic"
               style={{ color: "var(--muted)" }}
             >
-              “{(monster as any).persona?.voice ||
-                (monster as any).persona?.tagline ||
-                "…"}”
+              “{monster.persona?.voice || monster.persona?.tagline || "…"}”
             </p>
 
             {stage === "hydrating" ? (

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -321,6 +320,8 @@ async def build_encounter_state(eid: str) -> EncounterState:
             skill_used=u.get("skill_used"),
             text=u["text"],
             ts=u["ts"],
+            server_ts=u.get("server_ts"),
+            elapsed_ms=u.get("elapsed_ms"),
         )
         for u in transcript_raw
     ]
