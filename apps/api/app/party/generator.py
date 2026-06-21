@@ -14,15 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models import DebateType, Monster, MonsterOwner
+from app.debate.skill_engine import skill_catalog, skills_for_type
 from app.party import archetypes as _archetypes
 from app.party import balance as _balance
 from app.party import persona as _persona
 
 # ---------------------------------------------------------------------------
-# Inline skill catalog (tiny seed list — global catalog seeded in Wave 2)
+# Fallback skill catalog. The real source of truth is ``app/skills/*.md`` parsed
+# by ``app.debate.skill_engine``; this list only keeps generation alive if the
+# Markdown catalog is unavailable in a dev/test environment.
 # ---------------------------------------------------------------------------
 
-_SKILL_CATALOG: list[dict[str, Any]] = [
+_FALLBACK_SKILL_CATALOG: list[dict[str, Any]] = [
     {"name": "Logical Thrust",    "type": "LOGOS",    "power": 1.2, "description": "Present a well-sourced fact."},
     {"name": "Emotional Appeal",  "type": "PATHOS",   "power": 1.2, "description": "Share a moving personal story."},
     {"name": "Authority Cite",    "type": "ETHOS",    "power": 1.1, "description": "Invoke expert consensus."},
@@ -35,11 +38,31 @@ _SKILL_CATALOG: list[dict[str, Any]] = [
     {"name": "Whataboutism",      "type": "CHAOS",    "power": 0.7, "description": "Deflect with a counter-example."},
     {"name": "Leading Question",  "type": "SOCRATIC", "power": 1.1, "description": "Guide toward your conclusion."},
     {"name": "Analogy Strike",    "type": "RHETORIC", "power": 1.0, "description": "Compare with vivid analogy."},
+    {"name": "Contradiction Ledger", "type": "LOGOS", "power": 1.4, "description": "Use remembered contradictions as evidence."},
+    {"name": "Evidence Echo", "type": "LOGOS", "power": 1.35, "description": "Recall a prior claim and answer it with proof."},
+    {"name": "Wound Callback", "type": "PATHOS", "power": 1.4, "description": "Turn remembered stakes into an emotional counter."},
+    {"name": "Empathy Mirror", "type": "PATHOS", "power": 1.35, "description": "Reflect a remembered line back through human cost."},
+    {"name": "Reputation Crosscheck", "type": "ETHOS", "power": 1.4, "description": "Challenge credibility using battle memory."},
+    {"name": "Authority Reversal", "type": "ETHOS", "power": 1.35, "description": "Use remembered claims to flip authority."},
+    {"name": "Pattern Break", "type": "CHAOS", "power": 1.45, "description": "Exploit a remembered pattern and shatter the frame."},
+    {"name": "Hypocrisy Hook", "type": "CHAOS", "power": 1.35, "description": "Catch an inconsistency from the transcript."},
+    {"name": "Memory Trap", "type": "SOCRATIC", "power": 1.4, "description": "Ask a question built from a remembered claim."},
+    {"name": "Premise Recall", "type": "SOCRATIC", "power": 1.35, "description": "Force the opponent back to their earlier premise."},
+    {"name": "Callback Crescendo", "type": "RHETORIC", "power": 1.4, "description": "Turn a remembered phrase into a finishing line."},
+    {"name": "Phrase Reversal", "type": "RHETORIC", "power": 1.35, "description": "Invert the opponent's own wording against them."},
 ]
 
-#: name -> catalog dict, for resolving a domain's signature skill names back to
-#: full skill objects (with type/power/description) when generating monsters.
-_SKILL_BY_NAME: dict[str, dict[str, Any]] = {s["name"]: s for s in _SKILL_CATALOG}
+def _catalog() -> list[dict[str, Any]]:
+    """Return the parsed battle skill catalog, falling back for isolated tests."""
+    parsed = skill_catalog()
+    return parsed if parsed else list(_FALLBACK_SKILL_CATALOG)
+
+
+def _monster_skill(skill: dict[str, Any]) -> dict[str, Any]:
+    """Return a compact skill blob suitable for Monster.skills JSON."""
+    out = dict(skill)
+    out.pop("prompt_fragment", None)
+    return out
 
 # Persona templates
 _BACKSTORIES = [
@@ -105,18 +128,20 @@ def _parse_avatar_type(avatar_type: str | None) -> DebateType | None:
 
 
 def _domain_skills_for(debate_type: DebateType) -> list[dict[str, Any]]:
-    """Resolve a type's domain *signature* skills to full catalog dicts.
+    """Resolve a type's full battle skill pool to catalog dicts.
 
-    Reads the type->domain->skills registry in :mod:`app.party.archetypes`
-    (single source of truth), then maps each signature move name back to its
-    full ``{name, type, power, description}`` object. Falls back to type-matched
-    catalog entries if the registry is unavailable, so generation never breaks.
+    The expanded gacha system uses every parsed Markdown skill whose ``type``
+    matches the agent's debate type. The old archetype signature registry is
+    only a fallback so generation never breaks if the catalog is unavailable.
     """
-    names = _archetypes.signature_skills_for_type(debate_type)
-    skills = [_SKILL_BY_NAME[n] for n in names if n in _SKILL_BY_NAME]
+    skills = skills_for_type(debate_type)
     if not skills:
-        skills = [s for s in _SKILL_CATALOG if s["type"] == debate_type.value]
-    return skills
+        names = _archetypes.signature_skills_for_type(debate_type)
+        by_name = {s["name"]: s for s in _catalog()}
+        skills = [by_name[n] for n in names if n in by_name]
+    if not skills:
+        skills = [s for s in _catalog() if s.get("type") == debate_type.value]
+    return [_monster_skill(s) for s in skills]
 
 
 def apply_avatar_traits(monster: Monster, avatar_type: str | None) -> bool:
@@ -143,7 +168,7 @@ def apply_avatar_traits(monster: Monster, avatar_type: str | None) -> bool:
     quirk = persona.get("quirks") or persona.get("style") or persona.get("tagline") or ""
 
     monster.type = dtype
-    monster.skills = _domain_skills_for(dtype)
+    monster.skills = _domain_skills_for(dtype)[:2]
     monster.is_avatar = True
     monster.harness = {
         **dict(monster.harness or {}),
@@ -168,7 +193,7 @@ def _pick_skills(rng: random.Random, debate_type: DebateType, n: int = 2) -> lis
     given ``rng``.
     """
     same_type = _domain_skills_for(debate_type)
-    other = [s for s in _SKILL_CATALOG if s["type"] != debate_type.value]
+    other = [_monster_skill(s) for s in _catalog() if s.get("type") != debate_type.value]
     chosen: list[dict[str, Any]] = []
     if same_type:
         chosen.append(rng.choice(same_type))
@@ -185,6 +210,15 @@ def _pick_skills(rng: random.Random, debate_type: DebateType, n: int = 2) -> lis
         if len(chosen) >= n:
             break
     return chosen[:n]
+
+
+def pick_skills_for_type(
+    rng: random.Random,
+    debate_type: DebateType,
+    n: int = 2,
+) -> list[dict[str, Any]]:
+    """Public gacha helper: choose exactly ``n`` skills for a pulled agent."""
+    return _pick_skills(rng, debate_type, n=n)
 
 
 def _build_persona(rng: random.Random) -> dict[str, Any]:
@@ -328,7 +362,7 @@ async def roll_starter_party(
 
     When ``avatar_type`` names a valid :class:`DebateType`, the FIRST starter is
     the player's chosen avatar: forced to that type with the type's signature
-    moves (e.g. PATHOS -> Emotional Appeal / Anecdote), a flavour-matched name,
+    two type-eligible battle skills, a flavour-matched name,
     and ``is_avatar=True`` so the battle UI treats it as the run's permanent main
     character. The remaining starters keep random types for coverage. An
     absent/invalid ``avatar_type`` reproduces the original fully-random roll
@@ -356,7 +390,7 @@ async def roll_starter_party(
         # `persona` is built in the same rng position as before so the no-avatar
         # path stays byte-for-byte deterministic for a given seed.
         persona = _build_persona(rng)
-        skills = _domain_skills_for(dtype) if is_avatar else _pick_skills(rng, dtype, n=2)
+        skills = _pick_skills(rng, dtype, n=2)
         m = Monster(
             run_id=run_id,
             owner=MonsterOwner.player,

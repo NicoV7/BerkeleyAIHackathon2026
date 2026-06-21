@@ -16,7 +16,10 @@ export interface EncounterBridge {
    * client-side decorations rather than rows from the run's wild Monster table.
    * Returns an encounter id (from WS-B) or null if creation fails.
    */
-  onCollision: (wildId?: string | null) => Promise<string | null>;
+  onCollision: (
+    wildId?: string | null,
+    locationTile?: number | null
+  ) => Promise<string | null>;
 }
 
 /**
@@ -29,12 +32,18 @@ export function buildEncounterBridge(
   setEncounter: (id: string | null) => void
 ): EncounterBridge {
   return {
-    onCollision: async (wildId?: string | null): Promise<string | null> => {
+    onCollision: async (
+      wildId?: string | null,
+      locationTile?: number | null
+    ): Promise<string | null> => {
       try {
-        const body =
-          wildId === null || wildId === undefined
-            ? { run_id: runId }
-            : { run_id: runId, wild_id: wildId };
+        const body = {
+          run_id: runId,
+          ...(wildId === null || wildId === undefined ? {} : { wild_id: wildId }),
+          ...(locationTile === null || locationTile === undefined
+            ? {}
+            : { location_tile: locationTile }),
+        };
         const res = await fetch("/api/encounters", {
           method: "POST",
           headers: { "content-type": "application/json" },

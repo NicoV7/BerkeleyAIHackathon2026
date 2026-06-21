@@ -5,6 +5,12 @@ power: 1.3
 domain: RHETORIC
 mp_cost: 40
 special: preempt_rebut
+effect_kind: agent_argument
+target: enemy
+duration_turns: 0
+requires_prompt: false
+rarity: common
+modifiers: damage_mult=1.0
 ---
 
 # Rhetorical Flourish

@@ -26,6 +26,7 @@ from app.party.persona import ensure_battle_reactions, normalize_harness
 from app.redis_state import (
     ENCOUNTER_TTL_SECONDS,
     encounter_keys,
+    get_effects,
     get_hp_map,
     get_mp_map,
     get_redis,
@@ -42,6 +43,7 @@ from app.schemas import (
     CreateEncounterRequest,
     EncounterState,
     JudgeVerdict,
+    SkillEffect,
     Utterance,
 )
 
@@ -204,7 +206,12 @@ def _initiative_order(combatants: list[Combatant]) -> list[str]:
 
 
 async def seed_redis(
-    eid: str, run_id: str, topic: str, combatants: list[Combatant]
+    eid: str,
+    run_id: str,
+    topic: str,
+    combatants: list[Combatant],
+    *,
+    location_tile: int | None = None,
 ) -> None:
     r = get_redis()
     pipe = r.pipeline()
@@ -218,6 +225,7 @@ async def seed_redis(
             "turn_no": 0,
             "phase": "intro",
             "status": "ongoing",
+            "location_tile": "" if location_tile is None else int(location_tile),
             # store the static combatant roster so the engine can rehydrate
             "combatants": json.dumps(
                 [
@@ -376,6 +384,13 @@ async def build_encounter_state(eid: str) -> EncounterState:
         for u in transcript_raw
     ]
     verdicts = [JudgeVerdict(**json.loads(v)) for v in verdicts_raw]
+    effects = [SkillEffect(**e) for e in await get_effects(eid)]
+
+    raw_location_tile = meta.get("location_tile")
+    try:
+        location_tile = int(raw_location_tile) if raw_location_tile not in (None, "") else None
+    except (TypeError, ValueError):
+        location_tile = None
 
     return EncounterState(
         id=eid,
@@ -383,10 +398,46 @@ async def build_encounter_state(eid: str) -> EncounterState:
         topic=meta.get("topic", ""),
         phase=meta.get("phase", "intro"),  # type: ignore[arg-type]
         turn_no=int(meta.get("turn_no", 0) or 0),
+        location_tile=location_tile,
         combatants=combatant_states,
         transcript=transcript,
         verdicts=verdicts,
+        effects=effects,
     )
+
+
+def _encounter_location_tile(req: CreateEncounterRequest, run: Run) -> int | None:
+    """Best-effort terrain tile for the battle backdrop.
+
+    Prefer the client-reported tile from the exact collision frame. If older
+    clients omit it, fall back to the run's last persisted player tile.
+    """
+    if req.location_tile is not None:
+        try:
+            return int(req.location_tile)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        from app.world.canonical import get_canonical_tile
+
+        tile = get_canonical_tile(int(run.player_x), int(run.player_y))
+        if tile is not None:
+            return int(tile)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from app.routers.map import _generate_tiles
+
+        tiles = _generate_tiles(int(run.seed))
+        y = int(run.player_y)
+        x = int(run.player_x)
+        if 0 <= y < len(tiles) and 0 <= x < len(tiles[y]):
+            return int(tiles[y][x])
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 # ---- Idempotency ------------------------------------------------------------
@@ -474,7 +525,13 @@ async def create_encounter(
     session.add(enc)
     await session.commit()
 
-    await seed_redis(eid, req.run_id, topic, combatants)
+    await seed_redis(
+        eid,
+        req.run_id,
+        topic,
+        combatants,
+        location_tile=_encounter_location_tile(req, run),
+    )
     await set_meta(eid, phase="debating")
 
     # Latency fix + A1/A2 opening pre-gen, all on ONE background task so the single

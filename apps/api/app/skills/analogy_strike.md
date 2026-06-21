@@ -4,6 +4,12 @@ type: RHETORIC
 power: 1.0
 domain: RHETORIC
 mp_cost: 20
+effect_kind: agent_argument
+target: enemy
+duration_turns: 0
+requires_prompt: false
+rarity: common
+modifiers: damage_mult=1.0
 ---
 
 # Analogy Strike

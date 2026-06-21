@@ -4,10 +4,10 @@ Why this exists
 ---------------
 Type / skill choices should *visibly* change battle outcomes. The damage engine
 already supports per-skill power and a type-effectiveness chart, but the Skill
-table ships empty. This script seeds a small, opinionated catalog of debate
-"moves" — each with a ``type`` (drives the type chart) and a ``power`` (the
-``skill_mult`` the damage formula multiplies in) — and documents the canonical
-type chart in one place.
+table ships empty. This script seeds the same Markdown-backed battle catalog the
+game uses at runtime — each move has a ``type`` (drives the type chart) and a
+``power`` (the ``skill_mult`` the damage formula multiplies in) — and documents
+the canonical type chart in one place.
 
 Design
 ------
@@ -39,7 +39,7 @@ from typing import Any, Iterable
 from app.debate.damage import DEFAULT_TYPE_CHART
 
 # --------------------------------------------------------------------------- #
-# Catalog data — (name, type, power, description, prompt_fragment, cost)
+# Catalog data — derived from app/skills/*.md
 # --------------------------------------------------------------------------- #
 #
 # `type` is a DebateType value (uppercase). `power` is the skill_mult fed to
@@ -47,109 +47,31 @@ from app.debate.damage import DEFAULT_TYPE_CHART
 # prompt_fragment is what gets injected into the debater's system prompt when the
 # move is selected — so picking a skill changes *behavior*, not just the number.
 
-SKILL_CATALOG: list[dict[str, Any]] = [
-    {
-        "name": "Syllogism Strike",
-        "type": "LOGOS",
-        "power": 1.2,
-        "description": "A tight deductive chain that forces the conclusion.",
-        "prompt_fragment": "Lay out a clean premise-premise-conclusion chain and dare them to deny a step.",
-        "cost": 0,
-    },
-    {
-        "name": "Data Barrage",
-        "type": "LOGOS",
-        "power": 1.0,
-        "description": "Stack concrete figures the audience can picture.",
-        "prompt_fragment": "Anchor every claim to a concrete number or measured example.",
-        "cost": 0,
-    },
-    {
-        "name": "Heartstring Pull",
-        "type": "PATHOS",
-        "power": 1.2,
-        "description": "A vivid story that makes the stakes feel personal.",
-        "prompt_fragment": "Tell a short, vivid story that makes the cost land emotionally.",
-        "cost": 0,
-    },
-    {
-        "name": "Moral Appeal",
-        "type": "PATHOS",
-        "power": 1.0,
-        "description": "Frame the issue as a question of right and wrong.",
-        "prompt_fragment": "Reframe the dispute as a clear moral choice the audience already feels.",
-        "cost": 0,
-    },
-    {
-        "name": "Authority Citation",
-        "type": "ETHOS",
-        "power": 1.2,
-        "description": "Borrow the weight of a credible source or precedent.",
-        "prompt_fragment": "Cite a credible authority or precedent and lean on its standing.",
-        "cost": 0,
-    },
-    {
-        "name": "Credibility Wall",
-        "type": "ETHOS",
-        "power": 0.9,
-        "description": "Establish your own standing to deflect attacks.",
-        "prompt_fragment": "Briefly establish your relevant standing, then turn it into a shield.",
-        "cost": 0,
-    },
-    {
-        "name": "Reframe Gambit",
-        "type": "CHAOS",
-        "power": 1.3,
-        "description": "Yank the debate onto unexpected, favorable ground.",
-        "prompt_fragment": "Reject the framing entirely and redefine what the debate is really about.",
-        "cost": 1,
-    },
-    {
-        "name": "Pattern Break",
-        "type": "CHAOS",
-        "power": 1.1,
-        "description": "Disrupt the opponent's rhythm with a surprising pivot.",
-        "prompt_fragment": "Break their rhythm with an unexpected pivot that resets the exchange.",
-        "cost": 0,
-    },
-    {
-        "name": "Probing Question",
-        "type": "SOCRATIC",
-        "power": 1.1,
-        "description": "A sharp question that exposes a hidden assumption.",
-        "prompt_fragment": "End your turn with one sharp question that exposes their hidden assumption.",
-        "cost": 0,
-    },
-    {
-        "name": "Steelman Trap",
-        "type": "SOCRATIC",
-        "power": 1.2,
-        "description": "Build their best case, then collapse it from inside.",
-        "prompt_fragment": "State the strongest version of their view, then dismantle exactly that.",
-        "cost": 1,
-    },
-    {
-        "name": "Rhetorical Flourish",
-        "type": "RHETORIC",
-        "power": 1.1,
-        "description": "Win the framing with style and a memorable line.",
-        "prompt_fragment": "Win the framing first with a crisp, memorable line that defines the terms.",
-        "cost": 0,
-    },
-    {
-        "name": "Analogy Volley",
-        "type": "RHETORIC",
-        "power": 1.0,
-        "description": "A vivid analogy that makes the abstract concrete.",
-        "prompt_fragment": "Use a vivid analogy to make an abstract point land instantly.",
-        "cost": 0,
-    },
-]
+
+def _seed_row_from_skill(skill: dict[str, Any]) -> dict[str, Any]:
+    """Convert parsed Markdown skill metadata into the DB seed row shape."""
+    return {
+        "name": skill["name"],
+        "type": str(skill["type"]).upper(),
+        "power": float(skill.get("power", 1.0) or 1.0),
+        "description": skill.get("description", ""),
+        "prompt_fragment": skill.get("prompt_fragment", ""),
+        "cost": int(skill.get("mp_cost", skill.get("cost", 0)) or 0),
+    }
+
+
+def _load_skill_catalog_rows() -> list[dict[str, Any]]:
+    from app.debate.skill_engine import skill_catalog
+
+    return [_seed_row_from_skill(skill) for skill in skill_catalog()]
+
+
+SKILL_CATALOG: list[dict[str, Any]] = _load_skill_catalog_rows()
 
 
 def catalog() -> list[dict[str, Any]]:
     """Return a copy of the seed catalog (handy for tests / inspection)."""
-    return [dict(row) for row in SKILL_CATALOG]
+    return [dict(row) for row in _load_skill_catalog_rows()]
 
 
 def format_type_chart(chart: dict[str, dict[str, float]] | None = None) -> str:
@@ -178,7 +100,7 @@ async def seed_skill_catalog(
 
     from app.db.models import DebateType, Skill
 
-    rows = list(rows) if rows is not None else SKILL_CATALOG
+    rows = list(rows) if rows is not None else catalog()
     n_created = 0
     n_updated = 0
 
@@ -228,7 +150,7 @@ async def main(print_only: bool = False) -> None:
             await session.commit()
         print(
             f"\nSeeded Skill catalog: {n_created} created, {n_updated} updated "
-            f"({len(SKILL_CATALOG)} total)."
+            f"({len(catalog())} total)."
         )
     except Exception as exc:  # noqa: BLE001 - bare host / CI without Postgres
         print(f"\nPostgres unreachable ({exc}); seed skipped. Safe to retry later.")

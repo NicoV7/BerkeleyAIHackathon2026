@@ -188,12 +188,7 @@ async def test_get_world_returns_canonical_when_present():
     out = await world_router.get_world("run-id", _FakeSession(_make_run(seed=42)))
     canon = canonical_mod.get_canonical_world()
     assert canon is not None
-    # /world additively injects a signpost ("waypost") near each town; strip those
-    # before comparing the rest to the canonical spec.
-    out_core = out.model_copy(update={"pois": [p for p in out.pois if p.kind != "waypost"]})
-    assert out_core.model_dump() == canon.spec.model_dump()
-    # And it injected at least one waypost (one per town).
-    assert any(p.kind == "waypost" for p in out.pois)
+    assert out.model_dump() == world_router.with_wayposts(canon.spec).model_dump()
 
 
 async def test_get_world_falls_back_to_procgen_when_canonical_missing(monkeypatch):

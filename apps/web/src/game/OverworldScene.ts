@@ -176,7 +176,7 @@ function terrainFill(tile: number, jitter: number): number {
 export interface OverworldConfig {
   runId: string;
   playerName?: string;
-  onEncounter: (wildId?: string | null) => void;
+  onEncounter: (wildId?: string | null, locationTile?: number | null) => void;
   onNpcTalk?: (npc: NPCAnchorView) => void;
   onMapLoaded?: (m: {
     width: number;
@@ -1640,7 +1640,18 @@ export class OverworldScene extends Phaser.Scene {
     }
     // Persist position before the scene flips to the battle screen.
     this.flushSync();
-    this.cfg.onEncounter(wildId);
+    this.cfg.onEncounter(wildId, this.currentLocationTile());
+  }
+
+  private currentLocationTile(): number | null {
+    if (!this.sim || !this.mapData) return null;
+    const originX = this.mapData.origin_x ?? 0;
+    const originY = this.mapData.origin_y ?? 0;
+    const localX = this.sim.tileX - originX;
+    const localY = this.sim.tileY - originY;
+    if (localY < 0 || localY >= this.mapData.tiles.length) return null;
+    if (localX < 0 || localX >= this.mapData.tiles[localY].length) return null;
+    return this.mapData.tiles[localY][localX];
   }
 
   /**

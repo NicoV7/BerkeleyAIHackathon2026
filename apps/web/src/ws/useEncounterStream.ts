@@ -138,6 +138,30 @@ export interface MpInsufficient {
   detail: string;
 }
 
+export interface SkillEffect {
+  skill_id?: string | null;
+  skill_name?: string | null;
+  effect_kind: string;
+  source_id?: string | null;
+  source_name?: string | null;
+  target_id?: string | null;
+  target_name?: string | null;
+  duration_turns: number;
+  turn_no: number;
+  message: string;
+  modifiers?: Record<string, unknown>;
+  server_ts?: number;
+}
+
+export interface IntelPreview {
+  skill_id: string;
+  source_id: string;
+  target_id: string;
+  turn_no: number;
+  preview: string;
+  server_ts?: number;
+}
+
 /**
  * Level-up event ({ type: "LevelUp", monster_id, new_level, stat_gains }).
  *
@@ -190,9 +214,11 @@ export interface EncounterState {
   topic: string;
   phase: EncounterPhase;
   turn_no: number;
+  location_tile?: number | null;
   combatants: CombatantState[];
   transcript: Utterance[];
   verdicts: JudgeVerdict[];
+  effects?: SkillEffect[];
 }
 
 export type ConnectionStatus = "connecting" | "open" | "closed" | "error";
@@ -209,6 +235,12 @@ export interface EncounterStreamState {
    * successful drive/argue). The view dims the offending skill + shows `detail`.
    */
   mpInsufficient: MpInsufficient | null;
+  /** Recent visible skill effect pulses. */
+  skillEffects: SkillEffect[];
+  /** Active/current status effects shown in the battle UI. */
+  statuses: SkillEffect[];
+  /** Latest non-advancing opponent preview. */
+  intelPreview: IntelPreview | null;
   /**
    * In-progress utterances assembled from streamed `token` deltas, keyed by
    * `${turn}:${actor_id}`. An entry with `fallback: true` carries the full
@@ -235,9 +267,15 @@ export interface EncounterStreamState {
   runningTurn: number | null;
   /** Drive N autonomous rounds (Auto / Next Round). */
   drive: (rounds: number) => void;
-  /** Submit a human-typed argument as the player's turn. `side` is the player's
-   *  chosen Pro/Con stance, sent additively (frontend-only seam). */
-  argue: (text: string, skillId?: string | null, side?: "for" | "against" | null) => void;
+  /** Submit a human-typed argument as the player's turn. */
+  argue: (
+    text: string,
+    skillId?: string | null,
+    actorId?: string | null,
+    side?: "for" | "against" | null
+  ) => void;
+  /** Invoke a non-advancing skill such as an intel preview. */
+  invokeSkill: (skillId: string, actorId?: string | null) => void;
   /** Close and clean up the websocket connection manually */
   disconnect: () => void;
 }
@@ -265,6 +303,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [phase, setPhase] = useState<EncounterPhase>("intro");
   // Last MP-gate rejection; cleared when the next successful round drains.
   const [mpInsufficient, setMpInsufficient] = useState<MpInsufficient | null>(null);
+  const [skillEffects, setSkillEffects] = useState<SkillEffect[]>([]);
+  const [statuses, setStatuses] = useState<SkillEffect[]>([]);
+  const [intelPreview, setIntelPreview] = useState<IntelPreview | null>(null);
   // True while a round is streaming (between drive() and round_done).
   const [running, setRunning] = useState(false);
   // Turn we are driving toward; surfaced for the in-progress indicator.
@@ -322,11 +363,27 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     [send]
   );
   const argue = useCallback(
-    // `side` is sent additively (frontend-only): the backend currently ignores
-    // unknown fields and assigns party=for itself, but threading the player's
-    // chosen Pro/Con stance here is the seam for when the loop adopts it.
-    (text: string, skillId?: string | null, side?: "for" | "against" | null) =>
-      send({ action: "argue", text, skill_id: skillId ?? null, ...(side ? { side } : {}) }),
+    (
+      text: string,
+      skillId?: string | null,
+      actorId?: string | null,
+      side?: "for" | "against" | null
+    ) => {
+      const legacySide =
+        actorId === "for" || actorId === "against" ? actorId : null;
+      send({
+        action: "argue",
+        text,
+        skill_id: skillId ?? null,
+        actor_id: legacySide ? null : actorId ?? null,
+        ...(side || legacySide ? { side: side ?? legacySide } : {}),
+      });
+    },
+    [send]
+  );
+  const invokeSkill = useCallback(
+    (skillId: string, actorId?: string | null) =>
+      send({ action: "skill", skill_id: skillId, actor_id: actorId ?? null }),
     [send]
   );
 
@@ -583,6 +640,24 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             setMpInsufficient(d);
             setRunning(false);
             setRunningTurn(null);
+          } else if (msg.type === "skill_effect") {
+            const effect = msg.data as SkillEffect;
+            setSkillEffects((prev) => [...prev.slice(-5), effect]);
+          } else if (msg.type === "status") {
+            const effect = msg.data as SkillEffect;
+            setStatuses((prev) => {
+              const filtered = prev.filter(
+                (x) =>
+                  !(
+                    x.skill_id === effect.skill_id &&
+                    x.source_id === effect.source_id &&
+                    x.target_id === effect.target_id
+                  )
+              );
+              return [...filtered, effect].slice(-6);
+            });
+          } else if (msg.type === "intel_preview") {
+            setIntelPreview(msg.data as IntelPreview);
           } else if (msg.type === "phase") {
             const p = msg.data as PhaseUpdate;
             if (typeof p.turn_no === "number" && p.turn_no > turnRef.current) {
@@ -646,6 +721,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
                 }
                 return changed ? next : prev;
               });
+            }
+            if (s.effects?.length) {
+              setStatuses(s.effects);
             }
             if (s.phase) {
               setPhase(s.phase);
@@ -739,6 +817,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     verdicts,
     capturableIds,
     mpInsufficient,
+    skillEffects,
+    statuses,
+    intelPreview,
     liveTokens,
     estimates,
     phase,
@@ -746,6 +827,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     runningTurn,
     drive,
     argue,
+    invokeSkill,
     disconnect: () => disconnect(true),
   };
 }

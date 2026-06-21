@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Bump on ANY change to the opening prompt below, to _opening_messages, or to the
 # default opening model — this invalidates every cached opening so stale text is
 # never served. Format: "vN".
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 
 # Both debate sides are materializable now (WS-4 #10). The enemy still argues
@@ -109,10 +109,22 @@ def _fallback_opening(topic_text: str, side: str | None = "against") -> str:
             f"I argue FOR {topic_str}: it carries the stronger reasons and the case "
             "against it falls apart the moment you press it for specifics."
         )
-    return (
-        f"I argue AGAINST {topic_str}: the case for it carries hidden costs and "
-        "collapses under a single concrete question."
-    )
+    pool = [
+        (
+            f"I argue AGAINST {topic_str}: the case for it carries hidden costs and "
+            "collapses under a single concrete question."
+        ),
+        (
+            f"I stand AGAINST {topic_str}: its promise is vague, its risks are concrete, "
+            "and the burden of proof has not been met."
+        ),
+        (
+            f"I am AGAINST {topic_str}: the upside sounds simple only because the hardest "
+            "tradeoffs have been left offstage."
+        ),
+    ]
+    idx = int(topic_hash(topic_text), 16) % len(pool)
+    return pool[idx]
 
 
 def _opening_messages(topic_text: str, side: str | None = "against") -> list[dict[str, str]]:

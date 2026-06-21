@@ -15,37 +15,30 @@ export interface ParsedSkill {
   type: string; // DebateType, e.g. "PATHOS"; "" if unknown
   power: number; // damage multiplier; 1.0 default
   description: string;
-  /**
-   * Gacha Wave B: MP cost to use this skill. Mirrors the front-matter `mp_cost`
-   * field in `apps/api/app/skills/<slug>.md`. Defaults to the canonical catalog
-   * value when the API doesn't ship a `mp_cost`/`cost` field on the skill.
-   */
+  /** MP cost shipped by the backend skill catalog. */
   mp_cost: number;
+  effect_kind:
+    | "agent_argument"
+    | "prompt_augment"
+    | "defense"
+    | "status"
+    | "intel_preview"
+    | "judge_sway";
+  target: string;
+  duration_turns: number;
+  requires_prompt: boolean;
+  rarity: string;
+  modifiers: Record<string, unknown>;
 }
 
-/**
- * Canonical MP cost per skill (gacha Wave B). Source of truth lives in
- * `apps/api/app/skills/<slug>.md` front-matter; this map mirrors it so the
- * web UI can dim unaffordable chips even when the skill blob from the API is
- * older / lacks a `mp_cost` field. Keep in sync by hand.
- */
-export const SKILL_MP_COSTS: Record<string, number> = {
-  "Analogy Strike": 20,
-  Anecdote: 15,
-  "Authority Cite": 25,
-  "Credential Drop": 30,
-  "Emotional Appeal": 20,
-  "Leading Question": 15,
-  "Logical Thrust": 20,
-  "Reframe Attack": 30,
-  "Rhetorical Flourish": 15,
-  "Socratic Probe": 20,
-  "Steel Man": 35,
-  Whataboutism: 25,
-};
-
-function defaultCost(name: string): number {
-  return SKILL_MP_COSTS[name] ?? 0;
+function parseBool(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const v = value.toLowerCase();
+    if (["true", "1", "yes"].includes(v)) return true;
+    if (["false", "0", "no"].includes(v)) return false;
+  }
+  return fallback;
 }
 
 export function parseSkill(s: unknown): ParsedSkill {
@@ -56,15 +49,37 @@ export function parseSkill(s: unknown): ParsedSkill {
       type: "",
       power: 1,
       description: "",
-      mp_cost: defaultCost(s),
+      mp_cost: 0,
+      effect_kind: "agent_argument",
+      target: "enemy",
+      duration_turns: 0,
+      requires_prompt: false,
+      rarity: "common",
+      modifiers: {},
     };
   }
   if (s && typeof s === "object") {
     const o = s as Record<string, unknown>;
     const name = String(o.name ?? o.id ?? "Skill");
-    // Prefer an explicit cost from the API; fall back to the catalog.
     const explicit = Number(o.mp_cost ?? o.cost ?? Number.NaN);
-    const mp_cost = Number.isFinite(explicit) ? explicit : defaultCost(name);
+    const mp_cost = Number.isFinite(explicit) ? explicit : 0;
+    const effect = String(o.effect_kind ?? "agent_argument");
+    const effect_kind = (
+      [
+        "agent_argument",
+        "prompt_augment",
+        "defense",
+        "status",
+        "intel_preview",
+        "judge_sway",
+      ] as const
+    ).includes(effect as ParsedSkill["effect_kind"])
+      ? (effect as ParsedSkill["effect_kind"])
+      : "agent_argument";
+    const duration = Number(o.duration_turns ?? 0);
+    const mods = o.modifiers && typeof o.modifiers === "object" && !Array.isArray(o.modifiers)
+      ? (o.modifiers as Record<string, unknown>)
+      : {};
     return {
       id: String(o.id ?? o.name ?? name),
       name,
@@ -72,6 +87,12 @@ export function parseSkill(s: unknown): ParsedSkill {
       power: Number(o.power ?? 1) || 1,
       description: String(o.description ?? ""),
       mp_cost,
+      effect_kind,
+      target: String(o.target ?? "enemy"),
+      duration_turns: Number.isFinite(duration) ? duration : 0,
+      requires_prompt: parseBool(o.requires_prompt, effect_kind !== "agent_argument"),
+      rarity: String(o.rarity ?? "common"),
+      modifiers: mods,
     };
   }
   return {
@@ -81,6 +102,12 @@ export function parseSkill(s: unknown): ParsedSkill {
     power: 1,
     description: "",
     mp_cost: 0,
+    effect_kind: "agent_argument",
+    target: "enemy",
+    duration_turns: 0,
+    requires_prompt: false,
+    rarity: "common",
+    modifiers: {},
   };
 }
 
@@ -117,12 +144,34 @@ export const TYPE_BLURB: Record<string, string> = {
 };
 
 /** Human-readable description for a skill chip's tooltip. */
-export function skillTooltip(skill: { name: string; type: string; power: number; description: string }): string {
+export function effectLabel(effect: ParsedSkill["effect_kind"]): string {
+  switch (effect) {
+    case "agent_argument":
+      return "Agent attack";
+    case "prompt_augment":
+      return "Prompt boost";
+    case "defense":
+      return "Defense";
+    case "status":
+      return "Status";
+    case "intel_preview":
+      return "Preview";
+    case "judge_sway":
+      return "Judge sway";
+    default:
+      return "Skill";
+  }
+}
+
+/** Human-readable description for a skill chip's tooltip. */
+export function skillTooltip(skill: ParsedSkill): string {
   const parts: string[] = [];
   if (skill.description) parts.push(skill.description);
   else if (TYPE_BLURB[skill.type]) parts.push(TYPE_BLURB[skill.type]);
   const dmg = skill.power >= 1 ? `+${Math.round((skill.power - 1) * 100)}% damage` : `${Math.round((1 - skill.power) * 100)}% less damage`;
   parts.push(`Type: ${skill.type || "—"} · Power ×${skill.power} (${dmg}).`);
+  parts.push(`${effectLabel(skill.effect_kind)} · Target: ${skill.target || "—"}.`);
+  if (skill.duration_turns > 0) parts.push(`Lasts ${skill.duration_turns} turn.`);
   return parts.join(" ");
 }
 

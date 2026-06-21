@@ -31,8 +31,10 @@ import {
   type EncounterState,
   type EncounterStreamState,
   type HpUpdate,
+  type IntelPreview,
   type JudgeVerdict,
   type PhaseUpdate,
+  type SkillEffect,
   type Utterance,
 } from "./useEncounterStream";
 
@@ -113,6 +115,7 @@ const baseState: EncounterState = {
   combatants: [partyCombatant, enemyCombatant],
   transcript: [],
   verdicts: [],
+  effects: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -186,6 +189,9 @@ staticAssert<Assignable<JudgeVerdict["actor_id"], string | undefined>>();
 staticAssert<Assignable<EncounterStreamState["phase"], EncounterPhase>>();
 staticAssert<Assignable<EncounterStreamState["encounter"], EncounterState | null>>();
 staticAssert<Assignable<EncounterStreamState["verdicts"], JudgeVerdict[]>>();
+staticAssert<Assignable<EncounterStreamState["skillEffects"], SkillEffect[]>>();
+staticAssert<Assignable<EncounterStreamState["statuses"], SkillEffect[]>>();
+staticAssert<Assignable<EncounterStreamState["intelPreview"], IntelPreview | null>>();
 staticAssert<Assignable<EncounterStreamState["transcript"], Utterance[]>>();
 
 // The hook itself has the expected (encounterId | null) => EncounterStreamState signature.

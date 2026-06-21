@@ -62,11 +62,14 @@ try:  # WS-D: RAG. retrieve(monster_id, query, run_id=..., k=...) -> list[str]
 except Exception:  # noqa: BLE001
     _retrieve = None
 
-try:  # skill_engine (sibling agent): skill_instructions(skill_name, attacker_type) -> str
-    from app.debate.skill_engine import skill_instructions  # type: ignore
+try:  # skill_engine (sibling agent): skill prompt + metadata helpers
+    from app.debate.skill_engine import skill_instructions, skill_metadata  # type: ignore
 except Exception:  # noqa: BLE001 — never fail if the module isn't present yet
     def skill_instructions(name: Any, atype: Any) -> str:  # type: ignore[misc]
         return ""
+
+    def skill_metadata(name: Any) -> dict[str, Any]:  # type: ignore[misc]
+        return {}
 
 
 CAPTURABLE_HP_FRACTION = 0.25
@@ -275,6 +278,24 @@ _FALLBACK_FOR: dict[str, list[str]] = {
         "I am FOR {topic} on principle, not convenience — it holds to its own standards, "
         "which is more than the opposition's position can honestly say.",
     ],
+    "CHAOS": [
+        "I argue FOR {topic}: the opposition is defending the wrong frame, and once that "
+        "frame breaks, their neat objection has nowhere left to stand.",
+        "I am FOR {topic} because the supposed downside is a decoy. The real risk is "
+        "letting a bad premise decide the whole debate.",
+    ],
+    "SOCRATIC": [
+        "I argue FOR {topic}: if the opposing side is right, they should be able to name "
+        "the exact principle it violates. They cannot.",
+        "I am FOR {topic}; answer one question first: what concrete harm outweighs the "
+        "benefit, and where is your proof?",
+    ],
+    "RHETORIC": [
+        "I argue FOR {topic}: the other side offers a locked door and calls it caution; "
+        "my side offers a key and calls it progress.",
+        "I am FOR {topic} because the case against it is all smoke and no fire. Strip "
+        "away the posture, and the better line is ours.",
+    ],
 }
 _FALLBACK_AGAINST: dict[str, list[str]] = {
     "LOGOS": [
@@ -295,14 +316,36 @@ _FALLBACK_AGAINST: dict[str, list[str]] = {
         "I am AGAINST {topic} on principle — it cannot meet the very test it sets for "
         "itself, and consistency demands rejecting it.",
     ],
+    "CHAOS": [
+        "I argue AGAINST {topic}: the case for it only works inside a rigged frame, and "
+        "that frame breaks the second we ask who benefits.",
+        "I am AGAINST {topic} because its promise is misdirection. Change the question "
+        "to consequences, and the shiny answer turns brittle.",
+    ],
+    "SOCRATIC": [
+        "I argue AGAINST {topic}: if it is so sound, why does its defense dodge the first "
+        "hard exception? That silence is the argument.",
+        "I am AGAINST {topic}; before accepting it, answer what happens when its core "
+        "assumption fails in the real world.",
+    ],
+    "RHETORIC": [
+        "I argue AGAINST {topic}: the slogan sounds bright, but bright slogans can still "
+        "cast long shadows. This one does.",
+        "I am AGAINST {topic} because the promise is polished and the cost is buried. "
+        "Good rhetoric should reveal, not conceal.",
+    ],
 }
 _FALLBACK_FOR_DEFAULT = [
     "I argue FOR {topic}: it carries the stronger reasons and the case against it falls "
     "apart the moment you press it for specifics.",
+    "I stand FOR {topic}: when the claims are tested, my side keeps its footing and the "
+    "opposition is left defending abstractions.",
 ]
 _FALLBACK_AGAINST_DEFAULT = [
     "I argue AGAINST {topic}: the case for it carries hidden costs and collapses under a "
     "single concrete question.",
+    "I stand AGAINST {topic}: its promise is too vague, its risks are too concrete, and "
+    "the burden of proof has not been met.",
 ]
 
 
@@ -595,6 +638,81 @@ def _build_battle_state(
     }
 
 
+def _actor_skill_blob(actor: Combatant, skill_id: str | None) -> dict[str, Any]:
+    """Return the actor-owned skill dict matching ``skill_id``, if present."""
+    if not skill_id:
+        return {}
+    for s in actor.skills or []:
+        if isinstance(s, dict) and str(s.get("name", "")) == skill_id:
+            return dict(s)
+        if isinstance(s, str) and s == skill_id:
+            return {"name": s}
+    return {}
+
+
+def _resolved_skill_spec(actor: Combatant, skill_id: str | None) -> dict[str, Any]:
+    """Merge global skill metadata with the actor's stored skill blob."""
+    if not skill_id:
+        return {}
+    base = skill_metadata(skill_id)
+    owned = _actor_skill_blob(actor, skill_id)
+    spec = {**base, **owned}
+    if not spec:
+        return {}
+    spec.setdefault("name", skill_id)
+    spec.setdefault("type", actor.type)
+    spec.setdefault("power", 1.0)
+    spec.setdefault("effect_kind", "agent_argument")
+    spec.setdefault("target", "enemy")
+    spec.setdefault("duration_turns", 0)
+    spec.setdefault("requires_prompt", False)
+    spec.setdefault("modifiers", {})
+    return spec
+
+
+def _skill_modifiers(spec: dict[str, Any]) -> dict[str, Any]:
+    mods = spec.get("modifiers")
+    return dict(mods) if isinstance(mods, dict) else {}
+
+
+def _modifier_float(spec: dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(_skill_modifiers(spec).get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _modifier_int(spec: dict[str, Any], key: str, default: int) -> int:
+    try:
+        return int(float(_skill_modifiers(spec).get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _effect_payload(
+    *,
+    skill: dict[str, Any],
+    source: Combatant,
+    target: Combatant | None,
+    message: str,
+    turn_no: int,
+) -> dict[str, Any]:
+    """Build the visible WS/Redis status payload for a skill effect."""
+    return {
+        "skill_id": skill.get("name"),
+        "skill_name": skill.get("name"),
+        "effect_kind": skill.get("effect_kind", "agent_argument"),
+        "source_id": source.monster_id,
+        "source_name": source.name,
+        "target_id": target.monster_id if target else None,
+        "target_name": target.name if target else None,
+        "duration_turns": int(skill.get("duration_turns", 0) or 0),
+        "turn_no": turn_no,
+        "message": message,
+        "modifiers": _skill_modifiers(skill),
+    }
+
+
 def _persona_line(actor: Combatant) -> str:
     """Render all supported persona flavors into a concise prompt line."""
     return persona_prompt_line(normalize_persona(actor.persona, fallback_name=actor.name))
@@ -690,6 +808,10 @@ def _build_actor_messages(
         sys_parts.append(f"Your debate skills: {', '.join(skills)}.")
     if action.get("behavior"):
         sys_parts.append(f"Your commander orders you to: {action['behavior']}.")
+    if action.get("prompt_bonus"):
+        sys_parts.append(f"Skill effect on this argument: {action['prompt_bonus']}.")
+    if action.get("status_contract"):
+        sys_parts.append(f"Temporary battle status: {action['status_contract']}.")
     if action.get("skill"):
         sys_parts.append(f"Use your skill: {action['skill']}.")
         # Enrich with the skill_engine seam (defensive — never fails if absent).
@@ -758,7 +880,7 @@ async def _generate_utterance_traced(
             messages,
             model=_actor_model(actor),
             temperature=0.8,
-            max_tokens=_actor_max_tokens(),
+            max_tokens=_action_max_tokens(action),
             timeout=_actor_timeout(),
         )
         text = (text or "").strip()
@@ -805,6 +927,16 @@ def _sanitize(text: str) -> str:
 def _finalize_actor_text(text: str, actor: Combatant) -> str:
     """Apply final low-latency shape fixes for generated actor turns."""
     return ensure_battle_sentence_floor(_sanitize(text), role=actor.role)
+
+
+def _action_max_tokens(action: dict[str, Any]) -> int:
+    """Return the model token budget after one-turn output-limit statuses."""
+    base = _actor_max_tokens()
+    try:
+        requested = int(action.get("max_tokens") or base)
+    except (TypeError, ValueError):
+        requested = base
+    return max(32, min(base, requested))
 
 
 def _looks_like_heading(line: str) -> bool:
@@ -886,7 +1018,7 @@ async def _stream_utterance(
     try:
         agen = gateway.stream(
             messages, model=model, temperature=0.8,
-            max_tokens=_actor_max_tokens(),
+            max_tokens=_action_max_tokens(action),
         )
         first = True
         while True:
@@ -1016,6 +1148,7 @@ def _apply_round_damage(
         dmatch = domain_match_mult(getattr(actor, "domain", None) or "GENERAL", topic)
         attack_type = str(damage_meta.get("attack_type") or actor.type)
         skill_mult = float(damage_meta.get("skill_mult", 1.0) or 1.0)
+        target_defense_mult = float(damage_meta.get("target_defense_mult", 1.0) or 1.0)
         damage_score = _cycle_damage_score(actor.role, score, side_scores)
         for target in targets:
             dmg = compute_damage(
@@ -1033,6 +1166,8 @@ def _apply_round_damage(
                 domain_match=dmatch,
             )
             dmg = round(dmg * _battle_damage_multiplier())
+            if target_defense_mult != 1.0:
+                dmg = round(dmg * max(0.0, target_defense_mult))
             dmg = max(0, round(dmg / len(targets)))
             target.hp = max(0, target.hp - dmg)
             total_dmg += dmg
@@ -1526,6 +1661,25 @@ def _lead(combatants: list[Combatant], role: str) -> Optional[Combatant]:
     return sorted(alive, key=lambda c: (not c.is_avatar, -c.level, c.name))[0]
 
 
+def _active_party(
+    combatants: list[Combatant],
+    active_party_id: str | None = None,
+) -> Optional[Combatant]:
+    """Return the player-selected living party agent, falling back to the lead."""
+    if active_party_id:
+        selected = next(
+            (
+                c
+                for c in combatants
+                if c.role == "party" and c.alive and c.monster_id == active_party_id
+            ),
+            None,
+        )
+        if selected is not None:
+            return selected
+    return _lead(combatants, "party")
+
+
 def _resolve_skill(actor: Combatant, skill_id: str | None) -> tuple[Optional[str], str, float]:
     """Resolve a skill_id (== skill name) against an actor's skills.
 
@@ -1556,6 +1710,7 @@ async def run_human_round_stream(
     momentum: dict[str, float],
     player_text: str,
     skill_id: str | None = None,
+    active_party_id: str | None = None,
 ):
     """Async generator running ONE human-driven round. Yields Event objects.
 
@@ -1579,7 +1734,9 @@ async def run_human_round_stream(
     """
     from app.redis_state import (
         ENCOUNTER_TTL_SECONDS,
+        append_effect,
         append_utterance,
+        clear_effects,
         get_redis,
         k_judge,
         set_hp,
@@ -1588,7 +1745,7 @@ async def run_human_round_stream(
     name_lookup = {c.monster_id: c.name for c in combatants}
     turn_no = start_turn
 
-    player = _lead(combatants, "party")
+    player = _active_party(combatants, active_party_id)
     enemy = _lead(combatants, "enemy")
     if player is None or enemy is None:
         phase, capturable = _phase_for(combatants)
@@ -1631,11 +1788,102 @@ async def run_human_round_stream(
                     },
                 )
 
+    skill_spec = _resolved_skill_spec(player, skill_name)
+    effect_kind = str(skill_spec.get("effect_kind") or "")
+    judge_score_delta = 0.0
+    enemy_status_contract = ""
+    enemy_max_tokens: int | None = None
+    target_defense_mult = 1.0
+
+    if skill_name and skill_spec:
+        skill_power *= _modifier_float(skill_spec, "damage_mult", 1.0)
+        prompt_bonus = str(_skill_modifiers(skill_spec).get("prompt_bonus", "") or "")
+        if effect_kind == "prompt_augment" and not prompt_bonus:
+            prompt_bonus = "Lean into the selected skill's angle; reward a concrete, on-topic execution."
+        if effect_kind == "judge_sway":
+            judge_score_delta = _modifier_float(skill_spec, "score_delta", 3.0)
+        if effect_kind == "defense":
+            target_defense_mult = _modifier_float(skill_spec, "defense_mult", 0.75)
+        if effect_kind == "status":
+            sent_limit = _modifier_int(skill_spec, "enemy_sentence_limit", 0)
+            max_tokens = _modifier_int(skill_spec, "enemy_max_tokens", 0)
+            if sent_limit > 0:
+                enemy_status_contract = (
+                    f"You are constrained by {skill_name}; output exactly {sent_limit} "
+                    "short sentence and no extra setup."
+                )
+            if max_tokens > 0:
+                enemy_max_tokens = max_tokens
+        message = {
+            "prompt_augment": f"{player.name}'s next argument is amplified by {skill_name}.",
+            "judge_sway": f"{skill_name} will visibly sway the judge this turn.",
+            "defense": f"{player.name} braces with {skill_name}; incoming damage is reduced this turn.",
+            "status": f"{skill_name} disrupts {enemy.name}'s next response.",
+            "agent_argument": f"{player.name} attacks with {skill_name}.",
+        }.get(effect_kind, f"{player.name} uses {skill_name}.")
+        effect_payload = _effect_payload(
+            skill=skill_spec,
+            source=player,
+            target=enemy,
+            message=message,
+            turn_no=start_turn + 1,
+        )
+        await append_effect(eid, effect_payload)
+        yield Event("skill_effect", effect_payload)
+        if int(skill_spec.get("duration_turns", 0) or 0) > 0:
+            yield Event("status", effect_payload)
+
     fallback_model = next((c.model for c in combatants if c.model), None)
 
-    # --- Player turn (human-typed) ---
+    # --- Player turn (human-typed or skill-generated) ---
     turn_no += 1
-    text = _sanitize((player_text or "").strip()) or f"({player.name} stays silent on {topic}.)"
+    cleaned_player_text = _sanitize((player_text or "").strip())
+    generated_skill_turn = bool(
+        skill_name and not cleaned_player_text and effect_kind == "agent_argument"
+    )
+    text = cleaned_player_text
+
+    if generated_skill_turn:
+        battle_state = _build_battle_state(
+            player, combatants, topic, turn_no, last_verdict_score=50.0, momentum=momentum
+        )
+        action = {
+            **_decide_action(player, battle_state),
+            "behavior": (
+                "argue on the player's behalf with this selected memory skill; "
+                "attack using the Redis encounter transcript and agent memories"
+            ),
+            "skill": skill_name,
+            "target": enemy.monster_id,
+        }
+        memories = await _gather_memories(player, topic, run_id)
+        transcript = await get_transcript_safe(eid)
+        used_fallback = False
+        fallback_reason: str | None = None
+        with rt.utterance(player.monster_id, player.role, player.side):
+            async for chunk in _stream_utterance(
+                player, topic, transcript, action, memories, name_lookup
+            ):
+                if chunk["kind"] == "token":
+                    yield Event(
+                        "token",
+                        {
+                            "turn": turn_no,
+                            "actor_id": player.monster_id,
+                            "actor_role": "party",
+                            "side": player.side,
+                            "text": chunk["text"],
+                            **_event_timing(player_started),
+                        },
+                    )
+                else:
+                    text = chunk["text"]
+                    used_fallback = bool(chunk.get("fallback"))
+                    fallback_reason = chunk.get("fallback_reason")
+            if used_fallback:
+                rt.utterances[-1].mark_fallback(fallback_reason or "empty")
+
+    text = text or f"({player.name} stays silent on {topic}.)"
     player_utt = {
         "turn": turn_no,
         "actor_id": player.monster_id,
@@ -1672,6 +1920,10 @@ async def run_human_round_stream(
     # --- Enemy rebuttal (autonomous) ---
     battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
     action = _decide_action(enemy, battle_state)
+    if enemy_status_contract:
+        action = {**action, "status_contract": enemy_status_contract}
+        if enemy_max_tokens is not None:
+            action["max_tokens"] = enemy_max_tokens
     memories = await _gather_memories(enemy, topic, run_id)
     transcript = await get_transcript_safe(eid)
 
@@ -1797,6 +2049,16 @@ async def run_human_round_stream(
         if judge_fallback:
             judge_metric.mark_fallback("judge_deadline")
     score_by_id = {js.actor_id: js for js in scores}
+    if judge_score_delta and player.monster_id in score_by_id:
+        js = score_by_id[player.monster_id]
+        before = float(js.score)
+        js.score = max(0.0, min(100.0, before + judge_score_delta))
+        delta_label = f"+{judge_score_delta:g}" if judge_score_delta >= 0 else f"{judge_score_delta:g}"
+        js.rationale = (
+            f"{js.rationale} Visible judge modifier from {skill_name}: {delta_label}."
+        ).strip()
+        if getattr(js, "why", ""):
+            js.why = f"{js.why} ({skill_name}: {delta_label})"
 
     # --- Apply cycle-winner damage. The judge scores both turns, but only the
     # higher-scoring side's turn mutates HP; the other verdict carries damage=0.
@@ -1808,12 +2070,15 @@ async def run_human_round_stream(
         js = score_by_id.get(actor.monster_id)
         if js is None:
             continue
+        damage_meta = {"attack_type": atk_type, "skill_mult": mult}
+        if actor.monster_id == enemy.monster_id and target_defense_mult != 1.0:
+            damage_meta["target_defense_mult"] = target_defense_mult
         scored.append((
             actor,
             js.score,
             js.rationale,
             {},
-            {"attack_type": atk_type, "skill_mult": mult},
+            damage_meta,
         ))
     verdicts = [
         {**v, "turn": turn_no}
@@ -1851,6 +2116,8 @@ async def run_human_round_stream(
 
     # WS-0-LAT: emit the structured round-latency line for the human round.
     rt.finish()
+
+    await clear_effects(eid)
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})

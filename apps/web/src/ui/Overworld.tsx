@@ -85,8 +85,8 @@ export default function Overworld() {
       gameRef.current.scene.start("OverworldScene", {
         runId,
         playerName,
-        onEncounter: (wildId?: string | null) => {
-          void bridge.onCollision(wildId);
+        onEncounter: (wildId?: string | null, locationTile?: number | null) => {
+          void bridge.onCollision(wildId, locationTile);
         },
         onNpcTalk: (npc: NPCAnchorView) => {
           setActiveNpc(npc);

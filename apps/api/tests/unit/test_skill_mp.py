@@ -20,9 +20,15 @@ import pytest
 
 from app.debate.skill_engine import (
     reload_skills,
+    skill_catalog,
     skill_cost,
     skill_costs,
     slugify,
+)
+
+
+CATALOG_SKILL_COSTS: tuple[tuple[str, int], ...] = tuple(
+    (skill["name"], int(skill["mp_cost"])) for skill in skill_catalog()
 )
 
 
@@ -62,24 +68,12 @@ class TestSkillCost:
         # Arrange / Act / Assert
         assert skill_cost("Anecdote") == 15
 
-    @pytest.mark.parametrize(
-        "name,cost",
-        [
-            ("Analogy Strike", 20),
-            ("Anecdote", 15),
-            ("Authority Cite", 25),
-            ("Credential Drop", 30),
-            ("Emotional Appeal", 20),
-            ("Leading Question", 15),
-            ("Logical Thrust", 20),
-            ("Reframe Attack", 30),
-            ("Rhetorical Flourish", 40),
-            ("Socratic Probe", 20),
-            ("Steel Man", 35),
-            ("Whataboutism", 25),
-        ],
-    )
-    def test_all_twelve_skill_md_have_an_mp_cost(self, name: str, cost: int) -> None:
+    def test_memory_recall_is_sixty(self) -> None:
+        # Arrange / Act / Assert
+        assert skill_cost("Memory Recall") == 60
+
+    @pytest.mark.parametrize("name,cost", CATALOG_SKILL_COSTS)
+    def test_all_skill_md_have_an_mp_cost(self, name: str, cost: int) -> None:
         # Arrange / Act / Assert: every catalog move resolves to its tuned cost.
         assert skill_cost(name) == cost
 
@@ -109,21 +103,9 @@ class TestSkillCostsBulk:
     def test_returns_dict_with_every_known_skill(self) -> None:
         # Arrange
         costs = skill_costs()
+        assert len(CATALOG_SKILL_COSTS) == 50
         # Assert: each known move shows up keyed by its slug (lowercase, "_").
-        for name in (
-            "Analogy Strike",
-            "Anecdote",
-            "Authority Cite",
-            "Credential Drop",
-            "Emotional Appeal",
-            "Leading Question",
-            "Logical Thrust",
-            "Reframe Attack",
-            "Rhetorical Flourish",
-            "Socratic Probe",
-            "Steel Man",
-            "Whataboutism",
-        ):
+        for name, _cost in CATALOG_SKILL_COSTS:
             slug = slugify(name)
             assert slug in costs, f"{name} -> {slug} missing from skill_costs()"
             # Costs are positive ints (the catalog is fully tuned).

@@ -24,9 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Encounter, EncounterResult, SummonItem
 from app.db.session import SessionLocal, get_session
-from app.debate.orchestrator import _lead, run_human_round_stream, run_round_stream
-from app.debate.skill_engine import skill_cost
+from app.debate.orchestrator import _active_party, _lead, run_human_round_stream, run_round_stream
+from app.debate.skill_engine import skill_cost, skill_metadata
 from app.redis_state import (
+    append_effect,
     append_utterance,
     get_mp_map,
     get_transcript,
@@ -63,7 +64,11 @@ ROUND_TIMEOUT_S = 120.0
 AUTO_BUDGET_S = 240.0
 
 
-async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
+async def _check_skill_mp(
+    eid: str,
+    skill_id: str | None,
+    actor_id: str | None = None,
+) -> None:
     """Reject the request with 400 when the lead party monster can't afford the skill.
 
     Gacha Wave B: cheap pre-flight on every /argue + /assist (and the WS argue
@@ -83,13 +88,13 @@ async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
         from app.routers.encounter import load_combatants
 
         combatants = await load_combatants(eid)
-        lead = next((c for c in combatants if c.role == "party" and c.hp > 0), None)
-        if lead is None:
+        actor = _active_party(combatants, actor_id)
+        if actor is None:
             return
         mp_map = await get_mp_map(eid)
         # Default to the combatant's max_mp so a fresh encounter (cache miss)
         # still validates against a real ceiling.
-        cur = int(mp_map.get(lead.monster_id, lead.max_mp))
+        cur = int(mp_map.get(actor.monster_id, actor.max_mp))
         if cur < cost:
             raise HTTPException(
                 status_code=400,
@@ -99,6 +104,119 @@ async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
         raise
     except Exception:  # noqa: BLE001 — never 500 on a defensive gate
         return
+
+
+def _skill_effect_payload(
+    *,
+    skill: dict[str, Any],
+    source: Any,
+    target: Any,
+    turn_no: int,
+    message: str,
+) -> dict[str, Any]:
+    """Build the visible WS payload for a non-advancing skill."""
+    return {
+        "skill_id": skill.get("name"),
+        "skill_name": skill.get("name"),
+        "effect_kind": skill.get("effect_kind", "intel_preview"),
+        "source_id": getattr(source, "monster_id", None),
+        "source_name": getattr(source, "name", "Agent"),
+        "target_id": getattr(target, "monster_id", None),
+        "target_name": getattr(target, "name", "Opponent"),
+        "duration_turns": int(skill.get("duration_turns", 0) or 0),
+        "turn_no": turn_no,
+        "message": message,
+        "modifiers": skill.get("modifiers") if isinstance(skill.get("modifiers"), dict) else {},
+        "server_ts": time.time(),
+    }
+
+
+def _intel_text(topic: str, enemy: Any, transcript: list[dict], skill: dict[str, Any]) -> str:
+    """Return a fast tactical read for the enemy's likely next angle."""
+    enemy_type = str(getattr(enemy, "type", "") or "").upper()
+    type_angle = {
+        "LOGOS": "They will likely press evidence quality, causal links, or missing warrants.",
+        "PATHOS": "They will likely recenter human stakes and accuse your side of ignoring harm.",
+        "ETHOS": "They will likely attack credibility, expertise, or who deserves trust.",
+        "CHAOS": "They will likely scramble the frame and make your premise look brittle.",
+        "SOCRATIC": "They will likely ask a narrowing question that forces a concession.",
+        "RHETORIC": "They will likely win rhythm and framing with a memorable contrast.",
+    }.get(enemy_type, "They will likely answer the latest claim and press one concrete weakness.")
+    latest = ""
+    for utt in reversed(transcript or []):
+        if utt.get("actor_role") == "enemy" and utt.get("text"):
+            latest = str(utt["text"]).strip()
+            break
+    counter = skill.get("modifiers", {}).get("angle") if isinstance(skill.get("modifiers"), dict) else ""
+    counter_text = str(counter or "Answer with one concrete example before they widen the frame.")
+    last_line = f" Last enemy line to watch: \"{latest[:140]}\"" if latest else ""
+    return f"{type_angle} Counter-plan for '{topic}': {counter_text}.{last_line}"
+
+
+async def _invoke_non_advancing_skill(
+    eid: str,
+    skill_id: str | None,
+    actor_id: str | None,
+) -> list[dict[str, Any]]:
+    """Spend MP for a non-turn skill and return WS messages to emit."""
+    if not skill_id:
+        raise HTTPException(status_code=400, detail="skill_id is required")
+    spec = skill_metadata(skill_id)
+    if not spec or spec.get("effect_kind") != "intel_preview":
+        raise HTTPException(status_code=400, detail=f"{skill_id} is not a preview skill")
+
+    await _check_skill_mp(eid, skill_id, actor_id)
+    meta = await get_meta(eid)
+    combatants = await load_combatants(eid)
+    actor = _active_party(combatants, actor_id)
+    enemy = _lead(combatants, "enemy")
+    if actor is None or enemy is None:
+        raise HTTPException(status_code=409, detail="no active party/enemy for skill")
+
+    events: list[dict[str, Any]] = []
+    cost = skill_cost(skill_id)
+    if cost > 0:
+        mp_map = await get_mp_map(eid)
+        cur_mp = int(mp_map.get(actor.monster_id, actor.max_mp))
+        next_mp = max(0, cur_mp - cost)
+        await set_mp(eid, actor.monster_id, next_mp)
+        events.append(
+            {
+                "type": "mp",
+                "data": {
+                    "monster_id": actor.monster_id,
+                    "mp": next_mp,
+                    "max_mp": actor.max_mp,
+                    "server_ts": time.time(),
+                },
+            }
+        )
+
+    turn_no = int(meta.get("turn_no", 0) or 0)
+    effect = _skill_effect_payload(
+        skill=spec,
+        source=actor,
+        target=enemy,
+        turn_no=turn_no,
+        message=f"{actor.name} reads {enemy.name}'s next angle with {skill_id}.",
+    )
+    await append_effect(eid, effect)
+    transcript = await get_transcript(eid)
+    events.append({"type": "skill_effect", "data": effect})
+    events.append(
+        {
+            "type": "intel_preview",
+            "data": {
+                "skill_id": skill_id,
+                "source_id": actor.monster_id,
+                "target_id": enemy.monster_id,
+                "turn_no": turn_no,
+                "preview": _intel_text(meta.get("topic", ""), enemy, transcript, spec),
+                "server_ts": time.time(),
+            },
+        }
+    )
+    return events
 
 
 # ---- Finalize (idempotent) --------------------------------------------------
@@ -511,7 +629,10 @@ async def _run_one_round(eid: str) -> tuple[list[Utterance], list[JudgeVerdict],
 
 
 async def _run_one_human_round(
-    eid: str, player_text: str, skill_id: str | None
+    eid: str,
+    player_text: str,
+    skill_id: str | None,
+    actor_id: str | None = None,
 ) -> tuple[list[Utterance], list[JudgeVerdict], dict]:
     meta = await get_meta(eid)
     phase = meta.get("phase", "debating")
@@ -529,7 +650,15 @@ async def _run_one_human_round(
     phase_event: dict = {"phase": "debating", "capturable_ids": [], "turn_no": start_turn}
 
     async for ev in run_human_round_stream(
-        eid, topic, combatants, run_id, start_turn, momentum, player_text, skill_id
+        eid,
+        topic,
+        combatants,
+        run_id,
+        start_turn,
+        momentum,
+        player_text,
+        skill_id,
+        active_party_id=actor_id,
     ):
         if ev.kind == "utterance":
             new_utts.append(Utterance(**_utt_fields(ev.data)))
@@ -648,10 +777,10 @@ async def argue(
     # Gacha Wave B: reject up front when the player can't afford the chosen skill,
     # so the textarea + skill picker know to refund the MP / re-enable the button
     # before any LLM call burns latency.
-    await _check_skill_mp(eid, req.skill_id)
+    await _check_skill_mp(eid, req.skill_id, req.actor_id)
     try:
         new_utts, new_verdicts, phase_event = await asyncio.wait_for(
-            _run_one_human_round(eid, req.text, req.skill_id), timeout=ROUND_TIMEOUT_S
+            _run_one_human_round(eid, req.text, req.skill_id, req.actor_id), timeout=ROUND_TIMEOUT_S
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="round timed out") from None
@@ -683,7 +812,7 @@ async def assist(
     # Gacha Wave B: same MP gate as /argue — the coach is allowed to suggest a
     # different skill, but if the player explicitly picked one they can't afford
     # we reject so the UI can refund the picker before the LLM call begins.
-    await _check_skill_mp(eid, req.skill_id)
+    await _check_skill_mp(eid, req.skill_id, None)
     from app.debate.coach import coach_argument
 
     try:
@@ -1053,11 +1182,37 @@ async def stream(ws: WebSocket, eid: str) -> None:
             # autonomous enemy rebuttal). Otherwise {"rounds": N} drives the
             # autonomous loop as before.
             is_argue = isinstance(msg, dict) and msg.get("action") == "argue"
+            is_skill = isinstance(msg, dict) and msg.get("action") == "skill"
+            if is_skill:
+                try:
+                    for ev in await _invoke_non_advancing_skill(
+                        eid,
+                        msg.get("skill_id") or None,
+                        msg.get("actor_id") or None,
+                    ):
+                        await ws.send_json(ev)
+                except HTTPException as he:
+                    await ws.send_json(
+                        {
+                            "type": "mp_insufficient"
+                            if he.status_code == 400 and "MP" in str(he.detail)
+                            else "error",
+                            "data": {
+                                "skill_id": msg.get("skill_id"),
+                                "detail": he.detail,
+                            },
+                            "message": str(he.detail),
+                        }
+                    )
+                await ws.send_json(
+                    {"type": "round_done", "data": {"phase": (await get_meta(eid)).get("phase")}}
+                )
+                continue
             rounds = 1 if is_argue else max(1, min(int(msg.get("rounds", 1)), 12))
             # Optional pick-your-agent (commit 6b4ded9): the autonomous branch may
             # honor `actor_id` so the player can choose which party agent argues.
             # None falls back to the orchestrator's autonomous initiative.
-            active_party_id = msg.get("actor_id") or None if not is_argue else None
+            active_party_id = msg.get("actor_id") or None
 
             for _ in range(rounds):
                 meta = await get_meta(eid)
@@ -1075,7 +1230,7 @@ async def stream(ws: WebSocket, eid: str) -> None:
                     # Mirrors the 400 returned by POST /{eid}/argue.
                     skill_id_ws = msg.get("skill_id")
                     try:
-                        await _check_skill_mp(eid, skill_id_ws)
+                        await _check_skill_mp(eid, skill_id_ws, active_party_id)
                     except HTTPException as he:
                         # The outer loop will still emit `round_done` after this
                         # iteration, so the client sees one mp_insufficient and
@@ -1094,6 +1249,7 @@ async def stream(ws: WebSocket, eid: str) -> None:
                     stream = run_human_round_stream(
                         eid, topic, combatants, run_id, start_turn, momentum,
                         str(msg.get("text", "")), skill_id_ws,
+                        active_party_id=active_party_id,
                     )
                 else:
                     stream = run_round_stream(

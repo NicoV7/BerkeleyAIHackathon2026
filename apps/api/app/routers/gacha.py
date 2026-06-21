@@ -35,6 +35,7 @@ from app.db.models import (
     SummonItem,
 )
 from app.db.session import get_session
+from app.party.generator import pick_skills_for_type
 from app.schemas import (
     GachaPullRequest,
     GachaPullResult,
@@ -187,6 +188,7 @@ async def pull(
     rng = _rng_for_pull(run_id, body)
     tier = _roll_tier(_weights_for_item(item_tier), rng)
     persona = _pick_persona(personas, tier, rng)
+    debate_type = _coerce_type(persona.type)
 
     # Build the Monster from the persona's defaults. wiki_hydrated stays False;
     # hydration flips it after the background task patches persona JSONB.
@@ -194,14 +196,14 @@ async def pull(
         run_id=run_id,
         owner=MonsterOwner.player,
         name=persona.name,
-        type=_coerce_type(persona.type),
+        type=debate_type,
         persona={
             "key": persona.key,
             "tagline": persona.tagline or "",
             "voice": persona.tagline or "",
         },
         harness={},
-        skills=[],
+        skills=pick_skills_for_type(rng, debate_type, n=2),
         level=1,
         xp=0,
         max_hp=persona.default_max_hp,
