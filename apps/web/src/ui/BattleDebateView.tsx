@@ -52,6 +52,7 @@ import {
 } from "../lib/sfx";
 import { ReasoningTrend, type TrendSeries } from "./ReasoningTrend";
 import SummonOverlay, { type SummonResult } from "../game/SummonOverlay";
+import { useIrisTransition } from "./fx/IrisWipe";
 import {
   CombatantState,
   JudgeVerdict,
@@ -560,8 +561,9 @@ function EstimateBadge({ score, turn }: { score: number; turn: number }) {
 // ---------------------------------------------------------------------------
 
 export function BattleDebateView() {
-  const { activeEncounterId, runId, topic: runTopic, setEncounter, setYouScores, setBattleLocked } =
+  const { activeEncounterId, runId, topic: runTopic, playerName, setEncounter, setYouScores, setBattleLocked } =
     useGame();
+  const { transition } = useIrisTransition();
   const {
     status,
     encounter,
@@ -650,8 +652,8 @@ export function BattleDebateView() {
   );
   const youSeries: TrendSeries = useMemo(() => {
     const pts = verdicts.filter((v) => partyIds.has(v.target)).map((v) => v.score);
-    return { label: "You", color: "var(--party)", points: pts };
-  }, [verdicts, partyIds]);
+    return { label: playerName, color: "var(--party)", points: pts };
+  }, [verdicts, partyIds, playerName]);
 
   // Publish the player's curve so the training screen can show it beside the agent.
   useEffect(() => {
@@ -876,7 +878,7 @@ export function BattleDebateView() {
     // Release the nav lock and return to the overworld (setEncounter(null) sets
     // screen -> "overworld" and clears battleLocked).
     setBattleLocked(false);
-    setEncounter(null);
+    transition(() => setEncounter(null));
   }
 
   // ---- No active encounter: inviting empty state ----

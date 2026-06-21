@@ -218,6 +218,7 @@ async def create_run(
     label it with the theme so existing readers (runs.py, RunState) never break.
     """
     debate_topic = body.topic or body.theme or ""
+    player_name = (body.player_name or "").strip() or "Player"
     # New runs spawn at the canonical trailhead when a baked world is present;
     # otherwise keep the legacy fallback spawn.
     from app.world.canonical import get_canonical_world
@@ -236,6 +237,7 @@ async def create_run(
     run = Run(
         debate_topic=debate_topic,
         theme=body.theme,
+        player_name=player_name,
         seed=body.seed,
         player_x=start_x,
         player_y=start_y,
@@ -255,6 +257,7 @@ async def create_run(
         id=run.id,
         debate_topic=run.debate_topic,
         theme=run.theme,
+        player_name=run.player_name,
         player_x=run.player_x,
         player_y=run.player_y,
         status=run.status.value,

@@ -7,43 +7,26 @@ import PartyScreen from "./ui/PartyScreen";
 import { GambitEditor } from "./ui/GambitEditor";
 import TrainingScreen from "./ui/TrainingScreen";
 import GachaScreen from "./ui/GachaScreen";
+import StartMenu from "./ui/StartMenu";
+import { IrisTransitionProvider, useIrisTransition } from "./ui/fx/IrisWipe";
 
 // Wave 2: real screens wired in.
 //   overworld -> WS-A (Phaser canvas)
 //   encounter -> WS-B/WS-C (BattleDebateView)
 //   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
 //   training  -> WS-F (TrainingScreen)
-// THEME topics: the player picks a THEME at run start; each battle then draws a
-// random topic WITHIN that theme (resolved server-side at encounter creation).
-// Mirrors apps/api/app/debate/topics.py TOPICS_BY_THEME (examples shown to set
-// expectations — the server is the source of truth for the actual draw).
-const THEMES: { name: string; examples: string[] }[] = [
-  {
-    name: "Ethics",
-    examples: ["Money can buy happiness.", "Free will is an illusion.", "Humans are inherently selfish."],
-  },
-  {
-    name: "Technology",
-    examples: ["AI should be open-sourced.", "Self-driving cars are safer.", "Privacy is dead and that's okay."],
-  },
-  {
-    name: "Society",
-    examples: ["Social media does more harm than good.", "A four-day work week.", "Tipping should be abolished."],
-  },
-  {
-    name: "Science",
-    examples: ["Nuclear energy fights climate change.", "We'll colonize Mars in 50 years.", "Aliens have visited Earth."],
-  },
-  {
-    name: "Culture",
-    examples: ["Pineapple belongs on pizza.", "Cats beat dogs.", "A hot dog is a sandwich."],
-  },
-];
-
 export default function App() {
-  const { runId, screen, topic, theme: runTheme, battleLocked, setRun, setScreen } = useGame();
+  return (
+    <IrisTransitionProvider>
+      <AppShell />
+    </IrisTransitionProvider>
+  );
+}
+
+function AppShell() {
+  const { runId, screen, topic, theme: runTheme, playerName, battleLocked, setScreen } = useGame();
+  const { transition } = useIrisTransition();
   const [health, setHealth] = useState<string>("…");
-  const [themeInput, setThemeInput] = useState(THEMES[0].name);
   // Gacha gate (Wave A): when a run is loaded with an empty party, the player
   // is funneled through the gacha pull cinematic before reaching the overworld.
   // `null` = unknown (still checking), `true` = show gacha, `false` = ok.
@@ -79,78 +62,31 @@ export default function App() {
     };
   }, [runId]);
 
-  async function startRun() {
-    try {
-      const run = await api.post<{ id: string; debate_topic: string; theme?: string }>(
-        "/api/runs",
-        // topic kept for the NOT-NULL column; server labels the run by theme and
-        // draws a random topic within the theme per battle.
-        { topic: themeInput, theme: themeInput },
-      );
-      setRun(run.id, run.debate_topic, run.theme ?? themeInput);
-    } catch {
-      // /api/runs lands in WS-A; until then just enter the overworld locally.
-      setRun("local-dev", themeInput, themeInput);
-    }
-  }
-
   return (
     <div className="min-h-screen flex flex-col">
-      <header
-        className="flex items-center justify-between px-4 py-2"
-        style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
-      >
-        <h1 className="font-display text-sm">⚔️ DEBATE RPG</h1>
-        <div className="flex items-center gap-3 font-hud text-[10px]">
-          <span style={{ color: "var(--muted)" }}>
-            api:{" "}
-            <span style={{ color: health === "ok" ? "var(--win)" : "var(--warn)" }}>{health}</span>
-          </span>
-          {runId && (
+      {runId && (
+        <header
+          className="flex items-center justify-between px-4 py-2"
+          style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+        >
+          <h1 className="font-display text-sm">⚔️ DEBATE RPG</h1>
+          <div className="flex items-center gap-3 font-hud text-[10px]">
+            <span style={{ color: "var(--muted)" }}>
+              api:{" "}
+              <span style={{ color: health === "ok" ? "var(--win)" : "var(--warn)" }}>{health}</span>
+            </span>
+            <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
+              player: {playerName}
+            </span>
             <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
               theme: {runTheme || topic}
             </span>
-          )}
-        </div>
-      </header>
+          </div>
+        </header>
+      )}
 
       {!runId ? (
-        <main className="flex-1 grid place-items-center p-4">
-          <div className="pixel-panel p-6 w-[30rem] max-w-[92vw] space-y-4 text-center">
-            <div className="font-display text-lg" style={{ color: "var(--accent)" }}>
-              DEBATE RPG
-            </div>
-            <p className="font-body text-sm" style={{ color: "var(--muted)" }}>
-              Pick a THEME. Each battle draws a random topic from it.
-            </p>
-            <div className="grid grid-cols-1 gap-1.5 text-left">
-              {THEMES.map((th) => {
-                const selected = th.name === themeInput;
-                return (
-                  <button
-                    key={th.name}
-                    className={`pixel-btn w-full text-left px-3 py-2 ${
-                      selected ? "pixel-btn--accent" : ""
-                    }`}
-                    onClick={() => setThemeInput(th.name)}
-                    aria-pressed={selected}
-                  >
-                    <div className="font-display text-[11px]">{th.name}</div>
-                    <div
-                      className="font-body text-[8px] mt-0.5 leading-snug"
-                      style={{ color: "var(--muted)" }}
-                    >
-                      e.g. {th.examples.join("  ·  ")}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-            <button className="pixel-btn pixel-btn--accent w-full" onClick={startRun}>
-              Start Run
-            </button>
-          </div>
-        </main>
+        <StartMenu />
       ) : (
         <>
           {/* Battle isolation: while a battle is active (battleLocked), the
@@ -185,7 +121,9 @@ export default function App() {
                 <button
                   key={s}
                   className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
-                  onClick={() => setScreen(s)}
+                  onClick={() => {
+                    if (screen !== s) transition(() => setScreen(s));
+                  }}
                 >
                   {s}
                 </button>

@@ -97,6 +97,44 @@ export function sfxBlip(): void {
   });
 }
 
+/** Soft menu hover tick — quieter than the normal blip. */
+export function sfxMenuHover(): void {
+  play(() => {
+    getBlip().triggerAttackRelease("G5", 0.035);
+  });
+}
+
+/** Opening a menu overlay — small rising two-note prompt. */
+export function sfxMenuOpen(): void {
+  play(() => {
+    const now = Tone.now();
+    const s = getLead();
+    s.triggerAttackRelease("D5", 0.06, now);
+    s.triggerAttackRelease("G5", 0.08, now + 0.065);
+  });
+}
+
+/** Closing a menu overlay — short descending tuck-away sound. */
+export function sfxMenuClose(): void {
+  play(() => {
+    const now = Tone.now();
+    const s = getLead();
+    s.triggerAttackRelease("G4", 0.05, now);
+    s.triggerAttackRelease("D4", 0.07, now + 0.055);
+  });
+}
+
+/** Selecting a menu option — compact confirm flourish. */
+export function sfxMenuSelect(): void {
+  play(() => {
+    const now = Tone.now();
+    const p = getPoly();
+    p.triggerAttackRelease("C5", 0.06, now);
+    p.triggerAttackRelease("E5", 0.06, now + 0.055);
+    p.triggerAttackRelease(["G5", "C6"], 0.12, now + 0.12);
+  });
+}
+
 /** Quick two-note up-blip — submitting an argument. E5 → A5. */
 export function sfxSubmit(): void {
   play(() => {

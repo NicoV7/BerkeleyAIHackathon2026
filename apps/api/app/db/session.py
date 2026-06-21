@@ -27,6 +27,7 @@ async def init_db() -> None:
         # Lightweight idempotent migrations: create_all never ALTERs existing
         # tables, so additive columns need explicit IF NOT EXISTS here.
         for stmt in (
+            "ALTER TABLE runs ADD COLUMN IF NOT EXISTS player_name TEXT DEFAULT 'Player'",
             "ALTER TABLE encounters ADD COLUMN IF NOT EXISTS transcript JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE encounters ADD COLUMN IF NOT EXISTS verdicts JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE encounters ADD COLUMN IF NOT EXISTS final_hp JSONB DEFAULT '{}'::jsonb",

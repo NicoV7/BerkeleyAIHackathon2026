@@ -2,7 +2,7 @@
  * overworld-to-debate.spec.ts — full happy-path e2e for the debate spectacle.
  *
  * Flow under test (runs against the LIVE stack at http://localhost:5173):
- *   1. Load the app, type a debate topic, click "Start Run".
+ *   1. Load the app, type a player name, click "Start Run".
  *   2. Land in the overworld (Phaser canvas) and walk with arrow keys until
  *      walking into a red enemy fires an encounter (POST /api/runs/{id}/move
  *      returns an encounter_id -> store.setEncounter -> screen "encounter").
@@ -34,7 +34,7 @@ const VERDICT_TIMEOUT = 180_000;
 const MOVE_SETTLE_MS = 220; // > scene moveDelay (150ms) so each keypress lands.
 const MAX_MOVE_STEPS = 400; // hard cap on the wander loop.
 
-const TOPIC = "Pineapple belongs on pizza";
+const PLAYER_NAME = "Ada";
 
 /** True when the live dev server answers on BASE_URL. Used to skip on hosts. */
 async function liveStackReachable(): Promise<boolean> {
@@ -99,12 +99,12 @@ test.describe("overworld → debate spectacle (live stack)", () => {
   test("start a run, walk to an encounter, and win an argument with HP change", async ({
     page,
   }) => {
-    // --- Arrange: load the app on the topic-entry screen. ---
+    // --- Arrange: load the app on the name-entry screen. ---
     await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
 
-    const topicInput = page.getByRole("textbox").first();
-    await expect(topicInput).toBeVisible({ timeout: NAV_TIMEOUT });
-    await topicInput.fill(TOPIC);
+    const nameInput = page.getByRole("textbox", { name: /player name/i });
+    await expect(nameInput).toBeVisible({ timeout: NAV_TIMEOUT });
+    await nameInput.fill(PLAYER_NAME);
 
     const startRun = page.getByRole("button", { name: /start run/i });
     await expect(startRun).toBeEnabled();
@@ -112,7 +112,7 @@ test.describe("overworld → debate spectacle (live stack)", () => {
     // --- Act: start the run → overworld. ---
     await startRun.click();
 
-    // Overworld nav tabs confirm we've left the topic screen.
+    // Overworld nav tabs confirm we've left the name screen.
     await expect(
       page.getByRole("button", { name: /^overworld$/i })
     ).toBeVisible({ timeout: NAV_TIMEOUT });

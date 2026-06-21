@@ -7,7 +7,7 @@
  *
  * The demo spine (and what each beat must prove):
  *
- *   BEAT 0  new run        topic entry → "Start Run" → in-run nav appears.
+ *   BEAT 0  new run        name entry → "Start Run" → in-run nav appears.
  *   BEAT 1  walk           overworld Phaser canvas accepts movement; the agent
  *                          sweeps the map until it collides with a wild enemy
  *                          and the app routes to the encounter screen. (If the
@@ -66,7 +66,7 @@ const BASE_URL =
 // regardless of the cwd Playwright is launched from.
 const SHOTS_DIR = path.resolve(__dirname, "../../../evals/shots");
 
-const TOPIC = "Pineapple belongs on pizza";
+const PLAYER_NAME = "Ada";
 
 // --- Generous budgets: local CPU model + procedural map + GEPA self-play. ---
 const NAV_TIMEOUT = 30_000;
@@ -225,12 +225,12 @@ test.describe("T4 eval — full demo playthrough (live stack)", () => {
     // ====================================================================
     // BEAT 0 — NEW RUN
     // ====================================================================
-    await test.step("beat 0 · start a new run from the topic screen", async () => {
-      // Arrange: load the app on the topic-entry screen.
+    await test.step("beat 0 · start a new run from the name screen", async () => {
+      // Arrange: load the app on the name-entry screen.
       await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
-      const topicInput = page.getByRole("textbox").first();
-      await expect(topicInput).toBeVisible({ timeout: NAV_TIMEOUT });
-      await topicInput.fill(TOPIC);
+      const nameInput = page.getByRole("textbox", { name: /player name/i });
+      await expect(nameInput).toBeVisible({ timeout: NAV_TIMEOUT });
+      await nameInput.fill(PLAYER_NAME);
 
       const startRun = page.getByRole("button", { name: /start run/i });
       await expect(startRun).toBeEnabled();
@@ -238,7 +238,7 @@ test.describe("T4 eval — full demo playthrough (live stack)", () => {
       // Act: start the run → in-run navigation (overworld/.../demo) renders.
       await startRun.click();
 
-      // Assert: we left the topic screen — the in-run nav tabs are present.
+      // Assert: we left the name screen — the in-run nav tabs are present.
       await expect(
         page.getByRole("button", { name: /^overworld$/i }),
       ).toBeVisible({ timeout: NAV_TIMEOUT });

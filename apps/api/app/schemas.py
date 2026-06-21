@@ -24,6 +24,7 @@ class HealthResponse(BaseModel):
 
 class CreateRunRequest(BaseModel):
     topic: str = Field(..., description="The debate topic for this entire run")
+    player_name: Optional[str] = Field(None, description="Display name for the player")
     seed: int = 0
     # Theme picked at run start; each battle draws a random topic within it.
     # Optional/additive — when absent, battles fall back to the full catalog.
@@ -62,6 +63,7 @@ class RunState(BaseModel):
     debate_topic: str
     # Theme chosen at run start (additive/Optional for backward compat).
     theme: Optional[str] = None
+    player_name: str = "Player"
     player_x: int
     player_y: int
     status: str

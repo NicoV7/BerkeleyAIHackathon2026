@@ -2,7 +2,7 @@
  * T3 e2e — Party + Gambit editor + Training (GEPA) + Capture/Demo before→after.
  *
  * Scripts the full "raise a debater" path against the LIVE dev stack:
- *   1. Boot a run from the topic screen.
+ *   1. Boot a run from the name screen.
  *   2. Open the Party screen.
  *   3. Open the Gambit editor via the #gambits/{id} hash route, edit + save a
  *      gambit, and assert the editor confirms the save.
@@ -33,7 +33,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
-const DEFAULT_TOPIC = "Pineapple belongs on pizza";
+const DEFAULT_PLAYER_NAME = "Ada";
 
 // --- Generous timeouts: the live stack drives an LLM gateway + DB on GEPA. ---
 const NAV_TIMEOUT = 15_000;
@@ -55,19 +55,19 @@ async function stackIsUp(page: Page): Promise<boolean> {
 }
 
 /**
- * Boot a run from the topic-entry screen. The app shows a topic <input> + a
+ * Boot a run from the name-entry screen. The app shows a player-name <input> + a
  * "Start Run" button while runId is null; clicking it swaps to the in-run nav.
  * Returns once the in-run navigation (Party/Training tabs) is visible.
  */
-async function startRun(page: Page, topic = DEFAULT_TOPIC): Promise<void> {
+async function startRun(page: Page, playerName = DEFAULT_PLAYER_NAME): Promise<void> {
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
 
   // If a previous run is already active (persisted store), the nav tabs render
-  // immediately; otherwise drive the topic-entry screen.
+  // immediately; otherwise drive the name-entry screen.
   const startButton = page.getByRole("button", { name: /start run/i });
   if (await startButton.isVisible().catch(() => false)) {
-    const topicInput = page.locator("input").first();
-    await topicInput.fill(topic).catch(() => undefined);
+    const nameInput = page.getByRole("textbox", { name: /player name/i });
+    await nameInput.fill(playerName).catch(() => undefined);
     await startButton.click();
   }
 
@@ -92,7 +92,7 @@ async function discoverMonsterId(page: Page): Promise<string | null> {
   // (which only renders when an encounter is active).
   return page.evaluate(async () => {
     try {
-      // Find a run id: the topic-entry POST stores it; the simplest portable
+      // Find a run id: the start POST stores it; the simplest portable
       // discovery is to ask the API for any party. We try a couple of shapes.
       // 1) If the app put a run id on the window/store, prefer it.
       const w = window as unknown as Record<string, unknown>;

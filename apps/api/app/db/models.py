@@ -123,6 +123,7 @@ class Run(SQLModel, table=True):
     # Theme chosen at run start; each battle draws a random topic within it.
     # Nullable/additive alongside debate_topic (which stays populated).
     theme: Optional[str] = Field(default=None)
+    player_name: str = "Player"
     seed: int = 0
     player_x: int = 0
     player_y: int = 0

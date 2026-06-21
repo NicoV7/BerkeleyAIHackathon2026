@@ -18,9 +18,11 @@ import type { NPCAnchorView } from "../game/NPCBehavior";
 import { OverworldScene } from "../game/OverworldScene";
 import { useGame } from "../state/store";
 import OverworldHud, { type HudMap } from "./OverworldHud";
+import { useIrisTransition } from "./fx/IrisWipe";
 
 export default function Overworld() {
   const { runId, setEncounter } = useGame();
+  const { transition } = useIrisTransition();
   const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
@@ -45,7 +47,9 @@ export default function Overworld() {
   useEffect(() => {
     if (!containerRef.current || !runId || size.w === 0 || size.h === 0) return;
 
-    const bridge = buildEncounterBridge(runId, setEncounter);
+    const bridge = buildEncounterBridge(runId, (id) => {
+      transition(() => setEncounter(id));
+    });
 
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.AUTO,
