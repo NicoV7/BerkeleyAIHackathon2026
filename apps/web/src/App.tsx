@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useGame } from "./state/store";
+import { useGame, type Screen } from "./state/store";
 import { api } from "./api/client";
 import Overworld from "./ui/Overworld";
 import { BattleDebateView } from "./ui/BattleDebateView";
@@ -8,13 +8,10 @@ import { GambitEditor } from "./ui/GambitEditor";
 import TrainingScreen from "./ui/TrainingScreen";
 import GachaScreen from "./ui/GachaScreen";
 import StartMenu from "./ui/StartMenu";
-import { IrisTransitionProvider, useIrisTransition } from "./ui/fx/IrisWipe";
+import { Overlay } from "./ui/Overlay";
+import { BattleOverlay } from "./ui/BattleOverlay";
+import { IrisTransitionProvider } from "./ui/fx/IrisWipe";
 
-// Wave 2: real screens wired in.
-//   overworld -> WS-A (Phaser canvas)
-//   encounter -> WS-B/WS-C (BattleDebateView)
-//   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
-//   training  -> WS-F (TrainingScreen)
 export default function App() {
   return (
     <IrisTransitionProvider>
@@ -24,29 +21,14 @@ export default function App() {
 }
 
 function AppShell() {
-  const { runId, screen, topic, theme: runTheme, playerName, battleLocked, setScreen } = useGame();
-  const { transition } = useIrisTransition();
-  const [health, setHealth] = useState<string>("…");
-  // Gacha gate (Wave A): when a run is loaded with an empty party, the player
-  // is funneled through the gacha pull cinematic before reaching the overworld.
-  // `null` = unknown (still checking), `true` = show gacha, `false` = ok.
+  const { runId, screen, activeEncounterId, setScreen } = useGame();
   const [needsGacha, setNeedsGacha] = useState<boolean | null>(null);
+  const [gambitMonster, setGambitMonster] = useState<string | null>(null);
 
-  useEffect(() => {
-    api
-      .health()
-      .then((h) => setHealth(h.status))
-      .catch(() => setHealth("down"));
-  }, []);
-
-  // Whenever the active run changes, ask the backend whether the party is
-  // empty and gate on it. Backend: GET /api/runs/{id} returns a `party` array.
+  // Gacha gate: run with empty party → funnel through pull cinematic first.
   useEffect(() => {
     let cancelled = false;
-    if (!runId) {
-      setNeedsGacha(null);
-      return;
-    }
+    if (!runId) { setNeedsGacha(null); return; }
     setNeedsGacha(null);
     (async () => {
       try {
@@ -54,103 +36,13 @@ function AppShell() {
         if (cancelled) return;
         setNeedsGacha(((r?.party ?? []) as unknown[]).length === 0);
       } catch {
-        if (!cancelled) setNeedsGacha(false); // fail-open so we don't block the player
+        if (!cancelled) setNeedsGacha(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [runId]);
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      {runId && (
-        <header
-          className="flex items-center justify-between px-4 py-2"
-          style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
-        >
-          <h1 className="font-display text-sm">⚔️ DEBATE RPG</h1>
-          <div className="flex items-center gap-3 font-hud text-[10px]">
-            <span style={{ color: "var(--muted)" }}>
-              api:{" "}
-              <span style={{ color: health === "ok" ? "var(--win)" : "var(--warn)" }}>{health}</span>
-            </span>
-            <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
-              player: {playerName}
-            </span>
-            <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
-              theme: {runTheme || topic}
-            </span>
-          </div>
-        </header>
-      )}
-
-      {!runId ? (
-        <StartMenu />
-      ) : (
-        <>
-          {/* Battle isolation: while a battle is active (battleLocked), the
-              global nav is replaced by a "locked" banner so the only way out is
-              the in-battle Flee button (or a natural win/lose). */}
-          {battleLocked ? (
-            <div
-              className="flex items-center gap-2 px-4 py-2 font-hud text-[10px]"
-              style={{ borderBottom: "2px solid rgba(232,230,216,0.12)", color: "var(--warn)" }}
-            >
-              <span>⚔️ In battle</span>
-              <span style={{ color: "var(--muted)" }}>
-                — navigation locked. Flee to return to the overworld.
-              </span>
-            </div>
-          ) : needsGacha ? (
-            <div
-              className="flex items-center gap-2 px-4 py-2 font-hud text-[10px]"
-              style={{ borderBottom: "2px solid rgba(232,230,216,0.12)", color: "var(--accent)" }}
-            >
-              <span>🎰 Summon required</span>
-              <span style={{ color: "var(--muted)" }}>
-                — pull your first persona to enter the world.
-              </span>
-            </div>
-          ) : (
-            <nav
-              className="flex gap-2 px-4 py-2"
-              style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
-            >
-              {(["overworld", "encounter", "party", "training"] as const).map((s) => (
-                <button
-                  key={s}
-                  className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
-                  onClick={() => {
-                    if (screen !== s) transition(() => setScreen(s));
-                  }}
-                >
-                  {s}
-                </button>
-              ))}
-            </nav>
-          )}
-          <main className="flex-1 overflow-auto">
-            {needsGacha ? (
-              <GachaScreen
-                onReady={() => {
-                  setNeedsGacha(false);
-                  setScreen("overworld");
-                }}
-              />
-            ) : (
-              <ScreenPanel screen={screen} />
-            )}
-          </main>
-        </>
-      )}
-    </div>
-  );
-}
-
-function ScreenPanel({ screen }: { screen: string }) {
-  // PartyScreen signals "edit gambits" via window.location.hash = gambits/{id}.
-  const [gambitMonster, setGambitMonster] = useState<string | null>(null);
+  // Gambit sub-screen: PartyScreen signals via URL hash.
   useEffect(() => {
     const sync = () => {
       const m = window.location.hash.match(/^#?gambits\/(.+)$/);
@@ -161,31 +53,82 @@ function ScreenPanel({ screen }: { screen: string }) {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
 
-  switch (screen) {
-    case "overworld":
-      return <Overworld />;
-    case "encounter":
-      return <BattleDebateView />;
-    case "training":
-      return <TrainingScreen />;
-    case "party":
-      if (gambitMonster) {
-        return (
-          <div className="p-4 max-w-3xl mx-auto">
-            <button
-              className="pixel-btn text-[10px] mb-3"
-              onClick={() => {
-                window.location.hash = "";
-              }}
-            >
-              ← back to party
-            </button>
-            <GambitEditor monsterId={gambitMonster} />
-          </div>
-        );
-      }
-      return <PartyScreen />;
-    default:
-      return <div className="grid place-items-center h-full opacity-50">{screen}</div>;
-  }
+  // No run yet — show start menu full-screen.
+  if (!runId) return <StartMenu />;
+
+  const inBattle = screen === "encounter" && !!activeEncounterId;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
+      {/* BASE LAYER — Overworld never unmounts once a run is active */}
+      <Overworld />
+
+      {/* Gacha gate — opaque, blocks world until first pull completes */}
+      {needsGacha && (
+        <BattleOverlay>
+          <GachaScreen onReady={() => { setNeedsGacha(false); setScreen("overworld"); }} />
+        </BattleOverlay>
+      )}
+
+      {/* ENCOUNTER — opaque overlay; entered/exited via iris wipe */}
+      {inBattle && (
+        <BattleOverlay>
+          <BattleDebateView />
+        </BattleOverlay>
+      )}
+
+      {/* PARTY — dimmed scrim over the living world */}
+      {screen === "party" && !needsGacha && !inBattle && (
+        <Overlay label="Party" onClose={() => setScreen("overworld")}>
+          {gambitMonster ? (
+            <div>
+              <button
+                className="pixel-btn text-[10px] mb-3"
+                onClick={() => { window.location.hash = ""; }}
+              >
+                ← back to party
+              </button>
+              <GambitEditor monsterId={gambitMonster} />
+            </div>
+          ) : (
+            <PartyScreen />
+          )}
+        </Overlay>
+      )}
+
+      {/* TRAINING — dimmed scrim over the living world */}
+      {screen === "training" && !needsGacha && !inBattle && (
+        <Overlay label="Training Lab" onClose={() => setScreen("overworld")}>
+          <TrainingScreen />
+        </Overlay>
+      )}
+
+      {/* HUD NAV — floating buttons, hidden during battle and gacha */}
+      {!inBattle && !needsGacha && (
+        <HudNav screen={screen} onSetScreen={setScreen} />
+      )}
+    </div>
+  );
+}
+
+function HudNav({
+  screen,
+  onSetScreen,
+}: {
+  screen: Screen;
+  onSetScreen: (s: Screen) => void;
+}) {
+  return (
+    <div className="pointer-events-auto fixed bottom-4 right-4 z-10 flex gap-2">
+      {(["party", "training"] as const).map((s) => (
+        <button
+          key={s}
+          className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
+          onClick={() => onSetScreen(screen === s ? "overworld" : s)}
+        >
+          {s}
+        </button>
+      ))}
+    </div>
+  );
 }

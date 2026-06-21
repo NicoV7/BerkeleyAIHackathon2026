@@ -222,8 +222,9 @@ export interface EncounterStreamState {
   runningTurn: number | null;
   /** Drive N autonomous rounds (Auto / Next Round). */
   drive: (rounds: number) => void;
-  /** Submit a human-typed argument as the player's turn. */
-  argue: (text: string, skillId?: string | null) => void;
+  /** Submit a human-typed argument as the player's turn. `side` is the player's
+   *  chosen Pro/Con stance, sent additively (frontend-only seam). */
+  argue: (text: string, skillId?: string | null, side?: "for" | "against" | null) => void;
   /** Close and clean up the websocket connection manually */
   disconnect: () => void;
 }
@@ -308,8 +309,11 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     [send]
   );
   const argue = useCallback(
-    (text: string, skillId?: string | null) =>
-      send({ action: "argue", text, skill_id: skillId ?? null }),
+    // `side` is sent additively (frontend-only): the backend currently ignores
+    // unknown fields and assigns party=for itself, but threading the player's
+    // chosen Pro/Con stance here is the seam for when the loop adopts it.
+    (text: string, skillId?: string | null, side?: "for" | "against" | null) =>
+      send({ action: "argue", text, skill_id: skillId ?? null, ...(side ? { side } : {}) }),
     [send]
   );
 
