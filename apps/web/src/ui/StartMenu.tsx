@@ -238,11 +238,6 @@ export default function StartMenu() {
               </div>
             </section>
           </div>
-
-          <p className="sm-hint font-hud">
-            Press <span className="sm-key">Enter</span> to begin
-            <span className="caret-blink"> ▌</span>
-          </p>
         </div>
       </div>
 
