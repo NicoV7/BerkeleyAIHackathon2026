@@ -6,6 +6,7 @@ import { BattleDebateView } from "./ui/BattleDebateView";
 import PartyScreen from "./ui/PartyScreen";
 import { GambitEditor } from "./ui/GambitEditor";
 import TrainingScreen from "./ui/TrainingScreen";
+import GachaScreen from "./ui/GachaScreen";
 
 // Wave 2: real screens wired in.
 //   overworld -> WS-A (Phaser canvas)
@@ -43,6 +44,10 @@ export default function App() {
   const { runId, screen, topic, theme: runTheme, battleLocked, setRun, setScreen } = useGame();
   const [health, setHealth] = useState<string>("…");
   const [themeInput, setThemeInput] = useState(THEMES[0].name);
+  // Gacha gate (Wave A): when a run is loaded with an empty party, the player
+  // is funneled through the gacha pull cinematic before reaching the overworld.
+  // `null` = unknown (still checking), `true` = show gacha, `false` = ok.
+  const [needsGacha, setNeedsGacha] = useState<boolean | null>(null);
 
   useEffect(() => {
     api
@@ -50,6 +55,29 @@ export default function App() {
       .then((h) => setHealth(h.status))
       .catch(() => setHealth("down"));
   }, []);
+
+  // Whenever the active run changes, ask the backend whether the party is
+  // empty and gate on it. Backend: GET /api/runs/{id} returns a `party` array.
+  useEffect(() => {
+    let cancelled = false;
+    if (!runId) {
+      setNeedsGacha(null);
+      return;
+    }
+    setNeedsGacha(null);
+    (async () => {
+      try {
+        const r = await api.get<{ party?: unknown[] }>(`/api/runs/${runId}`);
+        if (cancelled) return;
+        setNeedsGacha(((r?.party ?? []) as unknown[]).length === 0);
+      } catch {
+        if (!cancelled) setNeedsGacha(false); // fail-open so we don't block the player
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
 
   async function startRun() {
     try {
@@ -138,6 +166,16 @@ export default function App() {
                 — navigation locked. Flee to return to the overworld.
               </span>
             </div>
+          ) : needsGacha ? (
+            <div
+              className="flex items-center gap-2 px-4 py-2 font-hud text-[10px]"
+              style={{ borderBottom: "2px solid rgba(232,230,216,0.12)", color: "var(--accent)" }}
+            >
+              <span>🎰 Summon required</span>
+              <span style={{ color: "var(--muted)" }}>
+                — pull your first persona to enter the world.
+              </span>
+            </div>
           ) : (
             <nav
               className="flex gap-2 px-4 py-2"
@@ -155,7 +193,16 @@ export default function App() {
             </nav>
           )}
           <main className="flex-1 overflow-auto">
-            <ScreenPanel screen={screen} />
+            {needsGacha ? (
+              <GachaScreen
+                onReady={() => {
+                  setNeedsGacha(false);
+                  setScreen("overworld");
+                }}
+              />
+            ) : (
+              <ScreenPanel screen={screen} />
+            )}
           </main>
         </>
       )}
