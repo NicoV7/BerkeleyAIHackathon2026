@@ -17,7 +17,6 @@ All gateway/judge/redis seams are faked; no network, no DB.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import pytest
@@ -108,9 +107,11 @@ async def test_human_round_streams_enemy_tokens(
         _combatant("party", "p1", "Sage"),
         _combatant("enemy", "e1", "Brute"),
     ]
+    # start_turn>0 = a later round -> live STREAMING rebuttal (round 1 emits the
+    # materialized opening as a single token; that is a separate A1/A2 concern).
     events = await _drain(
         orch.run_human_round_stream(
-            "enc1", "animals deserve rights", combatants, None, 0,
+            "enc1", "animals deserve rights", combatants, None, 2,
             {"party": 1.0, "enemy": 1.0}, "Animals deserve rights because they feel pain.",
         )
     )
@@ -181,10 +182,11 @@ async def test_human_round_judges_both_in_one_combined_call(
     assert by_actor["p1"]["target"] == "e1" and by_actor["e1"]["target"] == "p1"
 
 
-async def test_human_round_streams_enemy_tokens(
+async def test_human_round_streams_enemy_tokens_carry_actor_id(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    """The enemy rebuttal must STREAM token events (perceived latency = first token)."""
+    """The enemy rebuttal must STREAM token events (perceived latency = first token)
+    and every token must carry the enemy's actor_id."""
     async def fake_stream(messages, model=None, **k):
         for tok in ["Coun", "ter", "point."]:
             yield tok
@@ -198,9 +200,12 @@ async def test_human_round_streams_enemy_tokens(
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
+    # start_turn>0 = a LATER round, so the enemy rebuts via the live STREAMING path
+    # (the first round emits the cached/materialized opening as a single token, which
+    # is a separate A1/A2 concern; this test guards the streaming rebuttal).
     events = await _drain(
         orch.run_human_round_stream(
-            "enc3", "topic", combatants, None, 0, {"party": 1.0, "enemy": 1.0}, "x"
+            "enc3", "topic", combatants, None, 2, {"party": 1.0, "enemy": 1.0}, "x"
         )
     )
     token_events = [e for e in events if e.kind == "token"]
