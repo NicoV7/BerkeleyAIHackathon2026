@@ -3,6 +3,7 @@ name: Logical Thrust
 type: LOGOS
 power: 1.2
 domain: LOGOS
+mp_cost: 20
 ---
 
 # Logical Thrust

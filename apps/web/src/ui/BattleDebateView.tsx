@@ -93,6 +93,31 @@ function HpBar({ hp, max_hp }: { hp: number; max_hp: number }) {
   );
 }
 
+/**
+ * Gacha Wave B MP bar — blue, segmented like the HP bar so the player reads
+ * "second resource of the same shape" at a glance. Drains on skill use and
+ * refills +10 per round end (the orchestrator emits `mp` WS events that the
+ * encounter stream patches into combatant.mp).
+ */
+function MpBar({ mp, max_mp }: { mp: number; max_mp: number }) {
+  const segs = 10;
+  const pct = max_mp > 0 ? Math.max(0, Math.min(1, mp / max_mp)) : 0;
+  const filled = Math.round(pct * segs);
+  return (
+    <div className="flex gap-[2px] h-1.5">
+      {Array.from({ length: segs }).map((_, i) => (
+        <div
+          key={i}
+          className="flex-1 transition-colors duration-300"
+          style={{
+            background: i < filled ? "var(--accent)" : "rgba(232,230,216,0.10)",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function CombatantCard({
   c,
   isLead,
@@ -159,6 +184,20 @@ function CombatantCard({
         {c.hp}/{c.max_hp} HP
       </div>
       <HpBar hp={c.hp} max_hp={c.max_hp} />
+      {/* Gacha Wave B: MP bar (blue) under HP. Renders only when the backend
+          has populated MP on this combatant — older snapshots stay HP-only. */}
+      {typeof c.mp === "number" && typeof c.max_mp === "number" && (
+        <div className="mt-1.5">
+          <div
+            className="font-body text-[10px] mb-0.5 flex items-center justify-between"
+            style={{ color: "var(--muted)" }}
+          >
+            <span style={{ color: "var(--accent)" }}>MP</span>
+            <span>{c.mp}/{c.max_mp}</span>
+          </div>
+          <MpBar mp={c.mp} max_mp={c.max_mp} />
+        </div>
+      )}
     </div>
   );
 }
@@ -329,6 +368,7 @@ export function BattleDebateView() {
     transcript,
     verdicts,
     capturableIds,
+    mpInsufficient,
     running,
     runningTurn,
     drive,
@@ -714,20 +754,30 @@ export function BattleDebateView() {
                 {skills.map((s) => {
                   const active = selectedSkill === s.id;
                   const eff = effectivenessInfo(s.type, leadEnemy?.type);
+                  // Gacha Wave B: dim the chip when the lead party MP can't
+                  // cover this skill. Cost is sourced from the skill object
+                  // (parseSkill falls back to SKILL_MP_COSTS). Free skills
+                  // (cost 0) never dim.
+                  const leadMp =
+                    typeof leadParty?.mp === "number" ? leadParty.mp : Infinity;
+                  const cost = Number(s.mp_cost ?? 0);
+                  const unaffordable = cost > 0 && leadMp < cost;
                   const tip = `${skillTooltip(s)}${
                     eff.label ? ` vs ${leadEnemy?.type ?? "enemy"}: ${eff.label} (×${eff.multiplier})` : ""
+                  }${cost > 0 ? ` · MP ${cost}` : ""}${
+                    unaffordable ? ` (not enough MP: ${leadMp}/${cost})` : ""
                   }`;
                   return (
                     <button
                       key={s.id}
                       title={tip}
                       onClick={() => setSelectedSkill(active ? null : s.id)}
-                      disabled={running || isOver}
+                      disabled={running || isOver || unaffordable}
                       className="pixel-btn text-[10px] py-1 relative"
                       style={
                         active
                           ? { background: typeColor(s.type), color: "#000", borderColor: "#000" }
-                          : { borderColor: typeColor(s.type) }
+                          : { borderColor: typeColor(s.type), opacity: unaffordable ? 0.45 : 1 }
                       }
                     >
                       {s.name} ×{s.power}
@@ -739,10 +789,34 @@ export function BattleDebateView() {
                           {eff.multiplier > 1 ? "▲" : "▼"}
                         </span>
                       )}
+                      {/* MP-cost chip on each skill button. Tiny, blue, sits
+                          flush in the top-right so the price is always visible. */}
+                      {cost > 0 && (
+                        <span
+                          className="ml-1 font-hud text-[8px] px-1"
+                          style={{
+                            background: "rgba(0,0,0,0.35)",
+                            color: active ? "#000" : "var(--accent)",
+                            border: "1px solid var(--accent)",
+                          }}
+                        >
+                          {cost} MP
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
+              {/* One-shot WS rejection banner: the picked skill cost more MP
+                  than the lead has. The hook clears this on the next attempt. */}
+              {mpInsufficient && (
+                <div
+                  className="font-hud text-[9px] px-1"
+                  style={{ color: "var(--danger)" }}
+                >
+                  {mpInsufficient.detail}
+                </div>
+              )}
               {/* Type-effectiveness callout for the currently selected skill. */}
               {selectedSkill && leadEnemy && (() => {
                 const sel = skills.find((s) => s.id === selectedSkill);

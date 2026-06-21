@@ -95,6 +95,32 @@ function SkillChip({ skill }: { skill: ReturnType<typeof parseSkills>[number] })
   );
 }
 
+/**
+ * Tiny stat chip used by the gacha Wave B MonsterCard footer (ATK/DEF/MP +
+ * optional domain). One chip per stat so the player can see the persona's
+ * combat fingerprint at a glance without expanding the card.
+ */
+function StatChip({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string | number;
+  color?: string;
+}) {
+  return (
+    <span
+      className="pixel-inset px-1.5 py-0.5 font-hud text-[10px] inline-flex items-center gap-1"
+      style={{ borderColor: color ?? "rgba(232,230,216,0.18)" }}
+      title={`${label} ${value}`}
+    >
+      <span style={{ color: color ?? "var(--muted)" }}>{label}</span>
+      <span style={{ color: "var(--ink)" }}>{value}</span>
+    </span>
+  );
+}
+
 // ---- Single party member card ----
 function MonsterCard({ monster }: { monster: MonsterSummary }) {
   const evolutionLabel = monster.evolution_stage === 0
@@ -126,6 +152,37 @@ function MonsterCard({ monster }: { monster: MonsterSummary }) {
           </div>
         ))}
       </div>
+
+      {/* Gacha Wave B stat chips: ATK/DEF/MP alongside type/level so the player
+          reads the monster's combat fingerprint from the card alone. Skip
+          gracefully when the API hasn't filled the fields (old pre-gacha runs). */}
+      {(typeof monster.atk === "number" ||
+        typeof monster.def === "number" ||
+        typeof monster.max_mp === "number" ||
+        (monster.domain && monster.domain !== "GENERAL")) && (
+        <div className="flex flex-wrap gap-1.5">
+          {typeof monster.atk === "number" && (
+            <StatChip label="ATK" value={monster.atk} color="var(--danger)" />
+          )}
+          {typeof monster.def === "number" && (
+            <StatChip label="DEF" value={monster.def} color="var(--win)" />
+          )}
+          {typeof monster.max_mp === "number" && (
+            <StatChip
+              label="MP"
+              value={
+                typeof monster.mp === "number"
+                  ? `${monster.mp}/${monster.max_mp}`
+                  : monster.max_mp
+              }
+              color="var(--accent)"
+            />
+          )}
+          {monster.domain && monster.domain !== "GENERAL" && (
+            <StatChip label="DOMAIN" value={monster.domain} />
+          )}
+        </div>
+      )}
 
       <XpBar xp={monster.xp} level={monster.level} />
 

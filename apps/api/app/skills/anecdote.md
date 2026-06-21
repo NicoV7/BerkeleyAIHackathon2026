@@ -3,6 +3,7 @@ name: Anecdote
 type: PATHOS
 power: 0.8
 domain: PATHOS
+mp_cost: 15
 ---
 
 # Anecdote

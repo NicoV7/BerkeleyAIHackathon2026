@@ -3,6 +3,7 @@ name: Analogy Strike
 type: RHETORIC
 power: 1.0
 domain: RHETORIC
+mp_cost: 20
 ---
 
 # Analogy Strike

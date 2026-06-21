@@ -3,6 +3,7 @@ name: Credential Drop
 type: ETHOS
 power: 1.0
 domain: ETHOS
+mp_cost: 30
 ---
 
 # Credential Drop

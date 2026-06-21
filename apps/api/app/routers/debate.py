@@ -24,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Encounter, EncounterResult, SummonItem
 from app.db.session import SessionLocal, get_session
 from app.debate.orchestrator import run_human_round_stream, run_round_stream
-from app.redis_state import get_transcript, k_meta
+from app.debate.skill_engine import skill_cost
+from app.redis_state import get_mp_map, get_transcript, k_meta
 from app.routers.encounter import (
     build_encounter_state,
     get_meta,
@@ -50,6 +51,44 @@ router = APIRouter(prefix="/api/encounters", tags=["debate"])
 # and /auto shouldn't keep starting rounds past a total budget.
 ROUND_TIMEOUT_S = 120.0
 AUTO_BUDGET_S = 240.0
+
+
+async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
+    """Reject the request with 400 when the lead party monster can't afford the skill.
+
+    Gacha Wave B: cheap pre-flight on every /argue + /assist (and the WS argue
+    action). The cost is read from the .md front-matter via ``skill_cost``;
+    current MP is read from ``enc:{eid}:mp``. Free skills (cost 0) and the
+    "no skill selected" case are no-ops. Lead-party MP is resolved through the
+    same path the orchestrator uses so the gate is consistent. Best-effort: any
+    failure (missing Redis key, missing combatants) leaves the request to the
+    orchestrator's own defensive check.
+    """
+    if not skill_id:
+        return
+    cost = skill_cost(skill_id)
+    if cost <= 0:
+        return
+    try:
+        from app.routers.encounter import load_combatants
+
+        combatants = await load_combatants(eid)
+        lead = next((c for c in combatants if c.role == "party" and c.hp > 0), None)
+        if lead is None:
+            return
+        mp_map = await get_mp_map(eid)
+        # Default to the combatant's max_mp so a fresh encounter (cache miss)
+        # still validates against a real ceiling.
+        cur = int(mp_map.get(lead.monster_id, lead.max_mp))
+        if cur < cost:
+            raise HTTPException(
+                status_code=400,
+                detail=f"insufficient MP for {skill_id}: {cur}/{cost}",
+            )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 — never 500 on a defensive gate
+        return
 
 
 # ---- Finalize (idempotent) --------------------------------------------------
@@ -384,6 +423,10 @@ async def argue(
 ) -> TurnResult:
     """Human-argues (WS-G): the player's typed argument is the lead party monster's
     turn; the lead enemy rebuts autonomously. REST fallback for the WS argue action."""
+    # Gacha Wave B: reject up front when the player can't afford the chosen skill,
+    # so the textarea + skill picker know to refund the MP / re-enable the button
+    # before any LLM call burns latency.
+    await _check_skill_mp(eid, req.skill_id)
     try:
         new_utts, new_verdicts, phase_event = await asyncio.wait_for(
             _run_one_human_round(eid, req.text, req.skill_id), timeout=ROUND_TIMEOUT_S
@@ -415,6 +458,10 @@ async def assist(
     500-ing.
     """
     await get_meta(eid)  # 404 if encounter missing
+    # Gacha Wave B: same MP gate as /argue — the coach is allowed to suggest a
+    # different skill, but if the player explicitly picked one they can't afford
+    # we reject so the UI can refund the picker before the LLM call begins.
+    await _check_skill_mp(eid, req.skill_id)
     from app.debate.coach import coach_argument
 
     try:
@@ -490,9 +537,30 @@ async def stream(ws: WebSocket, eid: str) -> None:
                 momentum = await load_momentum(eid)
 
                 if is_argue:
+                    # Gacha Wave B MP gate (WS path): if the player can't afford
+                    # the picked skill, surface a typed error and skip the round.
+                    # Mirrors the 400 returned by POST /{eid}/argue.
+                    skill_id_ws = msg.get("skill_id")
+                    try:
+                        await _check_skill_mp(eid, skill_id_ws)
+                    except HTTPException as he:
+                        # The outer loop will still emit `round_done` after this
+                        # iteration, so the client sees one mp_insufficient and
+                        # one terminal event (no duplicate round_done).
+                        await ws.send_json(
+                            {
+                                "type": "mp_insufficient",
+                                "data": {
+                                    "skill_id": skill_id_ws,
+                                    "detail": he.detail,
+                                },
+                            }
+                        )
+                        continue
+
                     stream = run_human_round_stream(
                         eid, topic, combatants, run_id, start_turn, momentum,
-                        str(msg.get("text", "")), msg.get("skill_id"),
+                        str(msg.get("text", "")), skill_id_ws,
                     )
                 else:
                     stream = run_round_stream(
