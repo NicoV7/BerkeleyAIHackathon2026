@@ -116,6 +116,13 @@ def test_stream_first_token_guard_uses_small_timeout(monkeypatch: pytest.MonkeyP
     assert captured["timeout"] == 3.0, "stream guard must use first_token_timeout_s"
 
 
+def test_action_first_token_override_caps_enemy_rebuttal() -> None:
+    assert orch._action_first_token_timeout(
+        {"first_token_timeout_s": 10},
+        "any-model",
+    ) == 10.0
+
+
 # --------------------------------------------------------------------------- #
 # 3. The non-streaming actor complete uses the LARGER budget + actor_max_tokens
 # --------------------------------------------------------------------------- #

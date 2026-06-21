@@ -217,6 +217,105 @@ async def test_human_round_streams_enemy_tokens_carry_actor_id(
     assert all(t.data.get("actor_id") == "e1" for t in token_events)
 
 
+async def test_stream_assembly_preserves_chunk_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming must not sanitize each chunk so aggressively that words glue."""
+
+    async def fake_stream(messages, model=None, **k):
+        for tok in ["Confucius'", " argument ", "relies ", "on ", "standards."]:
+            yield tok
+
+    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+
+    enemy = _combatant("enemy", "e1", "Pedantus18")
+    enemy.side = "against"
+    chunks = [
+        chunk
+        async for chunk in orch._stream_utterance(
+            enemy,
+            "A four-day work week should be the standard.",
+            [{"actor_id": "p1", "actor_role": "party", "text": "Four days improves rest."}],
+            {},
+            [],
+            {"p1": "Confucius", "e1": "Pedantus18"},
+        )
+    ]
+
+    streamed = "".join(chunk["text"] for chunk in chunks if chunk["kind"] == "token")
+    done = next(chunk for chunk in chunks if chunk["kind"] == "done")
+    assert "Confucius' argument relies on standards." in streamed
+    assert "Confucius' argument relies on standards." in done["text"]
+
+
+async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_redis: _FakeRedis,
+) -> None:
+    """Round-one human play should rebut the submitted player line, not emit an opener."""
+    import app.redis_state as rs
+    import app.debate.materialize as mz
+
+    transcript: list[dict[str, Any]] = []
+    captured: dict[str, Any] = {}
+
+    async def append_utterance(eid: str, utt: dict) -> None:
+        transcript.append(utt)
+
+    async def get_transcript(eid: str) -> list[dict]:
+        return list(transcript)
+
+    async def fake_cached_opening(topic: str, side: str = "against") -> str | None:
+        if side == "against":
+            return "I argue AGAINST four-day weeks because coordination debt compounds."
+        if side == "for":
+            return "I argue FOR four-day weeks because rest improves focus."
+        return None
+
+    async def fake_stream(messages, model=None, **k):
+        captured["model"] = model
+        captured["messages"] = messages
+        for tok in [
+            "Your rest claim ",
+            "skips coordination debt. ",
+            "Shorter weeks still need handoffs people can trust.",
+        ]:
+            yield tok
+
+    async def fake_score(topic, items, fallback_model=None, **k):
+        from app.debate.judge import JudgeScore
+
+        return [JudgeScore(actor_id=it["actor_id"], score=60.0, rationale="ok") for it in items]
+
+    monkeypatch.setattr(rs, "append_utterance", append_utterance)
+    monkeypatch.setattr(rs, "get_transcript", get_transcript)
+    monkeypatch.setattr(mz, "get_cached_opening", fake_cached_opening)
+    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch, "score_round", fake_score)
+
+    events = await _drain(
+        orch.run_human_round_stream(
+            "enc-grounded",
+            "A four-day work week should be the standard.",
+            [_combatant("party", "p1", "Confucius"), _combatant("enemy", "e1", "Pedantus18")],
+            None,
+            0,
+            {"party": 1.0, "enemy": 1.0},
+            "Four days should be the standard to improve rest.",
+        )
+    )
+
+    prompt_text = "\n".join(message["content"] for message in captured["messages"])
+    enemy_utt = next(e.data for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy")
+    assert captured["model"] == orch.settings.enemy_rebuttal_model
+    assert "Four days should be the standard to improve rest." in prompt_text
+    assert "Latest opposing claim you must answer" in prompt_text
+    assert "own cached opening angle" in prompt_text
+    assert "opposing cached opening angle" in prompt_text
+    assert "coordination debt" in prompt_text
+    assert enemy_utt["text"].startswith("Your rest claim skips coordination debt.")
+
+
 # --------------------------------------------------------------------------- #
 # 3. CLEAR SIDES — player = for, enemy = against, surfaced on utterances
 # --------------------------------------------------------------------------- #

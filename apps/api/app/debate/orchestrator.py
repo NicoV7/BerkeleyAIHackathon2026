@@ -74,6 +74,7 @@ except Exception:  # noqa: BLE001 — never fail if the module isn't present yet
 
 CAPTURABLE_HP_FRACTION = 0.25
 TRANSCRIPT_WINDOW = 16  # last N utterances injected into actor context
+RETRIEVED_CONTEXT_LIMIT = 280
 
 # WS-5: the slug of the MP counter-skill. When this skill is active AND paid for,
 # the caster's prompt is primed with the enemy's predicted next line (read from
@@ -216,6 +217,12 @@ def _actor_model(actor: "Combatant") -> str:
     return actor.model or settings.actor_model
 
 
+def _action_model(actor: "Combatant", action: dict[str, Any]) -> str:
+    """Model id for a turn, allowing one action to opt into a stronger model."""
+    model = str(action.get("model") or "").strip()
+    return model or _actor_model(actor)
+
+
 def _actor_timeout() -> float:
     """Per-call budget for a single NON-streaming actor `complete` (seconds).
 
@@ -229,6 +236,16 @@ def _actor_timeout() -> float:
 def _actor_max_tokens() -> int:
     """Token cap for an actor turn — small for punchy 1-2 sentence arguments."""
     return int(getattr(settings, "actor_max_tokens", 64) or 64)
+
+
+def _enemy_rebuttal_model() -> str:
+    """Model used for human-round enemy rebuttals."""
+    return str(getattr(settings, "enemy_rebuttal_model", "") or settings.actor_model)
+
+
+def _enemy_rebuttal_first_token_timeout() -> float:
+    """First-token budget for human-round enemy rebuttals."""
+    return float(getattr(settings, "enemy_rebuttal_first_token_timeout_s", 10) or 10)
 
 
 def _battle_damage_multiplier() -> float:
@@ -738,17 +755,57 @@ def _argument_transcript(transcript: list[dict[str, Any]]) -> list[dict[str, Any
     return [u for u in transcript if not u.get("reaction_state")]
 
 
-def _has_opposing_turn(actor: Combatant, transcript: list[dict[str, Any]]) -> bool:
-    """Whether this actor has an opposing utterance to answer."""
-    for utt in _argument_transcript(transcript):
+def _latest_opposing_turn(actor: Combatant, transcript: list[dict[str, Any]]) -> str:
+    """Return the latest opposing debate line this actor should answer."""
+    for utt in reversed(_argument_transcript(transcript)):
+        text = str(utt.get("text") or "").strip()
+        if not text:
+            continue
         role = utt.get("actor_role")
         if role in ("party", "enemy"):
             if role != actor.role:
-                return True
+                return text
             continue
         if utt.get("actor_id") and utt.get("actor_id") != actor.monster_id:
-            return True
-    return False
+            return text
+    return ""
+
+
+def _has_opposing_turn(actor: Combatant, transcript: list[dict[str, Any]]) -> bool:
+    """Whether this actor has an opposing utterance to answer."""
+    return bool(_latest_opposing_turn(actor, transcript))
+
+
+def _bounded_context(text: str, limit: int = RETRIEVED_CONTEXT_LIMIT) -> str:
+    """Compact retrieved context so cache/RAG snippets cannot dominate prompts."""
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)].rstrip() + "..."
+
+
+async def _cached_opening_memories(topic: str, actor: Combatant) -> list[str]:
+    """Retrieve cached topic openings as RAG context without generating new text."""
+    try:
+        from app.debate.materialize import get_cached_opening
+    except Exception:  # noqa: BLE001
+        return []
+
+    own_side = _side_for(actor)
+    opposing_side = "against" if own_side == "for" else "for"
+    requests = (
+        ("own cached opening angle", own_side),
+        ("opposing cached opening angle", opposing_side),
+    )
+    memories: list[str] = []
+    for label, side in requests:
+        try:
+            cached = await get_cached_opening(topic, side)
+        except Exception:  # noqa: BLE001
+            cached = None
+        if cached:
+            memories.append(f"{label} ({side.upper()}): {_bounded_context(str(cached))}")
+    return memories
 
 
 def _build_actor_messages(
@@ -766,12 +823,14 @@ def _build_actor_messages(
     persona = _persona_line(actor)
     harness = _harness_line(actor)
     skills = _skill_names(actor)
-    has_opposing_turn = _has_opposing_turn(actor, transcript)
+    latest_opposing_claim = _latest_opposing_turn(actor, transcript)
+    has_opposing_turn = bool(latest_opposing_claim)
     if has_opposing_turn:
         turn_contract = (
             "Make ONE sharp, persuasive argument that advances your side and rebuts the "
             "latest opposing point. Output exactly TWO short plain sentences: first answer "
-            "the latest opposing claim, second press one decisive reason for your side."
+            "the latest opposing claim using its concrete words, second press one decisive "
+            "reason for your side."
         )
     else:
         turn_contract = (
@@ -824,7 +883,15 @@ def _build_actor_messages(
     if action.get("tone"):
         sys_parts.append(f"Adopt a {action['tone']} tone.")
     if memories:
-        sys_parts.append("What you remember: " + " | ".join(memories))
+        sys_parts.append(
+            "Retrieved context from memory/cache; use only if relevant: "
+            + " | ".join(_bounded_context(str(memory)) for memory in memories)
+        )
+    if latest_opposing_claim:
+        sys_parts.append(
+            "Latest opposing claim you must answer in sentence one: "
+            + _bounded_context(latest_opposing_claim)
+        )
     # WS-5 counter-skill: pre-built "pre-empt their next move" instruction (with
     # the opponent's already-existing predicted line embedded). Appended LAST so
     # it dominates the turn. No model call produced this — it's a prompt prime.
@@ -839,6 +906,10 @@ def _build_actor_messages(
             who = name_lookup.get(u.get("actor_id", ""), u.get("actor_id", "?"))
             convo.append(f"{who}: {u.get('text','')}")
         history = "Recent exchange:\n" + "\n".join(convo)
+        if latest_opposing_claim:
+            history += "\n\nAnswer this latest opposing claim: " + _bounded_context(
+                latest_opposing_claim
+            )
     else:
         history = (
             "You speak first. Open with a concrete claim and support. Do not mention "
@@ -878,7 +949,7 @@ async def _generate_utterance_traced(
     try:
         text = await gateway.complete(
             messages,
-            model=_actor_model(actor),
+            model=_action_model(actor, action),
             temperature=0.8,
             max_tokens=_action_max_tokens(action),
             timeout=_actor_timeout(),
@@ -939,6 +1010,22 @@ def _action_max_tokens(action: dict[str, Any]) -> int:
     return max(32, min(base, requested))
 
 
+def _action_first_token_timeout(action: dict[str, Any], model: str) -> float:
+    """Return the first-token stream guard after action-specific overrides."""
+    try:
+        requested = float(action.get("first_token_timeout_s") or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested > 0:
+        return requested
+    return _first_token_timeout(model)
+
+
+def _stream_piece(text: str) -> str:
+    """Clean a stream chunk while preserving its whitespace for assembly."""
+    return re.sub(r"[*_`#>]+", "", "".join(ch for ch in text if ch >= " " or ch in "\n\t"))
+
+
 def _looks_like_heading(line: str) -> bool:
     """Detect decorative headings emitted despite the no-markdown prompt."""
     if len(line) > 90:
@@ -986,10 +1073,10 @@ async def _stream_utterance(
     """Live streaming twin of `_generate_utterance`.
 
     Async generator that REUSES `_build_actor_messages` for the prompt, iterates
-    `gateway.stream(...)`, sanitizes every token via `_sanitize`, and accumulates
-    the full text. Each yield is a dict:
+    `gateway.stream(...)`, lightly cleans each chunk while preserving whitespace,
+    and sanitizes the completed text once. Each yield is a dict:
 
-      * `{"kind": "token", "text": <sanitized chunk>}` per streamed chunk, and
+      * `{"kind": "token", "text": <stream chunk>}` per streamed chunk, and
       * exactly one terminating `{"kind": "done", "text": <full accumulated text>,
         "fallback": <bool>, "fallback_reason": <"timeout"|"empty"|None>}`
         carrying the canonical assembled utterance (with the same templated
@@ -1010,9 +1097,10 @@ async def _stream_utterance(
     messages = _build_actor_messages(
         actor, topic, transcript, action, memories, name_lookup, counter_context
     )
-    model = _actor_model(actor)
-    # WS-4: the first-token budget widens for a warm (prewarmed/resident) model.
-    first_token_budget = _first_token_timeout(model)
+    model = _action_model(actor, action)
+    # WS-4: the first-token budget widens for a warm (prewarmed/resident) model,
+    # unless this specific action provides a tighter live-play ceiling.
+    first_token_budget = _action_first_token_timeout(action, model)
     parts: list[str] = []
     fallback_reason: str | None = None
     try:
@@ -1032,7 +1120,7 @@ async def _stream_utterance(
                     chunk = await agen.__anext__()
             except StopAsyncIteration:
                 break
-            piece = _sanitize(chunk or "")
+            piece = _stream_piece(chunk or "")
             if not piece:
                 continue
             parts.append(piece)
@@ -1919,12 +2007,19 @@ async def run_human_round_stream(
 
     # --- Enemy rebuttal (autonomous) ---
     battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
-    action = _decide_action(enemy, battle_state)
+    action = {
+        **_decide_action(enemy, battle_state),
+        "model": _enemy_rebuttal_model(),
+        "first_token_timeout_s": _enemy_rebuttal_first_token_timeout(),
+    }
     if enemy_status_contract:
         action = {**action, "status_contract": enemy_status_contract}
         if enemy_max_tokens is not None:
             action["max_tokens"] = enemy_max_tokens
-    memories = await _gather_memories(enemy, topic, run_id)
+    memories = [
+        *(await _gather_memories(enemy, topic, run_id)),
+        *(await _cached_opening_memories(topic, enemy)),
+    ]
     transcript = await get_transcript_safe(eid)
 
     # WS-5 counter-skill: if the enemy's own action resolves to Rhetorical Flourish,
@@ -1934,61 +2029,38 @@ async def run_human_round_stream(
         enemy, action.get("skill"), transcript, topic, combatants
     )
 
-    # A1/A2 — MATERIALIZED OPENING. On the FIRST round the enemy's line is its
-    # opening (arguing AGAINST the topic), which is player-independent and thus
-    # cacheable. Use the cached/pre-generated opening instead of a live stream so
-    # the first enemy turn is a pure retrieval (hit) or a single store-on-miss.
-    # Only the lead enemy uses a skill action; the opening ignores transcript, so
-    # the opening path is safe only on the very first round (no prior exchange to
-    # rebut). Later rounds fall through to the live streaming rebuttal below.
+    # Human play already has a player line by the time the enemy acts, even on the
+    # first round. Cached openings are therefore retrieved as context above, while
+    # the emitted enemy turn is always generated as a rebuttal to the transcript.
     enemy_text = ""
     enemy_fallback = False
     enemy_fallback_reason: str | None = None
-    is_opening = start_turn == 0 and len(transcript) <= 1  # only the player's turn so far
     with rt.utterance(enemy.monster_id, enemy.role, enemy.side) as enemy_metric:
-        if is_opening:
-            from app.debate.materialize import get_or_create_opening
-
-            enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
-            enemy_text = _finalize_actor_text(enemy_text, enemy)
-            # Emit the materialized opening as a single token so WS clients still get
-            # the streamed-text event shape (no per-token cadence, but instant).
-            yield Event(
-                "token",
-                {
-                    "turn": enemy_turn,
-                    "actor_id": enemy.monster_id,
-                    "side": enemy.side,
-                    "text": enemy_text,
-                    **_event_timing(enemy_started),
-                },
-            )
-        else:
-            try:
-                async for chunk in _stream_utterance(
-                    enemy, topic, transcript, action, memories, name_lookup,
-                    counter_context=enemy_counter_context,
-                ):
-                    if chunk["kind"] == "token":
-                        yield Event(
-                            "token",
-                            {
-                                "turn": enemy_turn,
-                                "actor_id": enemy.monster_id,
-                                "side": enemy.side,
-                                "text": chunk["text"],
-                                **_event_timing(enemy_started),
-                            },
-                        )
-                    else:  # "done"
-                        enemy_text = chunk["text"]
-                        enemy_fallback = bool(chunk.get("fallback"))
-                        enemy_fallback_reason = chunk.get("fallback_reason")
-            except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
-                if not enemy_text:
-                    enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
-                    enemy_fallback = True
-                    enemy_fallback_reason = "empty"
+        try:
+            async for chunk in _stream_utterance(
+                enemy, topic, transcript, action, memories, name_lookup,
+                counter_context=enemy_counter_context,
+            ):
+                if chunk["kind"] == "token":
+                    yield Event(
+                        "token",
+                        {
+                            "turn": enemy_turn,
+                            "actor_id": enemy.monster_id,
+                            "side": enemy.side,
+                            "text": chunk["text"],
+                            **_event_timing(enemy_started),
+                        },
+                    )
+                else:  # "done"
+                    enemy_text = chunk["text"]
+                    enemy_fallback = bool(chunk.get("fallback"))
+                    enemy_fallback_reason = chunk.get("fallback_reason")
+        except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
+            if not enemy_text:
+                enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+                enemy_fallback = True
+                enemy_fallback_reason = "empty"
         if enemy_fallback:
             enemy_metric.mark_fallback(enemy_fallback_reason or "empty")
 
