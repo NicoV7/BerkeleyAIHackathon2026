@@ -71,6 +71,10 @@ class RunState(BaseModel):
     player_y: int
     status: str
     party: list[MonsterSummary] = []
+    # Economy (WS-1): coin wallet. Optional/additive so existing RunState
+    # constructors (map.py / runs.py) keep working without change; the primary
+    # wallet surface is GET /api/runs/{id}/wallet.
+    coins: int = 0
 
 
 class TileEnemy(BaseModel):
@@ -339,6 +343,86 @@ class SummonItemSummary(BaseModel):
     run_id: str
     tier: str
     consumed: bool
+
+
+# ---- Economy (WS-1: coins + items + inventory + shop) ----
+
+
+class WalletState(BaseModel):
+    """A run's coin balance."""
+
+    run_id: str
+    coins: int
+
+
+class InventoryItem(BaseModel):
+    """One owned item line for a run (joined with its catalog metadata)."""
+
+    item_key: str
+    name: str
+    kind: str
+    qty: int
+    effect: dict[str, Any] = {}
+    price: int = 0
+
+
+class UseItemRequest(BaseModel):
+    """Consume one unit of an owned item, applying its effect."""
+
+    item_key: str
+
+
+class UseItemResult(BaseModel):
+    """Outcome of consuming an item.
+
+    `applied` describes the effect that was applied (e.g. {"hp": 40}); `target`
+    is the monster id the effect hit (None for camp_token / banked effects).
+    `remaining_qty` is the item count left after the use.
+    """
+
+    run_id: str
+    item_key: str
+    applied: dict[str, Any] = {}
+    target: Optional[str] = None
+    remaining_qty: int = 0
+    message: str = ""
+
+
+class ShopItem(BaseModel):
+    """One purchasable line in an NPC's shop."""
+
+    item_key: str
+    name: str
+    kind: str
+    price: int
+    qty: int
+    effect: dict[str, Any] = {}
+
+
+class ShopState(BaseModel):
+    npc_id: str
+    items: list[ShopItem] = []
+
+
+class BuyItemRequest(BaseModel):
+    item_key: str
+    qty: int = Field(default=1, ge=1, description="Number of units to buy")
+
+
+class BuyItemResult(BaseModel):
+    """Outcome of a shop purchase.
+
+    `spent` is the total coins deducted; `coins` is the wallet balance after the
+    buy; `owned_qty` is the run's inventory count for the item after the buy.
+    """
+
+    run_id: str
+    npc_id: str
+    item_key: str
+    qty: int
+    spent: int
+    coins: int
+    owned_qty: int
 
 
 class MemoryRecallResult(BaseModel):

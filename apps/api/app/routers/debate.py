@@ -160,6 +160,19 @@ async def _finalize(eid: str, result: EncounterResult) -> list[dict]:
                     eid, enc.run_id, dropped.id, dropped.tier,
                 )
 
+        # WS-1 economy: award coins on a win / capture. This is guarded by the
+        # SAME idempotency as everything above — the `enc.result != ongoing`
+        # early-return at the top means a retried finalize never double-awards.
+        # The credit is an atomic in-place SQL UPDATE on the run row (no
+        # read-then-write) so it composes with the wallet/shop debit path.
+        if result in (EncounterResult.win, EncounterResult.capture):
+            awarded = await _award_coins(session, enc, roster, result)
+            if awarded:
+                log.info(
+                    "economy: coins awarded encounter=%s run=%s amount=%d",
+                    eid, enc.run_id, awarded,
+                )
+
         # Wave D: award XP + apply per-level stat gains. Best-effort —
         # progression must never block finalize. Each party monster that
         # levels emits a LevelUp event the WS /stream handler forwards to the
@@ -263,6 +276,61 @@ def _roll_drop_tier(rng: random.Random) -> str:
         if pick <= acc:
             return tier
     return "common"
+
+
+# ---- WS-1: coin award on win / capture -------------------------------------
+
+# Coin reward scaled by result and the toughest enemy faced. Env-tunable base so
+# balancing is a one-line change; defaults give ~30 coins for a win, ~50 for a
+# capture, plus a small per-enemy-level bonus.
+_COIN_BASE_WIN = int(os.getenv("ECON_COIN_BASE_WIN", "30"))
+_COIN_BASE_CAPTURE = int(os.getenv("ECON_COIN_BASE_CAPTURE", "50"))
+_COIN_PER_ENEMY_LEVEL = int(os.getenv("ECON_COIN_PER_ENEMY_LEVEL", "5"))
+
+
+def _coin_reward(roster: list[dict], result: EncounterResult) -> int:
+    """Pure reward curve: base (by result) + per-enemy-level bonus."""
+    enemy_level = 1
+    for c in roster:
+        if c.get("role") == "enemy":
+            try:
+                lvl = int(c.get("level", 1) or 1)
+            except (TypeError, ValueError):
+                continue
+            enemy_level = max(enemy_level, lvl)
+    base = _COIN_BASE_CAPTURE if result == EncounterResult.capture else _COIN_BASE_WIN
+    return max(0, base + _COIN_PER_ENEMY_LEVEL * (enemy_level - 1))
+
+
+async def _award_coins(
+    session: AsyncSession,
+    enc: Encounter,
+    roster: list[dict],
+    result: EncounterResult,
+) -> int:
+    """Credit coins to the run's wallet via an atomic in-place SQL UPDATE.
+
+    No read-then-write — ``coins = coins + :amt`` composes safely with the
+    wallet/shop debit path in the economy router. Idempotency is inherited from
+    the caller's ``enc.result != ongoing`` guard (a retried finalize returns
+    early before reaching here), so the credit fires exactly once per battle.
+    Best-effort: a failure here never breaks finalize. Returns coins awarded.
+    """
+    from sqlalchemy import text
+
+    amount = _coin_reward(roster, result)
+    if amount <= 0:
+        return 0
+    try:
+        await session.execute(
+            text("UPDATE runs SET coins = coins + :amt WHERE id = :rid"),
+            {"amt": amount, "rid": enc.run_id},
+        )
+        await session.commit()
+        return amount
+    except Exception:  # noqa: BLE001 — never let a coin credit 500 finalize
+        await session.rollback()
+        return 0
 
 
 async def _maybe_drop_summon_item(

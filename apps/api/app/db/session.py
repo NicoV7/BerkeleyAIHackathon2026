@@ -45,6 +45,12 @@ async def init_db() -> None:
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS domain VARCHAR NOT NULL DEFAULT 'GENERAL'",
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_url VARCHAR",
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_hydrated BOOLEAN NOT NULL DEFAULT FALSE",
+            # ---- Economy wave (WS-1): coin wallet on the run ----
+            # create_all never ALTERs the existing `runs` table, so the additive
+            # coins column needs an explicit IF NOT EXISTS here. New economy
+            # tables (items, player_inventory, shop_stock) are auto-created by
+            # create_all above (models imported -> registered on metadata).
+            "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 0",
         ):
             await conn.execute(text(stmt))
 

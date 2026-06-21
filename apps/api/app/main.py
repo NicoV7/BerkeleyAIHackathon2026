@@ -34,6 +34,8 @@ OPTIONAL_ROUTERS = [
     # Gacha wave (Wave A): named-persona summoning + post-battle drops.
     # Replaces the deleted `capture` router.
     "gacha",
+    # Economy wave (WS-1): coins, items, inventory, shop.
+    "economy",
 ]
 
 
@@ -86,6 +88,23 @@ async def _seed_personas() -> None:
         log.info("Persona seed skipped: %s", e)
 
 
+async def _seed_economy() -> None:
+    """Idempotent upsert of the WS-1 item catalog + default shop stock.
+
+    Best-effort: a missing module / DB error just leaves the catalog as-is so we
+    never block startup. Tables already exist (init_db ran first).
+    """
+    try:
+        from app.db.session import SessionLocal
+        from app.economy.catalog import seed_economy
+
+        async with SessionLocal() as session:
+            n = await seed_economy(session)
+        log.info("Economy seeded: %d rows (items + shop)", n)
+    except Exception as e:  # noqa: BLE001
+        log.info("Economy seed skipped: %s", e)
+
+
 async def _sync_skill_costs() -> None:
     """Bulk-update ``Skill.cost`` from the parsed ``mp_cost`` front-matter (gacha B).
 
@@ -127,6 +146,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     log.info("DB initialized")
     await _seed_personas()
+    # WS-1 economy: seed the item catalog + default shop (idempotent).
+    await _seed_economy()
     # Gacha Wave B: mirror skill .md `mp_cost` into the Skill.cost column AFTER
     # personas are seeded — so a fresh DB has its skill rows + cost in one shot.
     await _sync_skill_costs()
