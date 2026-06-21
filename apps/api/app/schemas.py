@@ -151,6 +151,15 @@ class CombatantState(BaseModel):
     max_hp: int
     # Which side of the debate this combatant argues (clarity fix). Additive/Optional.
     side: Optional[Literal["for", "against"]] = None
+    # Gacha-wave stats — additive/optional so older clients keep working. The
+    # frontend uses these to render the MP bar and the ATK/DEF/MP chips.
+    mp: Optional[int] = None
+    max_mp: Optional[int] = None
+    atk: Optional[int] = None
+    def_: Optional[int] = Field(default=None, alias="def", serialization_alias="def")
+    domain: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class Utterance(BaseModel):

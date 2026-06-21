@@ -3,6 +3,7 @@ name: Socratic Probe
 type: SOCRATIC
 power: 1.0
 domain: SOCRATIC
+mp_cost: 20
 ---
 
 # Socratic Probe

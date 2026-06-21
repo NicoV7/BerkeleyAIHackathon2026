@@ -3,6 +3,7 @@ name: Emotional Appeal
 type: PATHOS
 power: 1.2
 domain: PATHOS
+mp_cost: 20
 ---
 
 # Emotional Appeal

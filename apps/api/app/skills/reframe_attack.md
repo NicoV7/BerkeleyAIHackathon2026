@@ -3,6 +3,7 @@ name: Reframe Attack
 type: CHAOS
 power: 1.3
 domain: CHAOS
+mp_cost: 30
 ---
 
 # Reframe Attack

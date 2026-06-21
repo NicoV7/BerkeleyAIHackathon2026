@@ -3,6 +3,7 @@ name: Steel Man
 type: LOGOS
 power: 0.9
 domain: LOGOS
+mp_cost: 35
 ---
 
 # Steel Man

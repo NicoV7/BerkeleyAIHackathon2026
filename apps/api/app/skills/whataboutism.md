@@ -3,6 +3,7 @@ name: Whataboutism
 type: CHAOS
 power: 0.7
 domain: CHAOS
+mp_cost: 25
 ---
 
 # Whataboutism

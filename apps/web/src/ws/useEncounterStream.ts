@@ -91,6 +91,27 @@ export interface HpUpdate {
   max_hp?: number;
 }
 
+/**
+ * Live MP update for a single combatant ({ type: "mp", data: MpUpdate }).
+ * Emitted by the orchestrator on (a) end-of-round +10 regen and (b) a skill
+ * use deducting the cost. Mirrors HpUpdate's shape for symmetry.
+ */
+export interface MpUpdate {
+  monster_id: string;
+  mp: number;
+  max_mp?: number;
+}
+
+/**
+ * Server-side rejection from the WS argue path when the player's chosen skill
+ * costs more MP than the lead party monster currently has. The view dims the
+ * skill chip and shows the typed detail; the round itself was never started.
+ */
+export interface MpInsufficient {
+  skill_id: string | null;
+  detail: string;
+}
+
 export type EncounterPhase = "intro" | "debating" | "capturable" | "won" | "lost";
 
 /** Phase transition ({ type: "phase", data: PhaseUpdate }). */
@@ -107,6 +128,12 @@ export interface CombatantState {
   role: "party" | "enemy";
   hp: number;
   max_hp: number;
+  // Gacha Wave B additive fields — optional so older snapshots still render.
+  mp?: number;
+  max_mp?: number;
+  atk?: number;
+  def?: number;
+  domain?: string;
 }
 
 export interface EncounterState {
@@ -129,6 +156,11 @@ export interface EncounterStreamState {
   verdicts: JudgeVerdict[];
   /** Wild monster ids currently capturable (from the latest phase event). */
   capturableIds: string[];
+  /**
+   * Last MP-gate rejection from the WS argue path (cleared on the next
+   * successful drive/argue). The view dims the offending skill + shows `detail`.
+   */
+  mpInsufficient: MpInsufficient | null;
   /**
    * In-progress utterances assembled from streamed `token` deltas, keyed by
    * `${turn}:${actor_id}`. An entry with `fallback: true` carries the full
@@ -173,6 +205,8 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [capturableIds, setCapturableIds] = useState<string[]>([]);
   const [liveTokens, setLiveTokens] = useState<Record<string, LiveUtterance>>({});
   const [phase, setPhase] = useState<EncounterPhase>("intro");
+  // Last MP-gate rejection; cleared when the next successful round drains.
+  const [mpInsufficient, setMpInsufficient] = useState<MpInsufficient | null>(null);
   // True while a round is streaming (between drive() and round_done).
   const [running, setRunning] = useState(false);
   // Turn we are driving toward; surfaced for the in-progress indicator.
@@ -210,6 +244,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
    * battle is never dropped — onopen (or a reconnect's onopen) drains it.
    */
   const send = useCallback((payload: Record<string, unknown>) => {
+    // Clear any stale MP-gate rejection from the previous attempt — the user is
+    // trying again, so dimming the skill chip / showing an old detail is wrong.
+    setMpInsufficient(null);
     // Mark in-progress immediately so the UI shows feedback the instant the
     // user clicks, even while the socket is still CONNECTING.
     setRunning(true);
@@ -438,6 +475,28 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
               );
               return { ...prev, combatants };
             });
+          } else if (msg.type === "mp") {
+            // Gacha Wave B: live per-combatant MP update. Same shape as HpUpdate,
+            // emitted on end-of-round +10 regen AND on skill-use deduction. We
+            // patch the combatant in place so the blue MP bar drains/fills with
+            // no extra fetch.
+            const m = msg.data as MpUpdate;
+            setEncounter((prev) => {
+              if (!prev) return prev;
+              const combatants = prev.combatants.map((c) =>
+                c.monster_id === m.monster_id
+                  ? { ...c, mp: m.mp, max_mp: m.max_mp ?? c.max_mp }
+                  : c
+              );
+              return { ...prev, combatants };
+            });
+          } else if (msg.type === "mp_insufficient") {
+            // The WS argue path rejected the chosen skill (cost > current MP).
+            // Surface a one-shot banner; the view dims the matching skill chip.
+            const d = msg.data as MpInsufficient;
+            setMpInsufficient(d);
+            setRunning(false);
+            setRunningTurn(null);
           } else if (msg.type === "phase") {
             const p = msg.data as PhaseUpdate;
             if (typeof p.turn_no === "number" && p.turn_no > turnRef.current) {
@@ -554,6 +613,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     transcript,
     verdicts,
     capturableIds,
+    mpInsufficient,
     liveTokens,
     phase,
     running,
