@@ -12,6 +12,8 @@ Tables:
   Memory            per-monster event memory for hybrid RAG (vector + keyword)
   Encounter         durable record of a battle
   TrainingArtifact  GEPA/GRPO genome-optimization outputs
+  Persona           gacha pool seed (named real-world figures)
+  SummonItem        post-battle drop that unlocks a gacha pull
 """
 from __future__ import annotations
 
@@ -77,6 +79,39 @@ class RunStatus(str, Enum):
     ended = "ended"
 
 
+class MonsterDomain:
+    """Domain of expertise for a gacha-pulled persona.
+
+    Drives topic-effectiveness via ``domain_match_mult`` in
+    ``app.debate.topics``. Kept as plain string constants (mirroring how the
+    catalog stores ``Monster.domain``) so the DB column stays ``VARCHAR`` and
+    new domains can be added without an enum migration.
+    """
+
+    ENGINEERING = "ENGINEERING"
+    PHILOSOPHY = "PHILOSOPHY"
+    SCIENCE = "SCIENCE"
+    BUSINESS = "BUSINESS"
+    ETHICS = "ETHICS"
+    ART = "ART"
+    GENERAL = "GENERAL"
+    ALL: tuple[str, ...] = (
+        ENGINEERING,
+        PHILOSOPHY,
+        SCIENCE,
+        BUSINESS,
+        ETHICS,
+        ART,
+        GENERAL,
+    )
+
+
+class SummonItemTier(str, Enum):
+    common = "common"
+    rare = "rare"
+    legendary = "legendary"
+
+
 # ---- Tables ----
 
 
@@ -116,9 +151,75 @@ class Monster(SQLModel, table=True):
     max_hp: int = 100
     evolution_stage: int = 0
 
+    # ---- Stats (gacha wave) ----
+    # ATK / DEF feed `compute_damage` (apps/api/app/debate/damage.py).
+    # MP gates ability use (the Skill.cost contract finally has teeth).
+    # Defaults match the seed catalog mean — older Monster rows backfill via
+    # the SQL migration in apps/api/migrations/20260620_gacha_stats.sql.
+    atk: int = Field(default=10)
+    # `def` is a Python reserved word, so the Python attribute is `def_` while
+    # the underlying column is still `def` (kept short to align with the SQL
+    # migration and TS schema mirror).
+    def_: int = Field(default=10, sa_column_kwargs={"name": "def"})
+    mp: int = Field(default=50)
+    max_mp: int = Field(default=50)
+    # `domain` is the persona's expertise (PHILOSOPHY, ENGINEERING, ...).
+    # Drives the topic-match damage multiplier in `domain_match_mult`. GENERAL
+    # is the neutral default that always multiplies by 1.0.
+    domain: str = Field(default=MonsterDomain.GENERAL)
+    # Source URL the background hydration task pulls from to populate the
+    # persona's voice / quotes / views. Only set for gacha-pulled monsters.
+    wiki_url: Optional[str] = None
+    # Flipped True once `app.party.hydrate` writes the distilled persona back.
+    # Frontend polls on this flag after a gacha pull.
+    wiki_hydrated: bool = Field(default=False)
+
     # Which gateway model this agent runs on (bottom-up: defaults to local).
     model: Optional[str] = None
 
+    created_at: datetime = Field(default_factory=_now)
+
+
+class Persona(SQLModel, table=True):
+    """Gacha pool seed entry — one row per pullable named persona.
+
+    Curated catalog of real-world figures (philosophers, software engineers,
+    scientists, CEOs, writers, artists) used as the gacha pool. Seeded
+    idempotently from ``app.party.personas_seed.PERSONAS_SEED`` at startup.
+
+    Pull flow (Wave A): pick a row weighted by ``tier``, spawn a ``Monster``
+    with the persona's defaults, then schedule background Wikipedia hydration.
+    """
+
+    __tablename__ = "personas"
+
+    key: str = Field(primary_key=True)  # stable id: "socrates", "linus_torvalds"
+    name: str
+    domain: str = Field(default=MonsterDomain.GENERAL)
+    type: DebateType = Field(default=DebateType.logos)
+    wiki_url: Optional[str] = None
+    tagline: str = ""
+    tier: str = "common"  # common | rare | legendary
+    default_atk: int = 10
+    default_def: int = 10
+    default_mp: int = 50
+    default_max_hp: int = 100
+
+
+class SummonItem(SQLModel, table=True):
+    """Post-battle drop that consumes to unlock a higher-tier gacha pull.
+
+    Created in `routers/encounter.py` finalize on a win (configurable drop
+    rate). Consumed by `POST /api/runs/{run_id}/gacha/pull` when the request
+    body provides a matching `summon_item_id`.
+    """
+
+    __tablename__ = "summon_items"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    run_id: str = Field(foreign_key="runs.id", index=True)
+    tier: str = "common"
+    consumed: bool = False
     created_at: datetime = Field(default_factory=_now)
 
 

@@ -1,18 +1,24 @@
-"""Damage formula for the debate engine (WS-B).
+"""Damage formula for the debate engine (WS-B + gacha wave).
 
 Damage applied to a defender after the judge scores an utterance:
 
-    base       = clamp(score - 50, 0, 50)          # only an above-average
-                                                     # argument deals damage
+    base       = clamp(score - 50, 0, 50)
     type_mult  = TYPE_CHART[attacker_type][defender_type]  (default 1.0)
     skill_mult = skill power (1.0 default)
     momentum   = side momentum multiplier (~0.8..1.3)
-    level_scale= 1 + (attacker_level - defender_level) * 0.05
+    level_scale= clamp(1 + (attacker_level - defender_level) * 0.05, 0.5, 2.0)
+    stat_ratio = attacker_atk / max(defender_def, 1)        # gacha
+    domain_mlt = topic-domain match (1.2 / 1.0 / 0.9)       # gacha
 
-    damage = round(base * type_mult * skill_mult * momentum * level_scale)
+    damage = round(base * type_mult * skill_mult * momentum * level_scale
+                   * stat_ratio * domain_match)
 
 TYPE_CHART mirrors packages/shared/enums.ts exactly (attacker -> defender ->
 multiplier). Keep these two in sync by hand.
+
+Gacha-wave kwargs (`attacker_atk`, `defender_def`, `domain_match`) default to
+the neutral values (10 / 10 / 1.0) so the product reduces to the pre-gacha
+formula and every existing call site / test keeps its numerical behavior.
 """
 from __future__ import annotations
 
@@ -102,11 +108,19 @@ def compute_damage(
     momentum: float = 1.0,
     attacker_level: int = 1,
     defender_level: int = 1,
+    # ---- gacha wave (additive; defaults reproduce pre-gacha behavior) ----
+    attacker_atk: int = 10,
+    defender_def: int = 10,
+    domain_match: float = 1.0,
 ) -> int:
     """Return integer HP damage for one scored utterance.
 
     Only above-average arguments (score > 50) deal damage. The base is clamped
     to [0, 50] so a single perfect turn can deal at most ~50 * multipliers.
+
+    The gacha-wave terms enter only when callers pass real persona stats or a
+    non-neutral ``domain_match`` from ``app.debate.topics.domain_match_mult``;
+    with the defaults the formula is identical to the pre-gacha version.
     """
     base = _clamp(score - 50.0, 0.0, 50.0)
     if base <= 0:
@@ -114,5 +128,18 @@ def compute_damage(
     tmult = type_multiplier(attacker_type, defender_type)
     level_scale = 1.0 + (attacker_level - defender_level) * 0.05
     level_scale = _clamp(level_scale, 0.5, 2.0)
-    raw = base * tmult * max(skill_mult, 0.0) * max(momentum, 0.0) * level_scale
+    # `defender_def` is guarded against 0 so a stripped enemy can't divide-by-zero.
+    # `domain_match` is clamped to a sane band to keep the formula well-behaved
+    # if a caller passes something out-of-range.
+    stat_ratio = max(attacker_atk, 0) / max(defender_def, 1)
+    dmatch = _clamp(float(domain_match), 0.5, 2.0)
+    raw = (
+        base
+        * tmult
+        * max(skill_mult, 0.0)
+        * max(momentum, 0.0)
+        * level_scale
+        * stat_ratio
+        * dmatch
+    )
     return max(0, round(raw))

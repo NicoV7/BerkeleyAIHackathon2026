@@ -22,7 +22,19 @@ from app.routers import health
 log = logging.getLogger("uvicorn.error")
 
 # Wave 1 workstreams add their router module name here (or it's tried anyway).
-OPTIONAL_ROUTERS = ["map", "encounter", "debate", "party", "memory", "capture", "training", "runs", "world"]
+OPTIONAL_ROUTERS = [
+    "map",
+    "encounter",
+    "debate",
+    "party",
+    "memory",
+    "training",
+    "runs",
+    "world",
+    # Gacha wave (Wave A): named-persona summoning + post-battle drops.
+    # Replaces the deleted `capture` router.
+    "gacha",
+]
 
 
 async def _init_memory_cache() -> None:
@@ -57,10 +69,28 @@ async def _init_memory_cache() -> None:
         log.info("RedisVL memory cache init skipped: %s", e)
 
 
+async def _seed_personas() -> None:
+    """Idempotent upsert of the gacha persona catalog (Wave 0).
+
+    Best-effort: a missing module / DB error just leaves the catalog as-is so
+    we never block startup. Tables already exist (init_db ran first).
+    """
+    try:
+        from app.db.session import SessionLocal
+        from app.party.personas_seed import upsert_personas
+
+        async with SessionLocal() as session:
+            n = await upsert_personas(session)
+        log.info("Personas seeded: %d rows", n)
+    except Exception as e:  # noqa: BLE001
+        log.info("Persona seed skipped: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     log.info("DB initialized")
+    await _seed_personas()
     await _init_memory_cache()
     # Warm the actor + judge models at startup so the first battle round isn't a cold
     # start (cold gemma3:1b first-token can exceed the streaming guard → fallback text).

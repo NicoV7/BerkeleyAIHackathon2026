@@ -36,6 +36,14 @@ async def init_db() -> None:
             # THEME topics: per-run theme chosen at run start (battles draw a
             # random topic within it). Nullable/additive; debate_topic stays set.
             "ALTER TABLE runs ADD COLUMN IF NOT EXISTS theme VARCHAR",
+            # ---- Gacha wave: stat columns on monsters (additive) ----
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS atk INT NOT NULL DEFAULT 10",
+            'ALTER TABLE monsters ADD COLUMN IF NOT EXISTS "def" INT NOT NULL DEFAULT 10',
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS mp INT NOT NULL DEFAULT 50",
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS max_mp INT NOT NULL DEFAULT 50",
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS domain VARCHAR NOT NULL DEFAULT 'GENERAL'",
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_url VARCHAR",
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_hydrated BOOLEAN NOT NULL DEFAULT FALSE",
         ):
             await conn.execute(text(stmt))
 

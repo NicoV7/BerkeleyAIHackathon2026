@@ -1,8 +1,10 @@
 /**
- * PartyScreen — WS-E
+ * PartyScreen — WS-E (gacha wave: capture flow replaced by gacha pulls)
  *
- * Displays the player's current party, the last capture result, and links to
- * the Gambit editor (WS-C owns that component; we never embed it here).
+ * Displays the player's current party and links to the Gambit editor (WS-C
+ * owns that component; we never embed it here). The capture-result banner was
+ * removed when the capture acquisition flow was deleted — the gacha screen
+ * owns post-pull feedback now.
  *
  * Props: none — reads runId from global store.
  */
@@ -11,7 +13,7 @@ import { useGame } from "../state/store";
 import { api } from "../api/client";
 import { parseSkills, typeColor } from "../lib/skills";
 
-// ---- Types (mirrors app/schemas.py MonsterSummary + CaptureResult) ----
+// ---- Types (mirrors app/schemas.py MonsterSummary) ----
 
 interface MonsterSummary {
   id: string;
@@ -23,12 +25,14 @@ interface MonsterSummary {
   max_hp: number;
   evolution_stage: number;
   skills: (string | Record<string, unknown>)[];
-}
-
-interface CaptureResult {
-  success: boolean;
-  monster: MonsterSummary | null;
-  message: string;
+  // Gacha-wave stat fields (Wave B paints them into the UI; defaults keep this
+  // component renderable against pre-wave-A backends).
+  atk?: number;
+  def?: number;
+  mp?: number;
+  max_mp?: number;
+  domain?: string;
+  wiki_hydrated?: boolean;
 }
 
 function TypeBadge({ type }: { type: string }) {
@@ -149,40 +153,12 @@ function MonsterCard({ monster }: { monster: MonsterSummary }) {
   );
 }
 
-// ---- Capture result banner ----
-function CaptureBanner({
-  result,
-  onDismiss,
-}: {
-  result: CaptureResult;
-  onDismiss: () => void;
-}) {
-  return (
-    <div
-      className="pixel-panel p-3 flex items-center justify-between gap-2 font-body text-sm"
-      style={{ borderColor: result.success ? "var(--win)" : "var(--danger)" }}
-    >
-      <span>
-        {result.success ? "Captured!" : "Failed"} — {result.message}
-      </span>
-      <button
-        onClick={onDismiss}
-        className="font-hud text-[10px] shrink-0"
-        style={{ color: "var(--muted)" }}
-      >
-        dismiss
-      </button>
-    </div>
-  );
-}
-
 // ---- Main component ----
 export default function PartyScreen() {
   const { runId } = useGame();
   const [party, setParty] = useState<MonsterSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [captureResult, setCaptureResult] = useState<CaptureResult | null>(null);
 
   const fetchParty = useCallback(async () => {
     if (!runId) return;
@@ -219,13 +195,6 @@ export default function PartyScreen() {
         </button>
       </div>
 
-      {captureResult && (
-        <CaptureBanner
-          result={captureResult}
-          onDismiss={() => setCaptureResult(null)}
-        />
-      )}
-
       {error && (
         <div
           className="pixel-panel p-3 font-body text-sm"
@@ -240,7 +209,7 @@ export default function PartyScreen() {
           <div className="text-4xl mb-3">👾</div>
           <div className="font-hud text-sm mb-1">No party members yet</div>
           <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
-            Weaken an enemy below 25% HP, then capture it in battle.
+            Pull a persona from the gacha to start your party.
           </div>
         </div>
       )}
