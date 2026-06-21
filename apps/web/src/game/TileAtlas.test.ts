@@ -73,11 +73,12 @@ describe("baseFrameFor", () => {
 });
 
 describe("overlayFor", () => {
-  it("adds a tree on forest, a campfire on camp, a structure on town", () => {
+  it("adds trees, campfires, and rock obstacles without generic town structures", () => {
     expect(overlayFor(TILE.FOREST, 0)?.frame).toBe(FRAME.TREE);
     expect(overlayFor(TILE.FOREST, 0x40)?.frame).toBe(FRAME.TREE_DARK);
     expect(overlayFor(TILE.CAMP, 0)?.frame).toBe(FRAME.CAMPFIRE);
-    expect(overlayFor(TILE.TOWN, 0)?.frame).toBe(FRAME.STRUCTURE);
+    expect(overlayFor(TILE.BLOCKED, 0)?.frame).toBe(FRAME.STONE);
+    expect(overlayFor(TILE.TOWN, 0)).toBeNull();
   });
 
   it("plain ground tiles have no overlay", () => {

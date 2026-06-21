@@ -88,6 +88,8 @@ export interface SceneRouterConfig {
    * OverworldConfig.onNpcTalk (an NPCAnchor-like view).
    */
   onNpcTalk?: (npc: NPCAnchor) => void;
+  /** Optional battle handoff forwarded to dungeon interiors. */
+  onEncounter?: (wildId?: string | null) => void;
 }
 
 /**
@@ -172,6 +174,7 @@ export class SceneRouter {
         // palette/generator even though the interior `start` POI doesn't carry it.
         interiorKind: poi.interior_kind ?? (poi.kind === "town" ? "town" : "cave"),
         onNpcTalk: this.cfg.onNpcTalk,
+        onEncounter: this.cfg.onEncounter,
       });
     } catch (e) {
       console.error("SceneRouter.enter failed:", e);

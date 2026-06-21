@@ -33,9 +33,20 @@ export interface InteriorGrid {
   exits: Array<{ x: number; y: number }>;
 }
 
+export interface InteriorEnemySpawn {
+  id: string;
+  tileX: number;
+  tileY: number;
+}
+
 /** Minimum sane interior dims so a degenerate spec still renders a room. */
 const MIN_W = 8;
 const MIN_H = 6;
+const DUNGEON_ENEMY_COUNT = 8;
+const CAVE_ENEMY_COUNT = 5;
+const MIN_ENEMY_DISTANCE_FROM_ENTRY = 4;
+const ENTRANCE_PATROL_DISTANCE = 9;
+const ENTRANCE_PATROL_COUNT = 2;
 
 /** Deterministic 32-bit hash → seeded PRNG (mulberry32). Pure, no globals. */
 function mulberry32(seed: number): () => number {
@@ -251,6 +262,63 @@ export function buildInteriorGrid(
     entrance: door,
     exits: [door],
   };
+}
+
+/** Return deterministic hostile spawns for non-town interiors. */
+export function buildInteriorEnemySpawns(
+  spec: InteriorSpec,
+  grid: InteriorGrid,
+  kind: InteriorKind
+): InteriorEnemySpawn[] {
+  if (kind === "town") return [];
+
+  const targetCount = kind === "dungeon" ? DUNGEON_ENEMY_COUNT : CAVE_ENEMY_COUNT;
+  const salt = kind === "dungeon" ? 0xd00d : 0xca4e;
+  const rand = mulberry32((spec.seed | 0) ^ salt);
+  const candidates: Array<{ x: number; y: number }> = [];
+  for (let y = 1; y < grid.height - 1; y++) {
+    for (let x = 1; x < grid.width - 1; x++) {
+      if (grid.tiles[y][x] === INTERIOR_TILE.WALL) continue;
+      if (grid.exits.some((exit) => exit.x === x && exit.y === y)) continue;
+      const dist = Math.abs(x - grid.entrance.x) + Math.abs(y - grid.entrance.y);
+      if (dist < MIN_ENEMY_DISTANCE_FROM_ENTRY) continue;
+      candidates.push({ x, y });
+    }
+  }
+
+  const spawns: InteriorEnemySpawn[] = [];
+  const pushSpawn = (tile: { x: number; y: number }) => {
+    spawns.push({
+      id: `interior:${spec.seed}:${kind}:${spawns.length}`,
+      tileX: tile.x,
+      tileY: tile.y,
+    });
+  };
+  const removeCandidate = (tile: { x: number; y: number }) => {
+    const index = candidates.findIndex((c) => c.x === tile.x && c.y === tile.y);
+    if (index >= 0) candidates.splice(index, 1);
+  };
+
+  const entranceBand = candidates.filter((tile) => {
+    const dist = Math.abs(tile.x - grid.entrance.x) + Math.abs(tile.y - grid.entrance.y);
+    return dist <= ENTRANCE_PATROL_DISTANCE;
+  });
+  while (
+    spawns.length < Math.min(ENTRANCE_PATROL_COUNT, targetCount) &&
+    entranceBand.length > 0
+  ) {
+    const index = Math.floor(rand() * entranceBand.length);
+    const [tile] = entranceBand.splice(index, 1);
+    removeCandidate(tile);
+    pushSpawn(tile);
+  }
+
+  while (spawns.length < targetCount && candidates.length > 0) {
+    const index = Math.floor(rand() * candidates.length);
+    const [tile] = candidates.splice(index, 1);
+    pushSpawn(tile);
+  }
+  return spawns;
 }
 
 /** Collect every anchor coordinate (feature POIs + their npc_anchors). */

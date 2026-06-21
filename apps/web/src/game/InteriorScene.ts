@@ -19,6 +19,7 @@
  */
 
 import Phaser from "phaser";
+import { EnemyManager, type Enemy, type EnemySpawn } from "./EnemyAI";
 import { NPCBehaviorManager, type NPCAnchorView } from "./NPCBehavior";
 import {
   createPlayerTextures,
@@ -28,10 +29,11 @@ import {
 import { PostFX } from "./PostFX";
 import type { InteriorSpec, NPCAnchor, SceneRouter } from "./SceneRouter";
 import { INTERIOR_TILE } from "./SceneRouter";
-import { FRAME, frameAt, SHEET_COLS, SHEET_ROWS } from "./TileAtlas";
+import { FRAME, frameAt } from "./TileAtlas";
 import { WorldSim, type MoveIntent } from "./WorldSim";
 import { TILE_SIZE } from "./constants";
 import {
+  buildInteriorEnemySpawns,
   buildInteriorGrid,
   normalizeKind,
   type InteriorGrid,
@@ -39,6 +41,7 @@ import {
 } from "./InteriorLayout";
 
 const ATLAS_KEY = "rogue";
+const TILESET_KEY = "rogue_tiles";
 const SHEET_TILE = 16;
 const ATLAS_SCALE = TILE_SIZE / SHEET_TILE;
 
@@ -94,6 +97,8 @@ export interface InteriorSceneData {
   interiorKind?: string;
   /** Optional NPC-talk callback bubbled up like the overworld's onNpcTalk. */
   onNpcTalk?: (npc: NPCAnchorView) => void;
+  /** Optional encounter handoff; interiors pass null to request a random enemy. */
+  onEncounter?: (wildId?: string | null) => void;
 }
 
 export class InteriorScene extends Phaser.Scene {
@@ -101,13 +106,14 @@ export class InteriorScene extends Phaser.Scene {
   private kind: InteriorKind = "cave";
   private grid!: InteriorGrid;
 
-  private terrainRT: Phaser.GameObjects.RenderTexture | null = null;
+  private terrainMap: Phaser.Tilemaps.Tilemap | null = null;
+  private baseLayer: Phaser.Tilemaps.TilemapLayer | null = null;
   private fallbackG!: Phaser.GameObjects.Graphics;
-  private atlasReady = false;
 
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
   private sim!: WorldSim;
+  private enemies = new EnemyManager();
   private npcs = new NPCBehaviorManager();
   private postFX = new PostFX();
 
@@ -117,6 +123,7 @@ export class InteriorScene extends Phaser.Scene {
 
   /** Latched once we begin exiting so movement/exit checks stop firing. */
   private exiting = false;
+  private encounterFired = false;
   /** Grace so the player isn't instantly bounced back out on the entrance DOOR. */
   private entryGraceMs = 600;
   private lastTalkNpcId: string | null = null;
@@ -129,6 +136,7 @@ export class InteriorScene extends Phaser.Scene {
   init(data: InteriorSceneData) {
     this.sceneData = data;
     this.exiting = false;
+    this.encounterFired = false;
     this.entryGraceMs = 600;
     this.lastTalkNpcId = null;
   }
@@ -138,13 +146,19 @@ export class InteriorScene extends Phaser.Scene {
     this.grid = buildInteriorGrid(this.sceneData.interior, this.kind);
     const palette = PALETTES[this.kind];
     this.cameras.main.setBackgroundColor(palette.bg);
+    this.resetTerrainLayers();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.enemies.destroy();
+      this.npcs.destroy();
+      this.resetTerrainLayers();
+    });
 
-    this.atlasReady = this.textures.exists(ATLAS_KEY);
     this.fallbackG = this.add.graphics();
     this.fallbackG.setDepth(-1);
 
     createPlayerTextures(this);
     this.ensureNpcTexture();
+    this.ensureEnemyTexture();
 
     // Render terrain.
     this.drawInterior();
@@ -169,6 +183,7 @@ export class InteriorScene extends Phaser.Scene {
 
     // NPC anchors (server-authored), placed on their carved floor pockets.
     this.spawnNpcs();
+    this.spawnEnemies();
 
     // Input.
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -218,6 +233,26 @@ export class InteriorScene extends Phaser.Scene {
     g.destroy();
   }
 
+  /** Bake the fallback enemy marker if the overworld has not already done it. */
+  private ensureEnemyTexture() {
+    if (this.textures.exists("enemy")) return;
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    const px = (color: number, x: number, y: number, w = 1, h = 1) => {
+      g.fillStyle(color, 1);
+      g.fillRect(x, y, w, h);
+    };
+    px(0xff5d6c, 4, 5, 8, 8);
+    px(0xff5d6c, 5, 3, 6, 2);
+    px(0xff5d6c, 3, 7, 1, 4);
+    px(0xff5d6c, 12, 7, 1, 4);
+    px(0xffcf3f, 4, 2);
+    px(0xffcf3f, 11, 2);
+    px(0x0e1018, 6, 7, 1, 2);
+    px(0x0e1018, 9, 7, 1, 2);
+    g.generateTexture("enemy", 16, 16);
+    g.destroy();
+  }
+
   /** Best-effort kind from the registered scene key (TownInteriorScene -> town). */
   private sceneKindHint(): string {
     return this.scene.key.toLowerCase().includes("town") ? "town" : "cave";
@@ -239,6 +274,38 @@ export class InteriorScene extends Phaser.Scene {
     }
   }
 
+  private spawnEnemies() {
+    this.enemies.destroy();
+    const spawns: EnemySpawn[] = buildInteriorEnemySpawns(
+      this.sceneData.interior,
+      this.grid,
+      this.kind
+    );
+    const labelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: "Silkscreen, monospace",
+      fontSize: "10px",
+      color: "#ff5d6c",
+      stroke: "#0e1018",
+      strokeThickness: 4,
+    };
+    this.enemies.spawn(
+      spawns,
+      (enemy: Enemy) => {
+        const spr = this.add.sprite(enemy.x, enemy.y, "enemy");
+        spr.setDisplaySize(TILE_SIZE, TILE_SIZE);
+        spr.setTint(0xff5d6c);
+        spr.setDepth(5);
+        return spr;
+      },
+      (enemy: Enemy) => {
+        const lbl = this.add.text(enemy.x, enemy.y - TILE_SIZE * 0.65, "ENEMY", labelStyle);
+        lbl.setOrigin(0.5, 1);
+        lbl.setDepth(6);
+        return lbl;
+      }
+    );
+  }
+
   /** Keep an anchor inside the room so an off-grid coord never spawns in a wall. */
   private clampAnchor(a: NPCAnchor): { x: number; y: number } {
     return {
@@ -247,25 +314,24 @@ export class InteriorScene extends Phaser.Scene {
     };
   }
 
-  // ---- Rendering (same atlas RenderTexture pipeline as the overworld) ----
+  // ---- Rendering (tilemap path mirrors the overworld terrain renderer) ----
 
   private drawInterior() {
     const { width, height, tiles } = this.grid;
-    const widthPx = width * TILE_SIZE;
-    const heightPx = height * TILE_SIZE;
     const palette = PALETTES[this.kind];
 
-    const rt = this.atlasReady ? this.ensureRT(widthPx, heightPx) : null;
-    if (rt) rt.clear();
     this.fallbackG.clear();
+    const layers = this.textures.exists(TILESET_KEY)
+      ? this.ensureTerrainLayers(width, height)
+      : null;
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const tile = tiles[y][x];
         const px = x * TILE_SIZE;
         const py = y * TILE_SIZE;
-        if (rt) {
-          this.stampInteriorTile(rt, palette, tile, px, py);
+        if (layers) {
+          this.putInteriorTile(layers, palette, tile, x, y);
         } else {
           this.drawFallbackTile(tile, px, py);
         }
@@ -273,43 +339,24 @@ export class InteriorScene extends Phaser.Scene {
     }
   }
 
-  private stampInteriorTile(
-    rt: Phaser.GameObjects.RenderTexture,
+  private putInteriorTile(
+    layers: { base: Phaser.Tilemaps.TilemapLayer },
     palette: InteriorPalette,
     tile: number,
-    px: number,
-    py: number
+    x: number,
+    y: number
   ) {
     // Floor base under everything so walls/doors read as sitting on a floor.
-    this.stamp(rt, palette.floor, px, py);
+    layers.base.putTileAt(palette.floor, x, y, false);
     if (tile === INTERIOR_TILE.WALL) {
-      this.stamp(rt, palette.wall, px, py);
+      layers.base.putTileAt(palette.wall, x, y, false);
     } else if (tile === INTERIOR_TILE.DOOR) {
-      this.stamp(rt, palette.door, px, py);
+      layers.base.putTileAt(palette.door, x, y, false);
       // A bright marker so the exit is obvious.
-      this.stamp(rt, frameAt(4, 8), px, py, 0.9, 0xffcf3f);
+      layers.base.putTileAt(frameAt(4, 8), x, y, false);
     } else if (tile === INTERIOR_TILE.FEATURE) {
-      this.stamp(rt, palette.feature, px, py);
+      layers.base.putTileAt(palette.feature, x, y, false);
     }
-  }
-
-  private stamp(
-    rt: Phaser.GameObjects.RenderTexture,
-    frame: number,
-    px: number,
-    py: number,
-    alpha = 1,
-    tint?: number
-  ) {
-    // Guard against an out-of-range frame (defensive — palette uses known frames).
-    if (frame < 0 || frame >= SHEET_COLS * SHEET_ROWS) return;
-    rt.stamp(ATLAS_KEY, frame, px, py, {
-      originX: 0,
-      originY: 0,
-      scale: ATLAS_SCALE,
-      alpha,
-      ...(tint !== undefined ? { tint } : {}),
-    });
   }
 
   private drawFallbackTile(tile: number, px: number, py: number) {
@@ -326,13 +373,37 @@ export class InteriorScene extends Phaser.Scene {
     }
   }
 
-  private ensureRT(widthPx: number, heightPx: number): Phaser.GameObjects.RenderTexture {
-    if (!this.terrainRT) {
-      this.terrainRT = this.add.renderTexture(0, 0, widthPx, heightPx);
-      this.terrainRT.setOrigin(0, 0);
-      this.terrainRT.setDepth(-2);
+  private resetTerrainLayers() {
+    this.terrainMap?.destroy();
+    this.terrainMap = null;
+    this.baseLayer = null;
+  }
+
+  private ensureTerrainLayers(
+    widthTiles: number,
+    heightTiles: number
+  ): { base: Phaser.Tilemaps.TilemapLayer } {
+    if (!this.terrainMap) {
+      const map = this.make.tilemap({
+        tileWidth: SHEET_TILE,
+        tileHeight: SHEET_TILE,
+        width: widthTiles,
+        height: heightTiles,
+      });
+      const tileset = map.addTilesetImage(
+        "rogue",
+        TILESET_KEY,
+        SHEET_TILE,
+        SHEET_TILE,
+        0,
+        1
+      )!;
+      const base = map.createBlankLayer("base", tileset, 0, 0)!;
+      base.setOrigin(0, 0).setScale(ATLAS_SCALE).setDepth(-2);
+      this.terrainMap = map;
+      this.baseLayer = base;
     }
-    return this.terrainRT;
+    return { base: this.baseLayer! };
   }
 
   // ---- Update loop ----
@@ -364,6 +435,16 @@ export class InteriorScene extends Phaser.Scene {
     );
     this.maybeTriggerNpcTalk(time);
 
+    if (!this.encounterFired) {
+      const hitId = this.enemies.update(delta, this.sim.x, this.sim.y, (tx, ty) =>
+        this.sim!.isBlockedTile(tx, ty)
+      );
+      if (hitId) {
+        this.triggerInteriorEncounter(hitId);
+        return;
+      }
+    }
+
     // Step on a DOOR (after the entry grace) → return to the overworld.
     if (this.entryGraceMs <= 0 && this.onExitTile()) {
       this.returnToOverworld();
@@ -393,14 +474,21 @@ export class InteriorScene extends Phaser.Scene {
   private returnToOverworld() {
     if (this.exiting) return;
     this.exiting = true;
+    this.enemies.destroy();
     this.npcs.destroy();
     this.sceneData.router.exit();
   }
 
+  private triggerInteriorEncounter(enemyId: string) {
+    this.encounterFired = true;
+    this.enemies.remove(enemyId);
+    this.sceneData.onEncounter?.(null);
+  }
+
   destroy() {
+    this.enemies.destroy();
     this.npcs.destroy();
-    this.terrainRT?.destroy();
-    this.terrainRT = null;
+    this.resetTerrainLayers();
   }
 }
 

@@ -176,7 +176,7 @@ function terrainFill(tile: number, jitter: number): number {
 export interface OverworldConfig {
   runId: string;
   playerName?: string;
-  onEncounter: (wildId: string) => void;
+  onEncounter: (wildId?: string | null) => void;
   onNpcTalk?: (npc: NPCAnchorView) => void;
   onMapLoaded?: (m: {
     width: number;
@@ -731,12 +731,15 @@ export class OverworldScene extends Phaser.Scene {
         // Forward NPC dialogue from interiors to the same React handler the
         // overworld uses, and persist position before leaving for an interior.
         onNpcTalk: this.cfg.onNpcTalk,
+        onEncounter: this.cfg.onEncounter,
         onEnterInterior: () => this.flushSync(),
       });
 
       const win = this.windowOf(data);
       const { originX, originY } = win;
       this.rememberChunk(data);
+      await this.warmChunkNeighborhood(data);
+      if (!this.sys?.isActive()) return;
 
       if (this.sim) {
         // DOUBLE BUFFER: the live (front) terrain stays visible. Stamp the new
@@ -1526,8 +1529,29 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
+  /** Ensure the anchor chunk's immediate 3x3 neighbourhood is cached. */
+  private async warmChunkNeighborhood(anchor: MapState) {
+    const originX = anchor.origin_x ?? 0;
+    const originY = anchor.origin_y ?? 0;
+    const cellX = this.cellOf(originX + Math.floor(anchor.width / 2));
+    const cellY = this.cellOf(originY + Math.floor(anchor.height / 2));
+    const half = Math.floor(CHUNK_SIZE / 2);
+    const jobs: Array<Promise<void>> = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const cx = (cellX + dx) * CHUNK_SIZE + half;
+        const cy = (cellY + dy) * CHUNK_SIZE + half;
+        if (cx < 0 || cy < 0) continue;
+        jobs.push(this.prefetchChunk(cx, cy, false));
+      }
+    }
+    await Promise.all(jobs);
+    this.lastPrefetchCell = { x: cellX, y: cellY };
+  }
+
   /** Fetch one chunk into the prefetch cache, keyed by its returned origin. */
-  private async prefetchChunk(centerX: number, centerY: number) {
+  private async prefetchChunk(centerX: number, centerY: number, refreshNeighborhood = true) {
     // Dedupe by center so two near-tiles don't double-fetch the same region.
     const reqKey = chunkKey(centerX, centerY);
     if (this.prefetchInFlight.has(reqKey)) return;
@@ -1543,7 +1567,7 @@ export class OverworldScene extends Phaser.Scene {
       // A newly-cached adjacent neighbour: extend collision (so the player can
       // walk into it) and, if it adds coverage, paint it via a seamless swap.
       // Grid-aligned origins mean tiles never shift — no churn, just fill-in.
-      if (this.sim && this.mapData) {
+      if (refreshNeighborhood && this.sim && this.mapData) {
         const win = this.windowOf(data);
         const adjacent = windowsWithinRenderHalo(
           this.windowOf(this.mapData),

@@ -11,10 +11,12 @@
 export interface EncounterBridge {
   /**
    * Called by OverworldScene when the player collides with a wild monster.
-   * `wildId` is the Monster.id of the wild enemy.
+   * `wildId` is the Monster.id of the wild enemy. Interior scenes may pass
+   * null to request a fresh random encounter because their enemies are generated
+   * client-side decorations rather than rows from the run's wild Monster table.
    * Returns an encounter id (from WS-B) or null if creation fails.
    */
-  onCollision: (wildId: string) => Promise<string | null>;
+  onCollision: (wildId?: string | null) => Promise<string | null>;
 }
 
 /**
@@ -27,12 +29,16 @@ export function buildEncounterBridge(
   setEncounter: (id: string | null) => void
 ): EncounterBridge {
   return {
-    onCollision: async (wildId: string): Promise<string | null> => {
+    onCollision: async (wildId?: string | null): Promise<string | null> => {
       try {
+        const body =
+          wildId === null || wildId === undefined
+            ? { run_id: runId }
+            : { run_id: runId, wild_id: wildId };
         const res = await fetch("/api/encounters", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ run_id: runId, wild_id: wildId }),
+          body: JSON.stringify(body),
         });
         if (res.ok) {
           const data = (await res.json()) as { id: string };
@@ -44,8 +50,9 @@ export function buildEncounterBridge(
       }
       // Fallback: use the wild monster id as the encounter ref so
       // the frontend can still navigate to the encounter screen.
-      setEncounter(wildId);
-      return wildId;
+      const fallbackId = wildId ?? `encounter:${Date.now()}`;
+      setEncounter(fallbackId);
+      return fallbackId;
     },
   };
 }
