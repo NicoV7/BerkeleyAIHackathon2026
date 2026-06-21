@@ -30,9 +30,13 @@ through the Wave-0 economy award helpers when ``maybe_complete_quests`` fires.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.llm.hosted_adapter import HostedAdapter
+from app.llm.hosted_adapter import adapter as default_adapter
+from app.schemas import NPCAnchor, Region
 from app.world import event_log
 
 
@@ -173,6 +177,82 @@ async def _accept(run_id: str, quest: Quest) -> Quest:
         target_xy=quest.target_xy,
     )
     return quest
+
+
+# ---------------------------------------------------------------------------
+# LLM quest-copy personalization (living-world layer)
+# ---------------------------------------------------------------------------
+
+
+def _parse_quest_copy(raw: str) -> dict[str, str] | None:
+    """Parse a small JSON quest-copy payload, returning None on malformed text."""
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    out: dict[str, str] = {}
+    for key in ("title", "description", "reward"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            out[key] = value[:500]
+    return out or None
+
+
+async def personalize_quest_copy(
+    run_id: str,
+    quest: Quest,
+    anchor: NPCAnchor,
+    region: Region | None = None,
+    *,
+    adapter: HostedAdapter = default_adapter,
+) -> Quest:
+    """Use an LLM to localize quest copy while preserving mechanic fields.
+
+    Objective and target stay server-authored so completion remains mechanical
+    and deterministic. The LLM may only rewrite title/description/reward text;
+    malformed/offline responses fall back to the original quest.
+    """
+    events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
+    event_lines = []
+    for evt in events[-6:]:
+        bits = ", ".join(f"{k}={v}" for k, v in evt.data.items())
+        event_lines.append(f"- {evt.kind}({bits})")
+    event_blurb = "\n".join(event_lines) if event_lines else "No major events yet."
+    region_name = region.name if region is not None else "the nearby village"
+    prompt = (
+        f"You are generating quest-board copy for {anchor.name or anchor.npc_id}, "
+        f"a {anchor.archetype} in {region_name}.\n"
+        f"Recent world events:\n{event_blurb}\n\n"
+        "Rewrite the quest copy as a concise JSON object with keys title, "
+        "description, reward. Keep the same actual task and reward value.\n"
+        f"Objective: {quest.objective}\n"
+        f"Target: {quest.target}\n"
+        f"Current title: {quest.title}\n"
+        f"Current description: {quest.description}\n"
+        f"Current reward: {quest.reward}\n"
+        "Output only JSON."
+    )
+    try:
+        copy = _parse_quest_copy(
+            await adapter.complete(prompt, max_tokens=220, temperature=0.75)
+        )
+    except Exception:  # noqa: BLE001
+        copy = None
+    if copy is None:
+        return quest
+    return Quest(
+        quest_id=quest.quest_id,
+        npc_id=quest.npc_id,
+        objective=quest.objective,
+        target=quest.target,
+        reward=copy.get("reward", quest.reward),
+        title=copy.get("title", quest.title),
+        description=copy.get("description", quest.description),
+        reward_spec=quest.reward_spec,
+        target_xy=quest.target_xy,
+    )
 
 
 # ---------------------------------------------------------------------------

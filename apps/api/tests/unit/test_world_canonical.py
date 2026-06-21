@@ -10,6 +10,7 @@ Validates:
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pytest
@@ -165,13 +166,18 @@ def test_loader_validates_tile_dimensions(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 async def test_get_world_returns_canonical_when_present():
-    """When canonical.json exists, /world returns its spec, not the procgen one."""
+    """When canonical.json exists, /world returns its spec (plus injected wayposts)."""
     from app.routers import world as world_router
 
     out = await world_router.get_world("run-id", _FakeSession(_make_run(seed=42)))
     canon = canonical_mod.get_canonical_world()
     assert canon is not None
-    assert out.model_dump() == canon.spec.model_dump()
+    # /world additively injects a signpost ("waypost") near each town; strip those
+    # before comparing the rest to the canonical spec.
+    out_core = out.model_copy(update={"pois": [p for p in out.pois if p.kind != "waypost"]})
+    assert out_core.model_dump() == canon.spec.model_dump()
+    # And it injected at least one waypost (one per town).
+    assert any(p.kind == "waypost" for p in out.pois)
 
 
 async def test_get_world_falls_back_to_procgen_when_canonical_missing(monkeypatch):
@@ -204,6 +210,44 @@ async def test_get_map_returns_chunked_canonical_window():
     assert all(len(row) == 96 for row in out.tiles)
     assert 0 <= out.origin_x <= out.player_x <= out.origin_x + out.width
     assert 0 <= out.origin_y <= out.player_y <= out.origin_y + out.height
+
+
+async def test_get_map_recenters_after_invalid_persisted_player_tile():
+    """A snapped player position must be inside the returned chunk window."""
+    from app.routers import map as map_router
+
+    run = _make_run(seed=42)
+    run.player_x = 0
+    run.player_y = 0
+
+    out = await map_router.get_map(
+        "run-id",
+        _FakeSession(run),
+        chunk_size=96,
+    )
+    spawn_x, spawn_y = map_router._spawn_tile_for(run.seed)
+
+    assert (out.player_x, out.player_y) == (spawn_x, spawn_y)
+    assert out.origin_x <= out.player_x < out.origin_x + out.width
+    assert out.origin_y <= out.player_y < out.origin_y + out.height
+
+
+def test_spawn_tile_prefers_starter_village():
+    """New runs should begin in the populated starter village, not a trailhead."""
+    from app.routers import map as map_router
+
+    canon = canonical_mod.get_canonical_world()
+    assert canon is not None and canon.spec.start is not None
+    starter_village = min(
+        (poi for poi in canon.spec.pois if poi.kind == "town"),
+        key=lambda poi: math.hypot(
+            poi.x - canon.spec.start.x,
+            poi.y - canon.spec.start.y,
+        ),
+    )
+
+    assert map_router._spawn_tile_for(1729) == (starter_village.x, starter_village.y)
+
 
 
 # --------------------------------------------------------------------------- #

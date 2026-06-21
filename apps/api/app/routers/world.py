@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import random
+import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
 
@@ -400,6 +401,17 @@ class QuestAcceptRequest(BaseModel):
     npc_id: str
 
 
+class NPCTalkRequest(BaseModel):
+    """One player utterance in a bounded NPC conversation."""
+
+    message: str = Field(default="", max_length=800)
+    conversation_id: str | None = Field(
+        default=None,
+        max_length=96,
+        pattern=r"^[A-Za-z0-9:_-]+$",
+    )
+
+
 WorldEventKind = Literal[
     "dungeon_cleared",
     "boss_defeated",
@@ -671,15 +683,31 @@ async def talk_to_npc(
     run_id: str,
     npc_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    body: NPCTalkRequest | None = None,
 ) -> dict[str, Any]:
-    """Generate/cache dialogue for a canonical NPC anchor."""
+    """Generate/cache dialogue for a canonical NPC anchor.
+
+    A body with ``message``/``conversation_id`` upgrades the old one-shot
+    greeting into a real short-lived conversation. Empty/no body keeps the
+    original cache-first greeting contract for existing callers.
+    """
     await _get_run_or_404(run_id, session)
     match = _find_npc_anchor(npc_id)
     if match is None:
         raise HTTPException(status_code=404, detail="NPC not found")
 
     anchor, region = match
-    dialogue = await npcs.generate_dialogue(run_id, anchor, region)
+    message = (body.message if body is not None else "").strip()
+    conversation_id = body.conversation_id if body is not None else None
+    if body is not None and conversation_id is None:
+        conversation_id = uuid.uuid4().hex
+    dialogue = await npcs.generate_dialogue(
+        run_id,
+        anchor,
+        region,
+        player_message=message,
+        conversation_id=conversation_id,
+    )
     return {
         "npc_id": anchor.npc_id,
         "name": anchor.name,
@@ -687,6 +715,8 @@ async def talk_to_npc(
         "text": dialogue.text,
         "cached": dialogue.cached,
         "cache_key": dialogue.cache_key,
+        "conversation_id": getattr(dialogue, "conversation_id", None),
+        "history": getattr(dialogue, "history", []),
     }
 
 
@@ -756,13 +786,15 @@ async def accept_quest(
     if match is None:
         raise HTTPException(status_code=404, detail="NPC not found")
 
-    anchor, _region = match
+    anchor, region = match
     if anchor.archetype not in {"merchant", "quest_giver"}:
         raise HTTPException(status_code=409, detail="NPC does not offer quests")
 
     quest = await quests.offer_quest(
         run_id, body.npc_id, candidate_dungeons=_candidate_dungeons()
     )
+    if quest is not None:
+        quest = await quests.personalize_quest_copy(run_id, quest, anchor, region)
     return {"quest": quest.to_dict() if quest is not None else None}
 
 
