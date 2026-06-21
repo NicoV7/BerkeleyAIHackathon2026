@@ -29,6 +29,7 @@ import {
   chunkKey,
   neighborPrefetchCentres,
   windowCoversViewport,
+  windowsWithinRenderHalo,
   shouldSwapChunk,
   type ChunkWindow,
 } from "./ChunkStream";
@@ -55,7 +56,12 @@ export { TILE_SIZE } from "./constants";
 
 /** How often (ms) to persist the player's absolute position to the server. */
 const SYNC_DEBOUNCE_MS = 1500;
-const CHUNK_FETCH_RADIUS_TILES = 48;
+// Smaller chunks (was 48 → 96-wide window, "too big"): faster fetches + cheaper
+// repaints. Coverage no longer relies on one giant chunk — neighbours render too.
+const CHUNK_FETCH_RADIUS_TILES = 24;
+// How far (tiles) a cached chunk may sit from the anchor and still be painted
+// into the live buffer, so the area around the player is gap-free.
+const CHUNK_RENDER_HALO_TILES = 2;
 // Lead (in tiles) added around the ACTUAL viewport when deciding to re-centre.
 // Each buffer renders a single chunk window (no neighbour halo), so we must swap
 // before the visible area spills past the chunk edge. Triggering off the real
@@ -201,6 +207,9 @@ interface TerrainBuffer {
   overlay: Phaser.Tilemaps.TilemapLayer;
   widthTiles: number;
   heightTiles: number;
+  /** Global tile origin the buffer is currently positioned at (for reuse checks). */
+  originX: number;
+  originY: number;
 }
 
 export class OverworldScene extends Phaser.Scene {
@@ -233,8 +242,8 @@ export class OverworldScene extends Phaser.Scene {
   // V3: blob shadows under actors (one Graphics layer, redrawn each frame) + a
   // water shimmer (throttled brightness pulse on the visible water tiles).
   private shadowGfx!: Phaser.GameObjects.Graphics;
+  /** Water cells in FRONT-buffer-local tile coords (collected while painting). */
   private liveWaterCells: { x: number; y: number }[] = [];
-  private shimmerMapRef: MapState | null = null;
   private lastShimmerMs = 0;
 
   // Depth bands per buffer slot, indexed [front, back]. The whole front buffer
@@ -581,11 +590,12 @@ export class OverworldScene extends Phaser.Scene {
           this.emitHudMap();
           return;
         }
-        this.drawMapInto(this.backIndex(), data);
+        const bbox = this.drawMapInto(this.backIndex(), data);
         this.swapBuffers();
         this.mapData = data;
         this.sim.setTiles(data.tiles, originX, originY);
-        this.liveWindow = win;
+        // Live coverage = the painted bbox (anchor + neighbours), not one chunk.
+        this.liveWindow = bbox;
         this.spawnEnemies(data.enemies);
         this.spawnNpcs();
         this.emitHudMap();
@@ -609,8 +619,7 @@ export class OverworldScene extends Phaser.Scene {
       });
       this.lastSyncedTile = { x: start.x, y: start.y };
 
-      this.drawMapInto(this.frontBuffer, data);
-      this.liveWindow = win;
+      this.liveWindow = this.drawMapInto(this.frontBuffer, data);
       this.spawnEnemies(data.enemies);
       this.spawnNpcs();
 
@@ -639,6 +648,10 @@ export class OverworldScene extends Phaser.Scene {
     const back = this.backIndex();
     this.applyBufferDepths(back, 0); // back → front depth band
     this.applyBufferDepths(this.frontBuffer, 1); // front → back depth band
+    // Hide the old front (now back) so its protruding/stale edges can't ghost
+    // through as "double rendering"; show the freshly-painted new front.
+    this.setBufferVisible(this.frontBuffer, false);
+    this.setBufferVisible(back, true);
     this.frontBuffer = back;
   }
 
@@ -648,6 +661,14 @@ export class OverworldScene extends Phaser.Scene {
     t?.base.setDepth(OverworldScene.BASE_DEPTH[band]);
     t?.overlay.setDepth(OverworldScene.OVERLAY_DEPTH[band]);
     this.tileGraphics[buffer].setDepth(OverworldScene.G_DEPTH[band]);
+  }
+
+  /** Show/hide a buffer slot's terrain layers + POI graphics together. */
+  private setBufferVisible(buffer: number, vis: boolean) {
+    const t = this.terrain[buffer];
+    t?.base.setVisible(vis);
+    t?.overlay.setVisible(vis);
+    this.tileGraphics[buffer]?.setVisible(vis);
   }
 
   private emitHudMap() {
@@ -705,20 +726,62 @@ export class OverworldScene extends Phaser.Scene {
    *   - procedural color jitter ONLY for tile-ints with no atlas frame,
    *   - POI markers on the matching fallback Graphics layer.
    */
-  private drawMapInto(buffer: number, data: MapState) {
+  /**
+   * Paint a buffer with the anchor chunk PLUS every cached neighbour within the
+   * render halo, sized to their bounding box, so the area around the player is
+   * always covered — no black chunks at the seams. Returns the bbox window (the
+   * caller stores it as the live coverage for re-centre decisions). Also collects
+   * the front-buffer-local water cells for the shimmer.
+   */
+  private drawMapInto(buffer: number, anchor: MapState): ChunkWindow {
     const g = this.tileGraphics[buffer];
     g.clear();
 
-    const originX = data.origin_x ?? 0;
-    const originY = data.origin_y ?? 0;
-    const buf = this.ensureTerrainBuffer(buffer, data.width, data.height);
-    // Position both layers at the chunk's global pixel origin. setScale(ATLAS_SCALE)
-    // upscales the 16px source tiles to TILE_SIZE; position is added on top.
-    buf.base.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
-    buf.overlay.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
+    const chunks = this.renderChunkSet(anchor);
+    let bx0 = Infinity;
+    let by0 = Infinity;
+    let bx1 = -Infinity;
+    let by1 = -Infinity;
+    for (const c of chunks) {
+      const ox = c.origin_x ?? 0;
+      const oy = c.origin_y ?? 0;
+      if (ox < bx0) bx0 = ox;
+      if (oy < by0) by0 = oy;
+      if (ox + c.width > bx1) bx1 = ox + c.width;
+      if (oy + c.height > by1) by1 = oy + c.height;
+    }
+    const widthTiles = bx1 - bx0;
+    const heightTiles = by1 - by0;
 
-    this.drawTerrainWindow(g, buf, data);
+    const buf = this.ensureTerrainBuffer(buffer, widthTiles, heightTiles, bx0, by0);
+    // Position layers at the bbox global pixel origin; setScale upscales 16→32.
+    buf.base.setPosition(bx0 * TILE_SIZE, by0 * TILE_SIZE);
+    buf.overlay.setPosition(bx0 * TILE_SIZE, by0 * TILE_SIZE);
+
+    this.liveWaterCells = [];
+    for (const c of chunks) this.drawTerrainWindow(g, buf, c, bx0, by0);
     this.drawPois(g);
+
+    return { originX: bx0, originY: by0, width: widthTiles, height: heightTiles };
+  }
+
+  /**
+   * The anchor chunk + cached neighbour chunks within the render halo. Painting
+   * them together is what fills the area around the player so chunk seams never
+   * show as black gaps. The prefetcher keeps the neighbours warm in the cache.
+   */
+  private renderChunkSet(anchor: MapState): MapState[] {
+    const anchorWin = this.windowOf(anchor);
+    const anchorKey = chunkKey(anchorWin.originX, anchorWin.originY);
+    const out: MapState[] = [anchor];
+    for (const cached of this.prefetchedChunks.values()) {
+      const win = this.windowOf(cached);
+      if (chunkKey(win.originX, win.originY) === anchorKey) continue;
+      if (windowsWithinRenderHalo(anchorWin, win, CHUNK_RENDER_HALO_TILES)) {
+        out.push(cached);
+      }
+    }
+    return out;
   }
 
   /**
@@ -731,50 +794,52 @@ export class OverworldScene extends Phaser.Scene {
   private drawTerrainWindow(
     g: Phaser.GameObjects.Graphics,
     buf: TerrainBuffer,
-    data: MapState
+    data: MapState,
+    bboxOriginX: number,
+    bboxOriginY: number
   ) {
     const originX = data.origin_x ?? 0;
     const originY = data.origin_y ?? 0;
     const { tiles } = data;
+    // Chunk's offset within the bbox buffer (buffer-local = bbox-relative).
+    const offX = originX - bboxOriginX;
+    const offY = originY - bboxOriginY;
     for (let y = 0; y < data.height; y++) {
       for (let x = 0; x < data.width; x++) {
         const tile = tiles[y][x];
+        const cx = offX + x;
+        const cy = offY + y;
         const jitter = tileJitter(originX + x, originY + y);
         const base = baseFrameFor(tile);
 
         if (base !== null) {
           const nb = this.neighborsOf(tiles, x, y, tile);
           // V1 cohesion: shoreline beach on water-edge land, else bridge, else base.
-          // recalculateFaces=false: collision is handled by WorldSim, not the
-          // tilemap, so per-tile face recalc (~9k/layer/swap) is pure waste.
-          // Bridge wins over shoreline so a ROAD crossing water stays a bridge,
-          // not a beach; other land touching water gets the sand shoreline.
+          // recalculateFaces=false: collision is WorldSim's job, not the tilemap's.
+          // Bridge wins over shoreline so a ROAD crossing water stays a bridge.
           const baseFrame =
             bridgeFrameFor(tile, nb) ?? shorelineBaseFrame(tile, nb) ?? base;
-          const bt = buf.base.putTileAt(baseFrame, x, y, false);
-          // Unconditional tint (buffer reuse only resets .index, not .tint).
+          const bt = buf.base.putTileAt(baseFrame, cx, cy, false);
           if (bt) bt.tint = grassTint(tile, jitter) ?? 0xffffff;
+          if (tile === TILE.WATER) this.liveWaterCells.push({ x: cx, y: cy });
 
           // Feature overlay (tree/campfire/structure), else feather the forest
           // edge with sparse scrub trees on bordering grass.
           const overlay =
             overlayFor(tile, jitter) ?? forestFeatherOverlay(tile, nb, jitter);
           if (overlay) {
-            const t = buf.overlay.putTileAt(overlay.frame, x, y, false);
-            // Set alpha/tint UNCONDITIONALLY: putTileAt over an already-occupied
-            // cell (buffer reuse) only updates .index, leaving a prior tile's
-            // alpha/tint stale otherwise.
+            const t = buf.overlay.putTileAt(overlay.frame, cx, cy, false);
             if (t) {
               t.alpha = overlay.alpha;
               t.tint = overlay.tint ?? 0xffffff;
             }
           } else {
-            buf.overlay.removeTileAt(x, y, true, false);
+            buf.overlay.removeTileAt(cx, cy, true, false);
           }
         } else {
           // Unmapped tile-int: clear tilemap cells + draw procedural fallback.
-          buf.base.removeTileAt(x, y, true, false);
-          buf.overlay.removeTileAt(x, y, true, false);
+          buf.base.removeTileAt(cx, cy, true, false);
+          buf.overlay.removeTileAt(cx, cy, true, false);
           const px = (originX + x) * TILE_SIZE;
           const py = (originY + y) * TILE_SIZE;
           this.drawFallbackTile(g, tile, px, py, jitter);
@@ -853,20 +918,26 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   /**
-   * Lazily create (or re-create on size change) the Tilemap terrain buffer for
-   * one slot. A buffer of the same tile dimensions is reused across chunk swaps —
-   * only edge-of-world chunks (different size) force a rebuild. The back buffer is
-   * created in the back depth band; swapBuffers raises it once fully populated.
+   * Lazily create the Tilemap terrain buffer for one slot, re-creating it whenever
+   * the bbox dimensions OR origin change. Recreating on any change guarantees a
+   * fresh (empty) grid, so stale tiles from a previous window can never linger —
+   * the only reuse is an identical bbox (same dims + origin), which is then simply
+   * repainted in place.
    */
   private ensureTerrainBuffer(
     buffer: number,
     widthTiles: number,
-    heightTiles: number
+    heightTiles: number,
+    originX: number,
+    originY: number
   ): TerrainBuffer {
     const existing = this.terrain[buffer];
     if (
       existing &&
-      (existing.widthTiles !== widthTiles || existing.heightTiles !== heightTiles)
+      (existing.widthTiles !== widthTiles ||
+        existing.heightTiles !== heightTiles ||
+        existing.originX !== originX ||
+        existing.originY !== originY)
     ) {
       existing.map.destroy();
       this.terrain[buffer] = null;
@@ -896,7 +967,16 @@ export class OverworldScene extends Phaser.Scene {
       overlay.setScale(ATLAS_SCALE);
       base.setDepth(OverworldScene.BASE_DEPTH[band]);
       overlay.setDepth(OverworldScene.OVERLAY_DEPTH[band]);
-      this.terrain[buffer] = { map, base, overlay, widthTiles, heightTiles };
+      // New buffers are visible by default; swapBuffers manages front/back hiding.
+      this.terrain[buffer] = {
+        map,
+        base,
+        overlay,
+        widthTiles,
+        heightTiles,
+        originX,
+        originY,
+      };
     }
     return this.terrain[buffer]!;
   }
@@ -1001,35 +1081,26 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   /**
-   * Shimmer the visible water: a throttled, per-cell brightness pulse (grayscale
-   * tint multiplied over the water frame) so water reads as moving/reflective.
-   * The water-cell list is recomputed only when the live chunk changes.
+   * Shimmer the visible water: a gentle per-cell BLUE→white tint pulse over the
+   * water frame so it reads as reflective/moving — never darkening (which looked
+   * broken/glitchy) and never grayscale. `liveWaterCells` is in FRONT-buffer-local
+   * tile coords, collected while the buffer was painted (see drawTerrainWindow).
    */
   private updateWaterShimmer(timeMs: number) {
-    if (this.mapData !== this.shimmerMapRef) {
-      this.shimmerMapRef = this.mapData;
-      this.liveWaterCells = [];
-      const d = this.mapData;
-      if (d) {
-        for (let y = 0; y < d.height; y++) {
-          for (let x = 0; x < d.width; x++) {
-            if (d.tiles[y][x] === TILE.WATER) this.liveWaterCells.push({ x, y });
-          }
-        }
-      }
-    }
-    if (timeMs - this.lastShimmerMs < 110 || !this.liveWaterCells.length) return;
+    if (timeMs - this.lastShimmerMs < 90 || !this.liveWaterCells.length) return;
     this.lastShimmerMs = timeMs;
     const buf = this.terrain[this.frontBuffer];
     if (!buf) return;
-    const t = timeMs / 600;
+    const t = timeMs / 700;
     for (const c of this.liveWaterCells) {
       const tile = buf.base.getTileAt(c.x, c.y);
       if (!tile) continue;
-      // Phase-offset sine per cell → a travelling shimmer rather than a global blink.
-      const s = 0.5 + 0.5 * Math.sin(t + (c.x + c.y) * 0.6);
-      const v = Math.round(185 + 70 * s); // 185..255 grayscale multiplier
-      tile.tint = (v << 16) | (v << 8) | v;
+      // Phase-offset sine per cell → a travelling glint. Tint stays light:
+      // R/G rise toward white, B pinned high → a soft blue→white shimmer.
+      const s = 0.5 + 0.5 * Math.sin(t + (c.x + c.y) * 0.55);
+      const r = 190 + Math.round(55 * s);
+      const g = 215 + Math.round(35 * s);
+      tile.tint = (r << 16) | (g << 8) | 0xff;
     }
   }
 
@@ -1244,10 +1315,25 @@ export class OverworldScene extends Phaser.Scene {
       const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
       if (!res.ok || !this.sys?.isActive()) return;
       const data = (await res.json()) as MapState;
-      // Cache only — the swap into the live buffer paints it (drawMapInto). Each
-      // tilemap buffer renders a single chunk window, so there is no in-buffer
-      // neighbour painting; prefetch keeps the eventual swap instant.
       this.rememberChunk(data);
+      // Progressive halo fill: if this neighbour borders the live anchor, repaint
+      // the FRONT buffer now so it appears immediately (no waiting for a
+      // re-centre). This is what keeps the area around the player gap-free.
+      if (this.mapData && this.liveWindow) {
+        const win = this.windowOf(data);
+        const anchorWin = this.windowOf(this.mapData);
+        const inHalo = windowsWithinRenderHalo(anchorWin, win, CHUNK_RENDER_HALO_TILES);
+        const alreadyCovered = windowCoversViewport(
+          this.liveWindow,
+          win.originX,
+          win.originY,
+          win.width,
+          win.height
+        );
+        if (inHalo && !alreadyCovered) {
+          this.liveWindow = this.drawMapInto(this.frontBuffer, this.mapData);
+        }
+      }
     } catch {
       // Best-effort warm-up; on-demand fetch covers any miss.
     } finally {
