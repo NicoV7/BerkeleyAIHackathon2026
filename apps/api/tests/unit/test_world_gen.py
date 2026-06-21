@@ -276,9 +276,9 @@ async def test_route_flag_off_is_identical_to_procedural(
     from app.routers.map import MAP_HEIGHT, MAP_WIDTH, _generate_tiles
 
     tiles = _generate_tiles(123)
-    # get_world additively injects town signposts via with_wayposts(); wrap the
-    # expected procedural world the same way.
-    expected = world_router.with_wayposts(world_router.build_world(123, tiles, MAP_WIDTH, MAP_HEIGHT))
+    expected = world_router.with_wayposts(
+        world_router.build_world(123, tiles, MAP_WIDTH, MAP_HEIGHT)
+    )
     assert out.model_dump() == expected.model_dump()
     assert called["n"] == 0  # generator never invoked when flag is off
 
@@ -302,7 +302,9 @@ async def test_route_flag_on_falls_back_when_generator_returns_none(
     from app.routers.map import MAP_HEIGHT, MAP_WIDTH, _generate_tiles
 
     tiles = _generate_tiles(55)
-    expected = world_router.with_wayposts(world_router.build_world(55, tiles, MAP_WIDTH, MAP_HEIGHT))
+    expected = world_router.with_wayposts(
+        world_router.build_world(55, tiles, MAP_WIDTH, MAP_HEIGHT)
+    )
     assert out.model_dump() == expected.model_dump()
 
 

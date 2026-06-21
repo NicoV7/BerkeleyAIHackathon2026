@@ -4,6 +4,12 @@ type: LOGOS
 power: 1.2
 domain: LOGOS
 mp_cost: 20
+effect_kind: agent_argument
+target: enemy
+duration_turns: 0
+requires_prompt: false
+rarity: common
+modifiers: damage_mult=1.0
 ---
 
 # Logical Thrust

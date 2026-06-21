@@ -62,6 +62,15 @@ interface QuestResponse {
   } | null;
 }
 
+interface QuestResponse {
+  quest: {
+    title: string;
+    description: string;
+    reward: string;
+    target: string;
+  } | null;
+}
+
 interface NPCDialogueProps {
   runId: string | null;
   npc: NPCAnchorView | null;
@@ -494,6 +503,39 @@ function GenericDialogue({
                     disabled={questLoading}
                   >
                     {questLoading ? "Checking…" : "Take quest"}
+                  </button>
+                  {questError ? (
+                    <span className="font-body text-xs" style={{ color: "var(--muted)" }}>
+                      {questError}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
+          {canOfferQuest ? (
+            <div
+              className="mt-3 border-t pt-3"
+              style={{ borderColor: "rgba(232,230,216,0.16)" }}
+            >
+              {quest ? (
+                <div className="font-body text-xs leading-relaxed" style={{ color: "var(--ink)" }}>
+                  <div className="font-hud text-[9px] mb-1" style={{ color: "var(--accent)" }}>
+                    {quest.title}
+                  </div>
+                  <div>{quest.description}</div>
+                  <div className="mt-1" style={{ color: "var(--muted)" }}>
+                    Reward: {quest.reward}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    className="pixel-btn pixel-btn--accent text-[9px] py-1"
+                    onClick={acceptQuest}
+                    disabled={questLoading}
+                  >
+                    {questLoading ? "Checking..." : "Take quest"}
                   </button>
                   {questError ? (
                     <span className="font-body text-xs" style={{ color: "var(--muted)" }}>

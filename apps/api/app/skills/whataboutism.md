@@ -4,6 +4,12 @@ type: CHAOS
 power: 0.7
 domain: CHAOS
 mp_cost: 25
+effect_kind: status
+target: enemy
+duration_turns: 1
+requires_prompt: true
+rarity: common
+modifiers: enemy_sentence_limit=1,enemy_max_tokens=80,prompt_bonus=Deflect their frame with a concrete counter-example.
 ---
 
 # Whataboutism

@@ -531,8 +531,26 @@ def _find_npc_anchor(npc_id: str) -> tuple[NPCAnchor, Region | None] | None:
     return None
 
 
-def _candidate_dungeons() -> list[tuple[str, str]]:
-    """Dungeon candidates for dynamic quests, derived from canonical content."""
+def _poi_xy_from_key(key: str) -> tuple[int, int] | None:
+    """Parse a positional POI key like ``den:166:532`` into coordinates."""
+    parts = key.split(":")
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    return int(parts[1]), int(parts[2])
+
+
+def _quest_origin_for_anchor(anchor: NPCAnchor) -> tuple[int, int]:
+    """Return overworld coordinates for an NPC, including town-interior anchors."""
+    prefix = anchor.npc_id.split("__", 1)[0]
+    parts = prefix.split("_")
+    if len(parts) == 3 and parts[0] in {"town", "den"}:
+        if parts[1].isdigit() and parts[2].isdigit():
+            return int(parts[1]), int(parts[2])
+    return anchor.x, anchor.y
+
+
+def _candidate_dungeons(anchor: NPCAnchor | None = None) -> list[tuple[str, str]]:
+    """Dungeon candidates for dynamic quests, optionally nearest to an NPC."""
     seen: dict[str, str] = {}
     for key, spec in _iter_canonical_specs():
         if key.startswith("den:"):
@@ -541,7 +559,20 @@ def _candidate_dungeons() -> list[tuple[str, str]]:
         for poi in spec.pois:
             if poi.kind == "den" or poi.interior_kind in {"cave", "dungeon"}:
                 seen.setdefault(poi_id(poi), poi.name or poi_id(poi))
-    return list(seen.items())
+    candidates = list(seen.items())
+    if anchor is None:
+        return candidates
+    origin_x, origin_y = _quest_origin_for_anchor(anchor)
+
+    def distance_to_anchor(item: tuple[str, str]) -> tuple[float, str]:
+        xy = _poi_xy_from_key(item[0])
+        if xy is None:
+            return (float("inf"), item[0])
+        dx = xy[0] - origin_x
+        dy = xy[1] - origin_y
+        return (dx * dx + dy * dy, item[0])
+
+    return sorted(candidates, key=distance_to_anchor)
 
 
 def _figure_summary(fig: figures.Figure, recruited: bool = False) -> dict[str, Any]:
@@ -791,7 +822,7 @@ async def accept_quest(
         raise HTTPException(status_code=409, detail="NPC does not offer quests")
 
     quest = await quests.offer_quest(
-        run_id, body.npc_id, candidate_dungeons=_candidate_dungeons()
+        run_id, body.npc_id, candidate_dungeons=_candidate_dungeons(anchor)
     )
     if quest is not None:
         quest = await quests.personalize_quest_copy(run_id, quest, anchor, region)

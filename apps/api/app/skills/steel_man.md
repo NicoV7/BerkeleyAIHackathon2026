@@ -4,6 +4,12 @@ type: LOGOS
 power: 0.9
 domain: LOGOS
 mp_cost: 35
+effect_kind: defense
+target: self
+duration_turns: 1
+requires_prompt: true
+rarity: rare
+modifiers: defense_mult=0.72,prompt_bonus=Concede one strong point, then show why your side still survives.
 ---
 
 # Steel Man

@@ -6,9 +6,10 @@ encounter; the debate engine snapshots to Postgres on completion.
 
 Key layout (per encounter_id):
   enc:{id}:meta       hash   topic, turn_no, phase, current_actor, status
-  enc:{id}:transcript list   JSON utterances {turn, actor_id, actor_role, skill_used, text, ts}
+  enc:{id}:transcript list   JSON utterances {turn, actor_id, actor_role, skill_used, text, ts, reaction_state?}
   enc:{id}:hp         hash   monster_id -> current_hp
   enc:{id}:mp         hash   monster_id -> current_mp  (gacha wave)
+  enc:{id}:effects    list   JSON one-turn skill effects/statuses (gacha wave)
   enc:{id}:queue      list   turn order (monster_ids) for the round
   enc:{id}:judge      list   JSON verdicts {turn, target, score, rationale, damage}
   enc:{id}:momentum   hash   side -> momentum float
@@ -84,12 +85,17 @@ def k_mp(eid: str) -> str:
     return f"enc:{eid}:mp"
 
 
+def k_effects(eid: str) -> str:
+    return f"enc:{eid}:effects"
+
+
 def encounter_keys(eid: str) -> list[str]:
     return [
         k_meta(eid),
         k_transcript(eid),
         k_hp(eid),
         k_mp(eid),
+        k_effects(eid),
         k_queue(eid),
         k_judge(eid),
         k_momentum(eid),
@@ -140,6 +146,39 @@ async def get_mp_map(eid: str) -> dict[str, int]:
     r = get_redis()
     raw = await r.hgetall(k_mp(eid))
     return {m: int(v) for m, v in raw.items()}
+
+
+async def append_effect(eid: str, effect: dict[str, Any]) -> None:
+    """Append a visible one-turn skill effect/status to the encounter cache."""
+    r = get_redis()
+    await r.rpush(k_effects(eid), json.dumps(effect))
+    await r.expire(k_effects(eid), ENCOUNTER_TTL_SECONDS)
+
+
+async def get_effects(eid: str) -> list[dict[str, Any]]:
+    """Return visible skill effects stored for this live encounter."""
+    r = get_redis()
+    raw = await r.lrange(k_effects(eid), 0, -1)
+    out: list[dict[str, Any]] = []
+    for blob in raw:
+        try:
+            item = json.loads(blob)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+async def clear_effects(eid: str) -> None:
+    """Expire current one-turn effects after the round resolves."""
+    try:
+        r = get_redis()
+        delete = getattr(r, "delete", None)
+        if delete is not None:
+            await delete(k_effects(eid))
+    except Exception:  # noqa: BLE001
+        return
 
 
 async def clear_encounter(eid: str) -> None:

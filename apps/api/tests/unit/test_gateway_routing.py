@@ -12,6 +12,8 @@ Routing under test (gateway.py + models.py):
     (ollama) provider                                   -> Ollama adapter
     (POST {ollama_base_url}/api/chat).
   * ``openai/gpt...`` / the ``gpt`` alias               -> OpenAI adapter.
+  * ``groq/*``, ``cerebras/*``, ``openrouter/*``        -> OpenAI-compatible adapters.
+  * ``gemini/*``                                       -> Gemini generateContent adapter.
   * An anthropic model with NO api key                  -> clear RuntimeError,
     so local-only operation (no key) is never silently broken.
 
@@ -67,6 +69,10 @@ class _RecordingClient:
             return _FakeResponse({"content": [{"type": "text", "text": "claude-says-hi"}]})
         if "/chat/completions" in url:  # OpenAI
             return _FakeResponse({"choices": [{"message": {"content": "openai-says-hi"}}]})
+        if ":generateContent" in url:  # Gemini
+            return _FakeResponse({
+                "candidates": [{"content": {"parts": [{"text": "gemini-says-hi"}]}}]
+            })
         raise AssertionError(f"unexpected POST url: {url}")
 
     async def aclose(self) -> None:
@@ -119,6 +125,21 @@ def test_resolve_bare_name_uses_default_ollama_provider() -> None:
     ref = resolve("some-local-model")
     assert ref.provider == "ollama"
     assert ref.model == "some-local-model"
+
+
+@pytest.mark.parametrize(
+    "model,provider,model_id",
+    [
+        ("groq/llama-3.1-8b-instant", "groq", "llama-3.1-8b-instant"),
+        ("cerebras/llama-3.3-70b", "cerebras", "llama-3.3-70b"),
+        ("gemini/gemini-2.5-flash-lite", "gemini", "gemini-2.5-flash-lite"),
+        ("openrouter/openrouter/free", "openrouter", "openrouter/free"),
+    ],
+)
+def test_resolve_hosted_provider_prefixed_ids(model: str, provider: str, model_id: str) -> None:
+    ref = resolve(model)
+    assert ref.provider == provider
+    assert ref.model == model_id
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +220,49 @@ async def test_openai_model_id_routes_to_openai_endpoint(gw_and_client) -> None:
 
     assert out == "openai-says-hi"
     assert fake.calls[0]["url"].endswith("/chat/completions")
+
+
+@pytest.mark.parametrize(
+    "provider,model,base_attr,key_attr",
+    [
+        ("groq", "groq/llama-3.1-8b-instant", "groq_base_url", "groq_api_key"),
+        ("cerebras", "cerebras/llama-3.3-70b", "cerebras_base_url", "cerebras_api_key"),
+        ("openrouter", "openrouter/openrouter/free", "openrouter_base_url", "openrouter_api_key"),
+    ],
+)
+async def test_openai_compatible_hosted_models_route_to_provider_endpoint(
+    gw_and_client, monkeypatch: pytest.MonkeyPatch,
+    provider: str, model: str, base_attr: str, key_attr: str,
+) -> None:
+    from app.gateway import gateway as gw_mod
+
+    monkeypatch.setattr(gw_mod.settings, key_attr, f"{provider}-test-key")
+    gw, fake = gw_and_client
+
+    out = await gw.complete(_MSGS, model=model, json_mode=True)
+
+    assert out == "openai-says-hi"
+    call = fake.calls[0]
+    assert call["url"].startswith(getattr(gw_mod.settings, base_attr))
+    assert call["url"].endswith("/chat/completions")
+    assert call["headers"]["Authorization"] == f"Bearer {provider}-test-key"
+    assert call["json"]["response_format"] == {"type": "json_object"}
+
+
+async def test_gemini_model_id_routes_to_generate_content(
+    gw_and_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.gateway import gateway as gw_mod
+
+    monkeypatch.setattr(gw_mod.settings, "gemini_api_key", "gemini-test-key")
+    gw, fake = gw_and_client
+
+    out = await gw.complete(_MSGS, model="gemini/gemini-2.5-flash-lite", json_mode=True)
+
+    assert out == "gemini-says-hi"
+    call = fake.calls[0]
+    assert call["url"].endswith("/models/gemini-2.5-flash-lite:generateContent")
+    assert call["json"]["generationConfig"]["responseMimeType"] == "application/json"
 
 
 # --------------------------------------------------------------------------- #

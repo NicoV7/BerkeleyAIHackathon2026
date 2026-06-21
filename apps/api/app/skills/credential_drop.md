@@ -4,6 +4,12 @@ type: ETHOS
 power: 1.0
 domain: ETHOS
 mp_cost: 30
+effect_kind: agent_argument
+target: enemy
+duration_turns: 0
+requires_prompt: false
+rarity: rare
+modifiers: damage_mult=1.0
 ---
 
 # Credential Drop

@@ -22,6 +22,7 @@ import time
 from typing import Any, Optional
 
 from app.gateway.gateway import gateway
+from app.party.persona import ensure_battle_sentence_floor, sanitize_battle_utterance
 from app.training import genome as genome_mod
 
 DEFAULT_MODEL = "default"  # tests override with "gemma3:1b"
@@ -38,6 +39,8 @@ async def play(
     model: str = DEFAULT_MODEL,
     party_id: str = "party",
     enemy_id: str = "enemy",
+    party_stance: str | None = None,
+    enemy_stance: str | None = None,
 ) -> dict[str, Any]:
     """Run a self-play debate and score the party debater.
 
@@ -70,6 +73,8 @@ async def play(
         model=model,
         party_id=party_id,
         enemy_id=enemy_id,
+        party_stance=party_stance,
+        enemy_stance=enemy_stance,
     )
 
 
@@ -82,6 +87,8 @@ async def _local_self_play(
     model: str,
     party_id: str,
     enemy_id: str,
+    party_stance: str | None = None,
+    enemy_stance: str | None = None,
 ) -> dict[str, Any]:
     party_sys = genome_mod.system_prompt(party_genome)
     spar_sys = genome_mod.system_prompt(
@@ -96,8 +103,8 @@ async def _local_self_play(
     history: list[str] = []
     turn = 0
 
-    party_stance = f"Argue FOR the proposition: {topic}."
-    enemy_stance = f"Argue AGAINST the proposition: {topic}."
+    party_stance = party_stance or f"Argue FOR the proposition: {topic}."
+    enemy_stance = enemy_stance or f"Argue AGAINST the proposition: {topic}."
 
     for _ in range(max(1, rounds)):
         for actor_id, role, sys_prompt, stance in (
@@ -109,7 +116,9 @@ async def _local_self_play(
             user = (
                 f"Debate topic: {topic}\n{stance}\n\n"
                 f"Recent exchange:\n{ctx}\n\n"
-                "Give your next debate turn in 2-3 punchy sentences. No preamble."
+                "Give your next debate turn as exactly two short plain sentences. "
+                "Keep each sentence under 22 words. "
+                "No markdown, headings, bullets, or Claim/Support/Rebuttal labels."
             )
             try:
                 text = await gateway.complete(
@@ -121,9 +130,12 @@ async def _local_self_play(
                     temperature=0.8,
                     max_tokens=160,
                 )
-            except Exception as e:  # noqa: BLE001
-                text = f"(no response: {e})"
-            text = (text or "").strip()
+            except Exception:  # noqa: BLE001
+                text = ""
+            text = _sanitize_turn(text or "")
+            if not text:
+                text = _fallback_turn(topic, stance)
+            text = ensure_battle_sentence_floor(text, role=role)
             transcript.append(
                 {
                     "turn": turn,
@@ -156,7 +168,7 @@ async def _judge(
     convo = "\n".join(
         f"{u['actor_role'].upper()}: {u['text']}"
         for u in transcript
-        if u["actor_role"] != "judge"
+        if u["actor_role"] != "judge" and not u.get("reaction_state")
     )
     prompt = (
         f"You are an impartial debate judge for the topic: {topic}\n\n"
@@ -184,3 +196,24 @@ def _parse_score(raw: str) -> float:
         return 50.0
     v = float(m.group())
     return max(0.0, min(100.0, v))
+
+
+def _sanitize_turn(text: str) -> str:
+    """Keep self-play transcripts aligned with live battle utterance shape."""
+    return sanitize_battle_utterance(text)
+
+
+def _fallback_turn(topic: str, stance: str) -> str:
+    topic_clean = topic.strip().rstrip(".:;!?") or "this topic"
+    side = "AGAINST" if "AGAINST" in stance.upper() else "FOR"
+    if side == "AGAINST":
+        return (
+            f"I argue AGAINST {topic_clean}: the promised benefit fails once you test it against "
+            "real coordination costs. The opposing claim needs proof that those costs do not "
+            "undercut team performance."
+        )
+    return (
+        f"I argue FOR {topic_clean}: the practical benefits outweigh the objection when teams use "
+        "clear goals and async coordination. The opposing claim misses how autonomy can raise "
+        "focused output."
+    )

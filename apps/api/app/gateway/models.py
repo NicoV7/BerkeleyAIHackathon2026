@@ -13,7 +13,7 @@ from app.config import settings
 
 @dataclass(frozen=True)
 class ModelRef:
-    provider: str  # "ollama" | "anthropic" | "openai"
+    provider: str  # ollama | anthropic | openai | groq | cerebras | gemini | openrouter
     model: str
 
 
@@ -27,6 +27,12 @@ REGISTRY: dict[str, ModelRef] = {
     "claude": ModelRef("anthropic", "claude-sonnet-4-6"),
     "claude-opus": ModelRef("anthropic", "claude-opus-4-8"),
     "gpt": ModelRef("openai", "gpt-4o-mini"),
+    "groq-fast": ModelRef("groq", "llama-3.1-8b-instant"),
+    "groq-judge": ModelRef("groq", "llama-3.3-70b-versatile"),
+    "cerebras-fast": ModelRef("cerebras", "llama-3.3-70b"),
+    "gemini-fast": ModelRef("gemini", "gemini-2.5-flash-lite"),
+    "gemini-judge": ModelRef("gemini", "gemini-2.5-flash"),
+    "openrouter-free": ModelRef("openrouter", "openrouter/free"),
 }
 
 
@@ -38,7 +44,15 @@ def resolve(alias_or_model: str | None) -> ModelRef:
         return REGISTRY[alias_or_model]
     if "/" in alias_or_model:
         provider, _, model = alias_or_model.partition("/")
-        if provider in {"ollama", "anthropic", "openai"}:
+        if provider in {
+            "ollama",
+            "anthropic",
+            "openai",
+            "groq",
+            "cerebras",
+            "gemini",
+            "openrouter",
+        }:
             return ModelRef(provider, model)
     # Bare name -> default provider.
     return ModelRef(settings.llm_provider, alias_or_model)

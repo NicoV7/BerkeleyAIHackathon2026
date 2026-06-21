@@ -243,6 +243,7 @@ class Utterance(BaseModel):
     ts: float
     server_ts: Optional[float] = None
     elapsed_ms: Optional[int] = None
+    reaction_state: Optional[str] = None
 
 
 class JudgeVerdict(BaseModel):
@@ -258,21 +259,41 @@ class JudgeVerdict(BaseModel):
     actor_id: Optional[str] = None
 
 
+class SkillEffect(BaseModel):
+    skill_id: Optional[str] = None
+    skill_name: Optional[str] = None
+    effect_kind: str = "agent_argument"
+    source_id: Optional[str] = None
+    source_name: Optional[str] = None
+    target_id: Optional[str] = None
+    target_name: Optional[str] = None
+    duration_turns: int = 0
+    turn_no: int = 0
+    message: str = ""
+    modifiers: dict[str, Any] = {}
+    server_ts: Optional[float] = None
+
+
 class EncounterState(BaseModel):
     id: str
     run_id: str
     topic: str
     phase: Literal["intro", "debating", "capturable", "won", "lost"] = "intro"
     turn_no: int = 0
+    # Tile value where the encounter began. The battle UI maps this to a
+    # location-specific pixel-art backdrop (forest/path/village/cave/grass).
+    location_tile: Optional[int] = None
     combatants: list[CombatantState] = []
     transcript: list[Utterance] = []
     verdicts: list[JudgeVerdict] = []
+    effects: list[SkillEffect] = []
 
 
 class CreateEncounterRequest(BaseModel):
     run_id: str
     wild_id: Optional[str] = None
     enemy_group_id: Optional[str] = None
+    location_tile: Optional[int] = None
 
 
 class TurnRequest(BaseModel):
@@ -293,6 +314,7 @@ class PlayerArgueRequest(BaseModel):
     """
     text: str
     skill_id: Optional[str] = None
+    actor_id: Optional[str] = None
 
 
 class TurnResult(BaseModel):

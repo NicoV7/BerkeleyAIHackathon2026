@@ -184,7 +184,7 @@
       8,
       8,
       8,
-      8,
+      4,
       8,
       8,
       8,
@@ -214,7 +214,7 @@
       8,
       8,
       1,
-      1,
+      4,
       1,
       1,
       1,
@@ -373,6 +373,22 @@
             "name": "Archivist Fen",
             "npc_id": "town_760_780__2",
             "x": 10,
+            "y": 9
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Novice Mara",
+            "npc_id": "town_760_780__3",
+            "x": 6,
+            "y": 8
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Sentinel Vael",
+            "npc_id": "town_760_780__4",
+            "x": 14,
             "y": 9
           }
         ],
