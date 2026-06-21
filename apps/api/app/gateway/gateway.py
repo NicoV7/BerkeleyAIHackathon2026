@@ -23,7 +23,33 @@ from app.gateway.models import ModelRef, resolve
 
 Message = dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
 
+# The httpx client's ceiling is kept generous (embeddings / large judge calls can
+# legitimately run long), but per-call completions resolve a SHORT effective
+# timeout via `_resolve_timeout` so a stuck local model fails fast instead of
+# hanging a whole battle round at this ceiling.
 _DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
+
+def _resolve_timeout(timeout: float | None) -> httpx.Timeout:
+    """Per-call timeout resolution, in priority order:
+
+        1. explicit ``timeout`` kwarg (seconds),
+        2. ``settings.llm_call_timeout_s`` (the short fast-path default),
+        3. the legacy 120s ceiling.
+
+    Returns an httpx.Timeout so a stalled completion fails in ~20s, not 120s.
+    """
+    secs: float | None = None
+    if timeout is not None and timeout > 0:
+        secs = float(timeout)
+    else:
+        cfg = getattr(settings, "llm_call_timeout_s", None)
+        if cfg:
+            secs = float(cfg)
+    if secs is None or secs <= 0:
+        return _DEFAULT_TIMEOUT
+    # Keep connect snappy but bounded by the overall budget.
+    return httpx.Timeout(secs, connect=min(10.0, secs))
 
 
 class LLMGateway:
@@ -42,14 +68,20 @@ class LLMGateway:
         temperature: float = 0.7,
         max_tokens: int = 512,
         json_mode: bool = False,
+        timeout: float | None = None,
     ) -> str:
+        """Single completion. `timeout` (seconds) caps THIS call; falls back to
+        settings.llm_call_timeout_s, then the legacy ceiling. A stuck call raises
+        (httpx timeout) instead of hanging — callers fall back to templated text.
+        """
+        tmo = _resolve_timeout(timeout)
         ref = resolve(model)
         if ref.provider == "ollama":
-            return await self._ollama_complete(ref, messages, temperature, max_tokens, json_mode)
+            return await self._ollama_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
         if ref.provider == "anthropic":
-            return await self._anthropic_complete(ref, messages, temperature, max_tokens)
+            return await self._anthropic_complete(ref, messages, temperature, max_tokens, tmo)
         if ref.provider == "openai":
-            return await self._openai_complete(ref, messages, temperature, max_tokens, json_mode)
+            return await self._openai_complete(ref, messages, temperature, max_tokens, json_mode, tmo)
         raise ValueError(f"Unknown provider: {ref.provider}")
 
     async def stream(
@@ -98,7 +130,7 @@ class LLMGateway:
 
     async def _ollama_complete(
         self, ref: ModelRef, messages: list[Message], temperature: float,
-        max_tokens: int, json_mode: bool,
+        max_tokens: int, json_mode: bool, timeout: httpx.Timeout | None = None,
     ) -> str:
         payload: dict[str, Any] = {
             "model": ref.model,
@@ -108,9 +140,21 @@ class LLMGateway:
         }
         if json_mode:
             payload["format"] = "json"
-        r = await self._client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
+        r = await self._post(f"{settings.ollama_base_url}/api/chat", payload, timeout)
         r.raise_for_status()
         return r.json()["message"]["content"]
+
+    async def _post(self, url: str, payload: dict[str, Any], timeout: httpx.Timeout | None):
+        """POST that forwards a per-call timeout when one was resolved. Kept tiny
+        and tolerant of fake test clients whose .post() may not accept `timeout`.
+        """
+        if timeout is not None:
+            try:
+                return await self._client.post(url, json=payload, timeout=timeout)
+            except TypeError:
+                # Fake/legacy client without a `timeout` kwarg — degrade cleanly.
+                return await self._client.post(url, json=payload)
+        return await self._client.post(url, json=payload)
 
     async def _ollama_stream(
         self, ref: ModelRef, messages: list[Message], temperature: float, max_tokens: int,
@@ -137,24 +181,40 @@ class LLMGateway:
 
     async def _anthropic_complete(
         self, ref: ModelRef, messages: list[Message], temperature: float, max_tokens: int,
+        timeout: httpx.Timeout | None = None,
     ) -> str:
+        # Local-first: never require an Anthropic key unless an anthropic model is
+        # actually requested. If one is requested without a key, fail with a clear,
+        # actionable error instead of a confusing 401 from the API.
+        if not settings.anthropic_api_key:
+            raise RuntimeError(
+                f"Anthropic model '{ref.model}' was requested but no API key is set. "
+                "Set ANTHROPIC_API_KEY (e.g. to pin the judge to Claude), or keep the "
+                "default Ollama models for local-only operation."
+            )
         system = " ".join(m["content"] for m in messages if m["role"] == "system")
         convo = [m for m in messages if m["role"] != "system"]
-        r = await self._client.post(
-            f"{settings.anthropic_base_url}/v1/messages",
-            headers={
+        kwargs: dict[str, Any] = {
+            "headers": {
                 "x-api-key": settings.anthropic_api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            json={
+            "json": {
                 "model": ref.model,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "system": system,
                 "messages": convo,
             },
-        )
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            r = await self._client.post(f"{settings.anthropic_base_url}/v1/messages", **kwargs)
+        except TypeError:
+            kwargs.pop("timeout", None)
+            r = await self._client.post(f"{settings.anthropic_base_url}/v1/messages", **kwargs)
         r.raise_for_status()
         return "".join(b.get("text", "") for b in r.json().get("content", []))
 
@@ -162,7 +222,7 @@ class LLMGateway:
 
     async def _openai_complete(
         self, ref: ModelRef, messages: list[Message], temperature: float,
-        max_tokens: int, json_mode: bool,
+        max_tokens: int, json_mode: bool, timeout: httpx.Timeout | None = None,
     ) -> str:
         body: dict[str, Any] = {
             "model": ref.model,
@@ -172,11 +232,17 @@ class LLMGateway:
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        r = await self._client.post(
-            f"{settings.openai_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json=body,
-        )
+        kwargs: dict[str, Any] = {
+            "headers": {"Authorization": f"Bearer {settings.openai_api_key}"},
+            "json": body,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            r = await self._client.post(f"{settings.openai_base_url}/chat/completions", **kwargs)
+        except TypeError:
+            kwargs.pop("timeout", None)
+            r = await self._client.post(f"{settings.openai_base_url}/chat/completions", **kwargs)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 

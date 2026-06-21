@@ -140,6 +140,12 @@ export interface EncounterStreamState {
   phase: EncounterPhase;
   /** True while a round is streaming (between drive() and round_done). */
   running: boolean;
+  /**
+   * Turn number of the round currently being driven (the turn we expect the
+   * round to produce), or null when idle. Surfaced for the "Debating… (turn N)"
+   * in-progress indicator so the UI never leaves the user staring at nothing.
+   */
+  runningTurn: number | null;
   /** Drive N autonomous rounds (Auto / Next Round). */
   drive: (rounds: number) => void;
   /** Submit a human-typed argument as the player's turn. */
@@ -169,6 +175,11 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
   const [phase, setPhase] = useState<EncounterPhase>("intro");
   // True while a round is streaming (between drive() and round_done).
   const [running, setRunning] = useState(false);
+  // Turn we are driving toward; surfaced for the in-progress indicator.
+  const [runningTurn, setRunningTurn] = useState<number | null>(null);
+  // Mirror the latest known turn so a freshly sent command can label itself
+  // "turn N+1" even before any state/phase event lands.
+  const turnRef = useRef(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -192,11 +203,19 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     }
   }, []);
 
-  /** Send a command now if open, else queue it until onopen. */
+  /**
+   * Send a command now if the socket is OPEN, else queue it until onopen.
+   * NOTE: we queue when the socket is anything other than OPEN (CONNECTING,
+   * CLOSING, CLOSED, or absent) so the very first command after entering a
+   * battle is never dropped — onopen (or a reconnect's onopen) drains it.
+   */
   const send = useCallback((payload: Record<string, unknown>) => {
+    // Mark in-progress immediately so the UI shows feedback the instant the
+    // user clicks, even while the socket is still CONNECTING.
+    setRunning(true);
+    setRunningTurn(turnRef.current + 1);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      setRunning(true);
       ws.send(JSON.stringify(payload));
     } else {
       pendingQueue.current.push(payload);
@@ -213,31 +232,56 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     [send]
   );
 
-  const disconnect = useCallback(() => {
+  /**
+   * Tear the socket down. `hard` (the default, used by manual disconnect and
+   * encounter-id changes) closes the socket regardless of readyState and clears
+   * the pending queue. A non-hard teardown is StrictMode-safe: it never closes a
+   * socket that is still CONNECTING (closing a CONNECTING socket triggers the
+   * "WebSocket is closed before the connection is established" warning AND loses
+   * any queued command), and it preserves the pending queue so a command queued
+   * before the (re)connect still drains on the surviving / next socket.
+   */
+  const disconnect = useCallback((hard = true) => {
     if (reconnectTimer.current != null) {
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
     }
-    pendingQueue.current = [];
-    if (wsRef.current) {
-      wsRef.current.onclose = null; // prevent reconnect loop
-      wsRef.current.close();
+    const ws = wsRef.current;
+    if (ws) {
+      if (!hard && ws.readyState === WebSocket.CONNECTING) {
+        // StrictMode double-mount / HMR: leave the in-flight socket alone so the
+        // remount can reuse it and drain the queue. Detaching here would close a
+        // CONNECTING socket and silently drop queued Next Round / Argue commands.
+        return;
+      }
+      ws.onclose = null; // prevent reconnect loop
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      try {
+        ws.close();
+      } catch {
+        /* already closing/closed */
+      }
       wsRef.current = null;
     }
-    setStatus("closed");
-    setRunning(false);
+    if (hard) {
+      pendingQueue.current = [];
+      setStatus("closed");
+      setRunning(false);
+      setRunningTurn(null);
+    }
   }, []);
 
-  useEffect(() => {
-    unmountedRef.current = false;
-    return () => {
-      unmountedRef.current = true;
-    };
-  }, []);
+  // Tracks the encounter id the current socket / queue belongs to, so a
+  // StrictMode remount on the SAME id reuses everything (and does NOT wipe the
+  // pending queue), while a genuine id change resets cleanly.
+  const connectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!encounterId) {
-      disconnect();
+      connectedIdRef.current = null;
+      disconnect(true);
       setEncounter(null);
       setTranscript([]);
       setVerdicts([]);
@@ -248,17 +292,47 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       return;
     }
 
-    // Reset state for new encounter
-    pendingQueue.current = [];
-    setTranscript([]);
-    setVerdicts([]);
-    setCapturableIds([]);
-    setLiveTokens({});
-    setPhase("intro");
-    phaseRef.current = "intro";
+    // Mark this effect-run as mounted. (StrictMode runs cleanup between the two
+    // mounts; the second mount resets this back to false.)
+    unmountedRef.current = false;
+
+    // Only reset per-encounter state when this is a genuinely new encounter id.
+    // On a StrictMode double-mount (same id) we keep the pending queue and any
+    // socket already in flight so the first queued command still runs.
+    const isNewEncounter = connectedIdRef.current !== encounterId;
+    if (isNewEncounter) {
+      pendingQueue.current = [];
+      setTranscript([]);
+      setVerdicts([]);
+      setCapturableIds([]);
+      setLiveTokens({});
+      setPhase("intro");
+      phaseRef.current = "intro";
+      turnRef.current = 0;
+      setRunning(false);
+      setRunningTurn(null);
+      // A real id change must tear down any old socket from the previous id.
+      disconnect(true);
+    }
+    connectedIdRef.current = encounterId;
 
     function connect() {
       if (unmountedRef.current) return;
+      // Reuse a socket that is already open or in flight (StrictMode remount).
+      const existing = wsRef.current;
+      if (
+        existing &&
+        (existing.readyState === WebSocket.OPEN ||
+          existing.readyState === WebSocket.CONNECTING)
+      ) {
+        // If it is already open, drain anything queued during the gap.
+        if (existing.readyState === WebSocket.OPEN) {
+          const queued = pendingQueue.current.splice(0);
+          if (queued.length) setRunning(true);
+          for (const payload of queued) existing.send(JSON.stringify(payload));
+        }
+        return;
+      }
 
       const url = wsUrl(`/api/encounters/${encounterId}/stream`);
       const ws = new WebSocket(url);
@@ -268,9 +342,14 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       ws.onopen = () => {
         if (unmountedRef.current) { ws.close(); return; }
         setStatus("open");
-        // Drain all commands queued before the socket opened.
+        // Drain ALL commands queued before the socket opened (this is what makes
+        // the first Next Round / Argue after entering a battle actually run,
+        // even when it was clicked while the socket was still CONNECTING).
         const queued = pendingQueue.current.splice(0);
-        if (queued.length) setRunning(true);
+        if (queued.length) {
+          setRunning(true);
+          setRunningTurn(turnRef.current + 1);
+        }
         for (const payload of queued) ws.send(JSON.stringify(payload));
       };
 
@@ -304,6 +383,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             });
           } else if (msg.type === "utterance") {
             const u = msg.data as Utterance;
+            if (u.turn > turnRef.current) turnRef.current = u.turn;
             const key = liveKey(u.turn, u.actor_id);
             // The canonical utterance closes its live buffer. Reconcile on the
             // same (turn, actor_id) so we render exactly once: append to the
@@ -360,6 +440,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             });
           } else if (msg.type === "phase") {
             const p = msg.data as PhaseUpdate;
+            if (typeof p.turn_no === "number" && p.turn_no > turnRef.current) {
+              turnRef.current = p.turn_no;
+            }
             setPhase(p.phase);
             phaseRef.current = p.phase;
             setEncounter((prev) =>
@@ -369,9 +452,16 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             );
             setCapturableIds(p.capturable_ids ?? []);
             // Stop auto-reconnecting once the battle has resolved.
-            if (isFinished(p.phase)) stopReconnect();
+            if (isFinished(p.phase)) {
+              stopReconnect();
+              setRunning(false);
+              setRunningTurn(null);
+            }
           } else if (msg.type === "state") {
             const s = msg.data as EncounterState;
+            if (typeof s.turn_no === "number" && s.turn_no > turnRef.current) {
+              turnRef.current = s.turn_no;
+            }
             setEncounter(s);
             // Hydrate transcript + verdicts from full state snapshot.
             // A full snapshot supersedes any in-flight token buffers; drop ones
@@ -399,12 +489,22 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
             if (s.phase) {
               setPhase(s.phase);
               phaseRef.current = s.phase;
-              if (isFinished(s.phase)) stopReconnect();
+              if (isFinished(s.phase)) {
+                stopReconnect();
+                setRunning(false);
+                setRunningTurn(null);
+              }
             }
           } else if (msg.type === "round_done") {
-            setRunning(false);
+            // A drive() cycle finished. If more commands are still queued (e.g.
+            // Auto chained), keep running; otherwise clear the indicator.
+            if (pendingQueue.current.length === 0) {
+              setRunning(false);
+              setRunningTurn(null);
+            }
           } else if (msg.type === "error") {
             setRunning(false);
+            setRunningTurn(null);
             console.error("[useEncounterStream] server error:", msg.message);
           }
         } catch (e) {
@@ -415,18 +515,23 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
       ws.onerror = () => {
         if (unmountedRef.current) return;
         setStatus("error");
-        setRunning(false);
+        // Keep `running`/`runningTurn` + the pending queue intact: onclose will
+        // schedule a reconnect that drains the queue so the command still runs.
       };
 
       ws.onclose = () => {
         if (unmountedRef.current) return;
         setStatus("closed");
-        setRunning(false);
-        // Auto-reconnect unless the encounter has resolved (won/lost).
+        // Auto-reconnect unless the encounter has resolved (won/lost). Keep the
+        // pending queue so onopen on the reconnected socket drains it; do not
+        // clear `running` here — a queued command is still pending.
         if (encounterId && !unmountedRef.current && !isFinished(phaseRef.current)) {
           reconnectTimer.current = setTimeout(() => {
             if (!unmountedRef.current && !isFinished(phaseRef.current)) connect();
           }, RECONNECT_DELAY_MS);
+        } else {
+          setRunning(false);
+          setRunningTurn(null);
         }
       };
     }
@@ -434,7 +539,11 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     connect();
 
     return () => {
-      disconnect();
+      unmountedRef.current = true;
+      // StrictMode-safe teardown: a soft disconnect never closes a CONNECTING
+      // socket and never wipes the pending queue, so the immediate remount can
+      // reuse the in-flight socket and drain any queued command.
+      disconnect(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encounterId]);
@@ -448,8 +557,9 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
     liveTokens,
     phase,
     running,
+    runningTurn,
     drive,
     argue,
-    disconnect,
+    disconnect: () => disconnect(true),
   };
 }

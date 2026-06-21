@@ -123,6 +123,57 @@ def system_prompt(genome: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+# ------------------------------------------------------ append-merge helper
+
+
+def append_fragment(
+    genome: dict[str, Any],
+    fragment: str,
+    *,
+    persona_note: Optional[str] = None,
+    persona_field: str = "evolution_notes",
+) -> dict[str, Any]:
+    """Return a NEW genome with ``fragment`` appended — append-only, never
+    overwriting trained fields.
+
+    This is the safe merge progression uses when a monster evolves: it must
+    layer new *behavior* onto a genome that may have been optimized by GEPA/GRPO
+    without ever clobbering the trained ``system_prompt`` or ``gambit_rules``.
+
+    Guarantees:
+      * ``harness['system_prompt']`` is left exactly as-is (trained field).
+      * ``gambit_rules`` are left exactly as-is (trained field).
+      * ``persona`` base keys (name/tone/backstory/type/...) are preserved; the
+        note is appended into a dedicated additive list field, never overwriting
+        existing persona text.
+      * ``skill_prompt_fragments`` gains ``fragment`` (deduped — appending an
+        already-present fragment is a no-op so re-evolution stays idempotent).
+
+    The input genome is not mutated; a deep copy is returned.
+    """
+    g = copy.deepcopy(genome)
+
+    frags = g.setdefault("skill_prompt_fragments", [])
+    if not isinstance(frags, list):
+        frags = list(frags) if frags else []
+        g["skill_prompt_fragments"] = frags
+    if fragment and fragment not in frags:
+        frags.append(fragment)
+
+    if persona_note:
+        persona = g.setdefault("persona", {})
+        notes = persona.get(persona_field)
+        if not isinstance(notes, list):
+            notes = list(notes) if notes else []
+            persona[persona_field] = notes
+        if persona_note not in notes:
+            notes.append(persona_note)
+
+    # NOTE: deliberately do NOT touch harness['system_prompt'] or gambit_rules —
+    # those are trained and must only ever be appended to via their own operators.
+    return g
+
+
 # ------------------------------------------------------------------ mutation
 
 

@@ -33,6 +33,11 @@ export interface paths {
         /**
          * Create Run
          * @description Create a new run row, roll a starter party, return RunState.
+         *
+         *     THEME topics: the player picks a ``theme`` at run start; each battle draws a
+         *     random topic within it (resolved at encounter creation). ``debate_topic``
+         *     stays populated (NOT NULL) — when a theme is given but no explicit topic, we
+         *     label it with the theme so existing readers (runs.py, RunState) never break.
          */
         post: operations["create_run_api_runs_post"];
         delete?: never;
@@ -75,6 +80,32 @@ export interface paths {
          * @description Move player by (dx,dy); check walkability and wild-enemy collision.
          */
         post: operations["move_player_api_runs__run_id__move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/rest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rest
+         * @description Campsite rest: fully heal the party, advance the day, reset encounters.
+         *
+         *     Healing sets every player-owned monster's effective HP to ``max_hp``. Live HP
+         *     is not a column on the frozen ``Monster`` model (battles track HP elsewhere),
+         *     so "healed to full" is reflected by returning each party member at ``max_hp``
+         *     via MonsterSummary. The day / encounters_since_rest counters are persisted
+         *     best-effort (optional columns) and otherwise computed.
+         */
+        post: operations["rest_api_runs__run_id__rest_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -181,6 +212,35 @@ export interface paths {
          *     turn; the lead enemy rebuts autonomously. REST fallback for the WS argue action.
          */
         post: operations["argue_api_encounters__eid__argue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/encounters/{eid}/assist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assist
+         * @description ARGUE COPILOT (player-first pivot): the lead party monster COACHES the
+         *     player's drafted argument into a stronger one.
+         *
+         *     This does NOT advance the round — it only suggests. The player then sends the
+         *     improved text via the existing POST /{eid}/argue. The coach's quality is driven
+         *     by the monster's TRAINED genome, so training the monster improves the help.
+         *
+         *     404 if the encounter is missing. Wrapped in the same wall-clock guard as
+         *     /argue; on timeout or any failure the coach degrades gracefully rather than
+         *     500-ing.
+         */
+        post: operations["assist_api_encounters__eid__assist_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -388,6 +448,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/monsters/{monster_id}/training/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Training History
+         * @description Legible training timeline for a monster, one entry per TrainingArtifact.
+         *
+         *     Each artifact records a before/after genome + score_delta + accepted flag. We
+         *     surface them oldest-first so the frontend can render an improvement curve. The
+         *     artifact schema has no genome_version column, so we reconstruct a monotonic
+         *     version label by counting *accepted* artifacts up to each row (matching how
+         *     ``apply_genome`` bumps ``Monster.genome_version`` only on acceptance).
+         */
+        get: operations["training_history_api_monsters__monster_id__training_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Run
+         * @description Stamp the run as saved (durable snapshot marker).
+         *
+         *     Player position + party already live in durable PG rows (written on every
+         *     move / capture), so "saving" stamps ``runs.saved_at`` to mark the run as
+         *     resumable. Returns the party size for a quick client-side sanity check.
+         */
+        post: operations["save_run_api_runs__run_id__save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Run
+         * @description Return the full durable run state so a session can be rehydrated.
+         */
+        get: operations["get_run_api_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/world": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get World
+         * @description Return the seed-deterministic WorldSpecLite for a run.
+         *
+         *     POIs are produced by the same ``place_pois`` helper the map router uses, so
+         *     ``/world`` and ``/map`` always agree for a given seed.
+         */
+        get: operations["get_world_api_runs__run_id__world_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -409,6 +562,52 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AssistRequest
+         * @description The player's rough draft; the lead party monster (its trained genome) rewrites
+         *     it into a stronger argument against the current enemy on the live topic.
+         *
+         *     This is the core of the player-first loop: you argue, your monster makes your
+         *     argument better, and training your monster improves the help you get.
+         */
+        AssistRequest: {
+            /**
+             * Draft
+             * @default
+             */
+            draft: string;
+            /** Skill Id */
+            skill_id?: string | null;
+        };
+        /** AssistResult */
+        AssistResult: {
+            /** Encounter Id */
+            encounter_id: string;
+            /** Coach Monster Id */
+            coach_monster_id?: string | null;
+            /**
+             * Suggestions
+             * @default []
+             */
+            suggestions: components["schemas"]["AssistSuggestion"][];
+        };
+        /** AssistSuggestion */
+        AssistSuggestion: {
+            /** Improved */
+            improved: string;
+            /**
+             * Rationale
+             * @default
+             */
+            rationale: string;
+            /** Skill Id */
+            skill_id?: string | null;
+            /**
+             * Angle
+             * @default
+             */
+            angle: string;
+        };
         /** AutoRequest */
         AutoRequest: {
             /**
@@ -450,6 +649,8 @@ export interface components {
             hp: number;
             /** Max Hp */
             max_hp: number;
+            /** Side */
+            side?: ("for" | "against") | null;
         };
         /** CreateEncounterRequest */
         CreateEncounterRequest: {
@@ -472,6 +673,11 @@ export interface components {
              * @default 0
              */
             seed: number;
+            /**
+             * Theme
+             * @description Theme for this run; battles draw a random topic within it
+             */
+            theme?: string | null;
         };
         /** EncounterState */
         EncounterState: {
@@ -580,6 +786,14 @@ export interface components {
             rationale: string;
             /** Damage */
             damage: number;
+            /** Why */
+            why?: string | null;
+            /** Logic */
+            logic?: number | null;
+            /** Persuasion */
+            persuasion?: number | null;
+            /** Actor Id */
+            actor_id?: string | null;
         };
         /** MapState */
         MapState: {
@@ -598,6 +812,11 @@ export interface components {
              * @default []
              */
             enemies: components["schemas"]["TileEnemy"][];
+            /**
+             * Pois
+             * @default []
+             */
+            pois: components["schemas"]["POI"][];
         };
         /** MemoryItem */
         MemoryItem: {
@@ -671,6 +890,26 @@ export interface components {
             encounter_id?: string | null;
         };
         /**
+         * POI
+         * @description A point of interest on the map. `kind` is the structural role.
+         */
+        POI: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "camp" | "town" | "den" | "landmark" | "start" | "goal";
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+        };
+        /**
          * PlayerArgueRequest
          * @description WS-G: a human-typed argument for the player's lead party monster.
          *
@@ -716,8 +955,51 @@ export interface components {
              */
             judge_score: number;
         };
-        /** RunState */
-        RunState: {
+        /** Region */
+        Region: {
+            /** Name */
+            name: string;
+            /**
+             * Biome
+             * @default plains
+             */
+            biome: string;
+            /** Bounds */
+            bounds?: number[] | null;
+        };
+        /** RestResult */
+        RestResult: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Healed
+             * @default []
+             */
+            healed: components["schemas"]["MonsterSummary"][];
+            /**
+             * Day
+             * @default 0
+             */
+            day: number;
+            /**
+             * Encounters Since Rest
+             * @default 0
+             */
+            encounters_since_rest: number;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
+        /**
+         * RunResumeState
+         * @description Full durable run state for GET /api/runs/{id} (survives restart).
+         *
+         *     Extends the in-flight RunState with the captured roster + a resume marker so
+         *     the frontend can rehydrate a session after a reload.
+         */
+        RunResumeState: {
             /** Id */
             id: string;
             /** Debate Topic */
@@ -733,6 +1015,105 @@ export interface components {
              * @default []
              */
             party: components["schemas"]["MonsterSummary"][];
+            /**
+             * Captured
+             * @default []
+             */
+            captured: components["schemas"]["MonsterSummary"][];
+            /** Saved At */
+            saved_at?: string | null;
+            /**
+             * Resumable
+             * @default false
+             */
+            resumable: boolean;
+        };
+        /**
+         * RunSaveResult
+         * @description Result of POST /api/runs/{id}/save — snapshots run + party to durable PG.
+         */
+        RunSaveResult: {
+            /** Run Id */
+            run_id: string;
+            /** Saved */
+            saved: boolean;
+            /** Saved At */
+            saved_at: string;
+            /**
+             * Party Size
+             * @default 0
+             */
+            party_size: number;
+        };
+        /** RunState */
+        RunState: {
+            /** Id */
+            id: string;
+            /** Debate Topic */
+            debate_topic: string;
+            /** Theme */
+            theme?: string | null;
+            /** Player X */
+            player_x: number;
+            /** Player Y */
+            player_y: number;
+            /** Status */
+            status: string;
+            /**
+             * Party
+             * @default []
+             */
+            party: components["schemas"]["MonsterSummary"][];
+        };
+        /**
+         * Scorecard
+         * @description Wave A: measurable before/after training delta against a fixed benchmark.
+         *
+         *     Units are explicit to avoid the legacy `TrainJob.score_delta` ambiguity:
+         *     win_rate_* are 0..1, judge_score_* are 0..100. Computed by the benchmark
+         *     harness (deterministic: temp=0 + fixed seed + N-run averaging).
+         */
+        Scorecard: {
+            /**
+             * Win Rate Before
+             * @default 0
+             */
+            win_rate_before: number;
+            /**
+             * Win Rate After
+             * @default 0
+             */
+            win_rate_after: number;
+            /**
+             * Win Rate Delta
+             * @default 0
+             */
+            win_rate_delta: number;
+            /**
+             * Judge Score Before
+             * @default 0
+             */
+            judge_score_before: number;
+            /**
+             * Judge Score After
+             * @default 0
+             */
+            judge_score_after: number;
+            /**
+             * Judge Score Delta
+             * @default 0
+             */
+            judge_score_delta: number;
+            /**
+             * Genome Diff
+             * @default
+             */
+            genome_diff: string;
+            /**
+             * N Benchmark Runs
+             * @default 0
+             */
+            n_benchmark_runs: number;
         };
         /** TileEnemy */
         TileEnemy: {
@@ -766,6 +1147,7 @@ export interface components {
             status: "queued" | "running" | "awaiting_preference" | "done" | "failed";
             /** Score Delta */
             score_delta?: number | null;
+            scorecard?: components["schemas"]["Scorecard"] | null;
         };
         /** TrainRequest */
         TrainRequest: {
@@ -774,6 +1156,37 @@ export interface components {
              * @default 4
              */
             rounds: number;
+        };
+        /** TrainingHistory */
+        TrainingHistory: {
+            /** Monster Id */
+            monster_id: string;
+            /**
+             * Entries
+             * @default []
+             */
+            entries: components["schemas"]["TrainingHistoryEntry"][];
+        };
+        /** TrainingHistoryEntry */
+        TrainingHistoryEntry: {
+            /** Genome Version */
+            genome_version: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "gepa" | "grpo" | "evolution" | "seed";
+            /** Created At */
+            created_at: string;
+            /** Judge Score */
+            judge_score?: number | null;
+            /** Win Rate */
+            win_rate?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** TurnResult */
         TurnResult: {
@@ -824,6 +1237,34 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WorldSpecLite
+         * @description Structured world the FE can render now; the Wave-C generator must emit a
+         *     superset of these fields so the frontend contract survives unchanged.
+         */
+        WorldSpecLite: {
+            /**
+             * Seed
+             * @default 0
+             */
+            seed: number;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /**
+             * Regions
+             * @default []
+             */
+            regions: components["schemas"]["Region"][];
+            /**
+             * Pois
+             * @default []
+             */
+            pois: components["schemas"]["POI"][];
+            start?: components["schemas"]["POI"] | null;
+            goal?: components["schemas"]["POI"] | null;
         };
     };
     responses: never;
@@ -940,6 +1381,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MoveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rest_api_runs__run_id__rest_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestResult"];
                 };
             };
             /** @description Validation Error */
@@ -1138,6 +1610,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TurnResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assist_api_encounters__eid__assist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistResult"];
                 };
             };
             /** @description Validation Error */
@@ -1499,6 +2006,130 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TrainJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    training_history_api_monsters__monster_id__training_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                monster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrainingHistory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_run_api_runs__run_id__save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSaveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_api_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResumeState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_world_api_runs__run_id__world_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldSpecLite"];
                 };
             };
             /** @description Validation Error */

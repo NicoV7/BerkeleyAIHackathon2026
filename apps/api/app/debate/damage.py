@@ -16,9 +16,20 @@ multiplier). Keep these two in sync by hand.
 """
 from __future__ import annotations
 
-# Attacker -> defender -> multiplier. Mirrors packages/shared/enums.ts TYPE_CHART.
-# Types are the DebateType *values* (uppercase strings) used everywhere else.
-TYPE_CHART: dict[str, dict[str, float]] = {
+import copy
+
+# Neutral multiplier when a pairing is not listed in the chart.
+NEUTRAL_MULTIPLIER: float = 1.0
+
+# Default type chart — attacker -> defender -> multiplier. Mirrors
+# packages/shared/enums.ts TYPE_CHART. Types are the DebateType *values*
+# (uppercase strings) used everywhere else.
+#
+# This is the FROZEN default; battle math is unchanged unless the active chart is
+# overridden (e.g. by reseeding from the Skill/type-chart catalog). Kept separate
+# from the mutable `TYPE_CHART` so callers can always recover the shipped values
+# via `reset_type_chart()`.
+DEFAULT_TYPE_CHART: dict[str, dict[str, float]] = {
     "LOGOS": {"PATHOS": 1.5, "ETHOS": 0.75, "CHAOS": 0.75},
     "PATHOS": {"ETHOS": 1.5, "LOGOS": 0.75, "SOCRATIC": 0.75},
     "ETHOS": {"CHAOS": 1.5, "PATHOS": 0.75, "RHETORIC": 0.75},
@@ -27,12 +38,56 @@ TYPE_CHART: dict[str, dict[str, float]] = {
     "RHETORIC": {"SOCRATIC": 0.75, "LOGOS": 1.5, "CHAOS": 0.75},
 }
 
+# The ACTIVE chart. Starts as an independent deep copy of the defaults so
+# behavior is identical out of the box; can be overridden/extended at runtime
+# (see set_type_chart / override_type_chart) without touching the defaults.
+TYPE_CHART: dict[str, dict[str, float]] = copy.deepcopy(DEFAULT_TYPE_CHART)
+
 
 def type_multiplier(attacker: str | None, defender: str | None) -> float:
-    """Type-effectiveness multiplier; 1.0 when either type is unknown."""
+    """Type-effectiveness multiplier; 1.0 when either type is unknown.
+
+    Looks up the *active* :data:`TYPE_CHART`. Identical results to the original
+    hardcoded chart unless the active chart has been overridden/extended.
+    """
     if not attacker or not defender:
-        return 1.0
-    return TYPE_CHART.get(attacker.upper(), {}).get(defender.upper(), 1.0)
+        return NEUTRAL_MULTIPLIER
+    return TYPE_CHART.get(attacker.upper(), {}).get(
+        defender.upper(), NEUTRAL_MULTIPLIER
+    )
+
+
+def set_type_chart(chart: dict[str, dict[str, float]]) -> None:
+    """Replace the active type chart wholesale (keys normalized to uppercase).
+
+    Use when a seed/catalog supplies the full chart. Pass an empty dict plus
+    :func:`reset_type_chart` to restore defaults.
+    """
+    normalized: dict[str, dict[str, float]] = {}
+    for attacker, row in chart.items():
+        normalized[str(attacker).upper()] = {
+            str(defender).upper(): float(mult) for defender, mult in row.items()
+        }
+    TYPE_CHART.clear()
+    TYPE_CHART.update(normalized)
+
+
+def override_type_chart(chart: dict[str, dict[str, float]]) -> None:
+    """Merge entries into the active chart (per-pairing override/extend).
+
+    Only the listed (attacker, defender) pairings change; everything else keeps
+    its current value. Keys are normalized to uppercase.
+    """
+    for attacker, row in chart.items():
+        dst = TYPE_CHART.setdefault(str(attacker).upper(), {})
+        for defender, mult in row.items():
+            dst[str(defender).upper()] = float(mult)
+
+
+def reset_type_chart() -> None:
+    """Restore the active chart to the frozen shipped defaults."""
+    TYPE_CHART.clear()
+    TYPE_CHART.update(copy.deepcopy(DEFAULT_TYPE_CHART))
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:

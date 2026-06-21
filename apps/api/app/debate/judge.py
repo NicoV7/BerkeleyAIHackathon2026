@@ -17,6 +17,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from app.config import settings
 from app.gateway.gateway import gateway
 
 try:  # json_repair is in the venv; degrade gracefully if not
@@ -25,11 +26,23 @@ except Exception:  # noqa: BLE001
     repair_json = None  # type: ignore[assignment]
 
 
-# The "judge" alias maps to settings.llm_judge_model (gemma3:4b), which may not
-# be pulled in every environment. Allow an env override; orchestrator also passes
-# a fallback_model (the combatants' own model) so judging degrades to a present
-# model before resorting to the heuristic.
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "judge")
+# Judge model selection (latency-first):
+#   1. JUDGE_MODEL env override (highest priority — pin to e.g. Claude),
+#   2. settings.judge_model_fast (a SMALL, fast local model so scoring doesn't
+#      time out at the old 120s ceiling),
+#   3. the "judge" alias as a last resort.
+# The orchestrator also passes a fallback_model (the combatants' own model) so
+# judging degrades to a present model before resorting to the heuristic.
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL") or getattr(settings, "judge_model_fast", "") or "judge"
+
+
+def _judge_timeout() -> float:
+    """Per-call budget for a judge scoring call (seconds).
+
+    Uses the larger NON-streaming `llm_call_timeout_s` (~28s) — judging is a
+    single completion, not a streamed turn, so it gets the full actor budget.
+    """
+    return float(getattr(settings, "llm_call_timeout_s", 28) or 28)
 
 _RUBRIC = (
     "You are a strict but fair debate judge. Score each argument 0-100 on how "
@@ -138,6 +151,7 @@ async def _judge_call(topic: str, items: list[dict[str, Any]], model: str) -> An
         temperature=0.2,
         max_tokens=160,
         json_mode=True,
+        timeout=_judge_timeout(),
     )
     return _parse_json(raw)
 

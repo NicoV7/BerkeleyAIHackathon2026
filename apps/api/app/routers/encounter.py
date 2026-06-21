@@ -10,6 +10,7 @@ reused by the debate router.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -324,13 +325,16 @@ async def create_encounter(
     enemies = [_to_combatant(m, "enemy") for m in enemy_monsters]
     combatants = party + enemies
 
-    # Topic is randomized PER BATTLE (not preseeded per run). run.debate_topic is
-    # kept as a legacy/theme field but no longer drives the encounter.
+    # Topic is randomized PER BATTLE within the run's THEME. The player picks a
+    # theme at run start; each battle draws a random topic inside it. Unknown/
+    # empty theme falls back to the full catalog (pick_random_topic never raises).
     from app.debate.topics import pick_random_topic
 
-    topic = pick_random_topic()
-
     eid = str(uuid.uuid4())
+    # Seed off the encounter id so the per-battle topic is stable on retry but
+    # still varies across battles within the run/theme.
+    topic_seed = uuid.UUID(eid).int & 0x7FFFFFFF
+    topic = pick_random_topic(seed=topic_seed, theme=getattr(run, "theme", None))
     enc = Encounter(
         id=eid,
         run_id=req.run_id,
@@ -344,6 +348,15 @@ async def create_encounter(
 
     await seed_redis(eid, req.run_id, topic, combatants)
     await set_meta(eid, phase="debating")
+
+    # Latency fix: warm the local model(s) so the first real round isn't a cold start.
+    try:
+        from app.debate.orchestrator import prewarm_models
+
+        asyncio.create_task(prewarm_models())
+    except Exception:  # noqa: BLE001 — prewarm is best-effort, never block encounter creation
+        pass
+
     return await build_encounter_state(eid)
 
 

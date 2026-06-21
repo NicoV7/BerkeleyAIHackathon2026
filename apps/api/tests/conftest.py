@@ -186,9 +186,11 @@ class _StubGateway:
         temperature: float = 0.7,
         max_tokens: int = 512,
         json_mode: bool = False,
+        timeout: float | None = None,
     ) -> str:
         self.complete_calls.append(
-            {"messages": messages, "model": model, "json_mode": json_mode}
+            {"messages": messages, "model": model, "json_mode": json_mode,
+             "timeout": timeout}
         )
         if json_mode:
             # Plausible judge-style JSON so json_repair/parse paths stay exercised.

@@ -25,6 +25,11 @@ class HealthResponse(BaseModel):
 class CreateRunRequest(BaseModel):
     topic: str = Field(..., description="The debate topic for this entire run")
     seed: int = 0
+    # Theme picked at run start; each battle draws a random topic within it.
+    # Optional/additive — when absent, battles fall back to the full catalog.
+    theme: Optional[str] = Field(
+        default=None, description="Theme for this run; battles draw a random topic within it"
+    )
 
 
 class MonsterSummary(BaseModel):
@@ -42,6 +47,8 @@ class MonsterSummary(BaseModel):
 class RunState(BaseModel):
     id: str
     debate_topic: str
+    # Theme chosen at run start (additive/Optional for backward compat).
+    theme: Optional[str] = None
     player_x: int
     player_y: int
     status: str
@@ -62,6 +69,50 @@ class MapState(BaseModel):
     player_x: int
     player_y: int
     enemies: list[TileEnemy] = []
+    # Wave 2: structured POIs overlaid on the grid (camp/town/den/landmark/goal).
+    # Additive/Optional so the existing MapState consumers keep working.
+    pois: list["POI"] = []
+
+
+# ---- World structure (Wave 2 WorldSpec-lite; strict subset of the Wave-C WorldSpec) ----
+
+
+class POI(BaseModel):
+    """A point of interest on the map. `kind` is the structural role."""
+    kind: Literal["camp", "town", "den", "landmark", "start", "goal"]
+    x: int
+    y: int
+    name: str = ""
+
+
+class Region(BaseModel):
+    name: str
+    biome: str = "plains"
+    # Inclusive tile bounds [x0,y0,x1,y1]; optional so a flat map can omit them.
+    bounds: Optional[list[int]] = None
+
+
+class WorldSpecLite(BaseModel):
+    """Structured world the FE can render now; the Wave-C generator must emit a
+    superset of these fields so the frontend contract survives unchanged."""
+    seed: int = 0
+    width: int
+    height: int
+    regions: list[Region] = []
+    pois: list[POI] = []
+    start: Optional[POI] = None
+    goal: Optional[POI] = None
+
+
+# ---- Campsite (Wave 2: rest hub) ----
+
+
+class RestResult(BaseModel):
+    run_id: str
+    healed: list[MonsterSummary] = []
+    day: int = 0
+    encounters_since_rest: int = 0
+    message: str = ""
 
 
 class MoveRequest(BaseModel):
@@ -85,6 +136,8 @@ class CombatantState(BaseModel):
     role: Literal["party", "enemy"]
     hp: int
     max_hp: int
+    # Which side of the debate this combatant argues (clarity fix). Additive/Optional.
+    side: Optional[Literal["for", "against"]] = None
 
 
 class Utterance(BaseModel):
@@ -153,6 +206,32 @@ class TurnResult(BaseModel):
     capturable_ids: list[str] = []
 
 
+# ---- Argue Copilot (player-first pivot: the monster COACHES the player's argument) ----
+
+
+class AssistRequest(BaseModel):
+    """The player's rough draft; the lead party monster (its trained genome) rewrites
+    it into a stronger argument against the current enemy on the live topic.
+
+    This is the core of the player-first loop: you argue, your monster makes your
+    argument better, and training your monster improves the help you get."""
+    draft: str = ""
+    skill_id: Optional[str] = None
+
+
+class AssistSuggestion(BaseModel):
+    improved: str  # the stronger version of the player's argument, ready to send
+    rationale: str = ""  # one-line "why this is stronger" coaching note
+    skill_id: Optional[str] = None  # suggested skill/rhetorical angle
+    angle: str = ""  # short label for the rhetorical strategy used
+
+
+class AssistResult(BaseModel):
+    encounter_id: str
+    coach_monster_id: Optional[str] = None  # the party monster acting as your coach
+    suggestions: list[AssistSuggestion] = []  # 1+ improved drafts to pick from
+
+
 class CaptureRequest(BaseModel):
     wild_id: str
 
@@ -203,12 +282,45 @@ class TrainRequest(BaseModel):
     rounds: int = 4
 
 
+class Scorecard(BaseModel):
+    """Wave A: measurable before/after training delta against a fixed benchmark.
+
+    Units are explicit to avoid the legacy `TrainJob.score_delta` ambiguity:
+    win_rate_* are 0..1, judge_score_* are 0..100. Computed by the benchmark
+    harness (deterministic: temp=0 + fixed seed + N-run averaging).
+    """
+    win_rate_before: float = 0.0
+    win_rate_after: float = 0.0
+    win_rate_delta: float = 0.0
+    judge_score_before: float = 0.0
+    judge_score_after: float = 0.0
+    judge_score_delta: float = 0.0
+    genome_diff: str = ""
+    n_benchmark_runs: int = 0
+
+
+class TrainingHistoryEntry(BaseModel):
+    genome_version: int
+    kind: Literal["gepa", "grpo", "evolution", "seed"]
+    created_at: str
+    judge_score: Optional[float] = None
+    win_rate: Optional[float] = None
+    note: str = ""
+
+
+class TrainingHistory(BaseModel):
+    monster_id: str
+    entries: list[TrainingHistoryEntry] = []
+
+
 class TrainJob(BaseModel):
     job_id: str
     monster_id: str
     kind: Literal["gepa", "grpo"]
     status: Literal["queued", "running", "awaiting_preference", "done", "failed"]
     score_delta: Optional[float] = None
+    # Wave A: full measurable delta (Optional — populated when a benchmark ran).
+    scorecard: Optional["Scorecard"] = None
 
 
 class PreferenceVariant(BaseModel):
@@ -225,3 +337,31 @@ class PreferenceBatch(BaseModel):
 
 class PreferenceSubmit(BaseModel):
     ranking: list[str]  # variant_ids best -> worst
+
+
+# ---- Persistence (Wave A cross-cutting: run save / resume) ----
+
+
+class RunSaveResult(BaseModel):
+    """Result of POST /api/runs/{id}/save — snapshots run + party to durable PG."""
+    run_id: str
+    saved: bool
+    saved_at: str
+    party_size: int = 0
+
+
+class RunResumeState(BaseModel):
+    """Full durable run state for GET /api/runs/{id} (survives restart).
+
+    Extends the in-flight RunState with the captured roster + a resume marker so
+    the frontend can rehydrate a session after a reload.
+    """
+    id: str
+    debate_topic: str
+    player_x: int
+    player_y: int
+    status: str
+    party: list[MonsterSummary] = []
+    captured: list[MonsterSummary] = []
+    saved_at: Optional[str] = None
+    resumable: bool = False
