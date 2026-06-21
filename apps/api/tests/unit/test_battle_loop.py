@@ -277,7 +277,7 @@ def test_default_genomes_keep_harness_thin_and_tactics_in_skills() -> None:
 
     assert party["harness"]["system_prompt"].startswith("Thin party battle harness")
     assert enemy["harness"]["system_prompt"].startswith("Thin enemy battle harness")
-    assert any("team performance" in f for f in party["skill_prompt_fragments"])
+    assert any("central claim" in f for f in party["skill_prompt_fragments"])
     assert any("failure mode" in f for f in enemy["skill_prompt_fragments"])
     assert all("failure mode" not in d for d in enemy["harness"]["directives"])
 

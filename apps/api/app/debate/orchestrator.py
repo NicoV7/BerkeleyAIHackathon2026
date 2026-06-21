@@ -231,6 +231,16 @@ def _actor_max_tokens() -> int:
     return int(getattr(settings, "actor_max_tokens", 64) or 64)
 
 
+def _enemy_rebuttal_completion_timeout() -> float:
+    """Full-response budget for human-round enemy rebuttals."""
+    return float(getattr(settings, "enemy_rebuttal_completion_timeout_s", 5) or 5)
+
+
+def _enemy_rebuttal_max_tokens() -> int:
+    """Token cap for the stronger human-round rebuttal model."""
+    return int(getattr(settings, "enemy_rebuttal_max_tokens", _actor_max_tokens()) or _actor_max_tokens())
+
+
 def _battle_damage_multiplier() -> float:
     """Applied-damage pacing multiplier for shortening encounters."""
     return max(0.1, float(getattr(settings, "battle_damage_multiplier", 1.0) or 1.0))
@@ -591,6 +601,29 @@ async def _gather_memories(actor: Combatant, topic: str, run_id: str | None) -> 
         return [s for s in out if s]
     except Exception:  # noqa: BLE001
         return []
+
+
+async def _cached_opening_memories(topic: str, actor: Combatant) -> list[str]:
+    """Retrieve cached side openings as rebuttal context without generating."""
+    try:
+        from app.debate.materialize import get_cached_opening
+
+        own_side = _side_for(actor)
+        opposing_side = "for" if own_side == "against" else "against"
+        own, opposing = await asyncio.gather(
+            get_cached_opening(topic, own_side),
+            get_cached_opening(topic, opposing_side),
+            return_exceptions=True,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+    memories: list[str] = []
+    if isinstance(own, str) and own.strip():
+        memories.append(f"Your own cached opening angle: {own.strip()}")
+    if isinstance(opposing, str) and opposing.strip():
+        memories.append(f"The opposing cached opening angle: {opposing.strip()}")
+    return memories
 
 
 def _decide_action(actor: Combatant, battle_state: dict[str, Any]) -> dict[str, Any]:
@@ -954,7 +987,32 @@ def _action_max_tokens(action: dict[str, Any]) -> int:
         requested = int(action.get("max_tokens") or base)
     except (TypeError, ValueError):
         requested = base
-    return max(32, min(base, requested))
+    hard_cap = base
+    if action.get("allow_max_tokens_over_base"):
+        hard_cap = max(base, _enemy_rebuttal_max_tokens())
+    return max(32, min(hard_cap, requested))
+
+
+def _action_completion_timeout(action: dict[str, Any]) -> float:
+    """Return the full-completion wall-clock budget for a non-streamed action."""
+    try:
+        requested = float(action.get("completion_timeout_s") or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested > 0:
+        return requested
+    return _actor_timeout()
+
+
+def _action_first_token_timeout(action: dict[str, Any], model: str) -> float:
+    """Return the first-token stream guard after action-specific overrides."""
+    try:
+        requested = float(action.get("first_token_timeout_s") or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested > 0:
+        return requested
+    return _first_token_timeout(model)
 
 
 def _looks_like_heading(line: str) -> bool:
@@ -1030,7 +1088,7 @@ async def _stream_utterance(
     )
     model = _actor_model(actor)
     # WS-4: the first-token budget widens for a warm (prewarmed/resident) model.
-    first_token_budget = _first_token_timeout(model)
+    first_token_budget = _action_first_token_timeout(action, model)
     parts: list[str] = []
     fallback_reason: str | None = None
     try:
@@ -1937,13 +1995,26 @@ async def run_human_round_stream(
 
     # --- Enemy rebuttal (autonomous) ---
     battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
-    action = _decide_action(enemy, battle_state)
+    action = {
+        **_decide_action(enemy, battle_state),
+        "completion_timeout_s": _enemy_rebuttal_completion_timeout(),
+        "max_tokens": _enemy_rebuttal_max_tokens(),
+        "allow_max_tokens_over_base": True,
+    }
     if enemy_status_contract:
         action = {**action, "status_contract": enemy_status_contract}
         if enemy_max_tokens is not None:
             action["max_tokens"] = enemy_max_tokens
-    memories = await _gather_memories(enemy, topic, run_id)
+    memories = [
+        *(await _gather_memories(enemy, topic, run_id)),
+        *(await _cached_opening_memories(topic, enemy)),
+    ]
     transcript = await get_transcript_safe(eid)
+    if not any(
+        u.get("actor_id") == player.monster_id and u.get("turn") == player_utt["turn"]
+        for u in transcript
+    ):
+        transcript = [*transcript, player_utt]
 
     # WS-5 counter-skill: if the enemy's own action resolves to Rhetorical Flourish,
     # prime its rebuttal with the PLAYER's predicted next move (the just-submitted
@@ -1981,8 +2052,8 @@ async def run_human_round_stream(
                 parse_candidates(settings.enemy_actor_candidates),
                 enemy_messages,
                 temperature=0.8,
-                max_tokens=_actor_max_tokens(),
-                timeout=_actor_timeout(),
+                max_tokens=_action_max_tokens(action),
+                timeout=_action_completion_timeout(action),
             )
             enemy_text = _finalize_actor_text((result.text or "").strip(), enemy) if result.ok else ""
         except Exception:  # noqa: BLE001 — never let a generation error orphan the judge task

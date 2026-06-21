@@ -70,6 +70,8 @@ def test_first_token_timeout_is_small_and_split_from_call_timeout() -> None:
     # actor_max_tokens is a small, punchy cap.
     assert isinstance(settings.actor_max_tokens, int)
     assert settings.actor_max_tokens <= 96
+    assert settings.enemy_rebuttal_completion_timeout_s <= 5
+    assert settings.enemy_rebuttal_max_tokens <= 96
 
 
 def test_worst_case_complete_round_under_round_timeout() -> None:
@@ -114,6 +116,13 @@ def test_stream_first_token_guard_uses_small_timeout(monkeypatch: pytest.MonkeyP
 
     asyncio.run(_drive())
     assert captured["timeout"] == 3.0, "stream guard must use first_token_timeout_s"
+
+
+def test_action_first_token_override_caps_enemy_rebuttal() -> None:
+    assert orch._action_first_token_timeout(
+        {"first_token_timeout_s": 10},
+        "any-model",
+    ) == 10.0
 
 
 # --------------------------------------------------------------------------- #

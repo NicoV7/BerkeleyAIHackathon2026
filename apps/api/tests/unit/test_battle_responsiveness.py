@@ -85,7 +85,7 @@ async def _drain(agen) -> list[orch.Event]:
     return [ev async for ev in agen]
 
 
-def _fake_candidates(text: str = "", ok: bool = True):
+def _fake_candidates(text: str = "", ok: bool = True, captured: dict[str, Any] | None = None):
     """A fake `run_candidates` returning `text` as the enemy's full rebuttal with
     NO network. The human round now generates the enemy turn via the candidate
     chain (Haiku -> Groq -> Cerebras -> local) in ONE non-streaming call and
@@ -95,6 +95,10 @@ def _fake_candidates(text: str = "", ok: bool = True):
     from app.gateway.candidates import CandidateResult
 
     async def fake_run_candidates(specs, messages, **k):
+        if captured is not None:
+            captured["specs"] = specs
+            captured["messages"] = messages
+            captured.update(k)
         return CandidateResult(text=text, ok=ok and bool(text), attempts=1)
 
     return fake_run_candidates
@@ -108,11 +112,12 @@ def _fake_candidates(text: str = "", ok: bool = True):
 async def test_human_round_emits_enemy_utterance_no_token_stream(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
+    captured: dict[str, Any] = {}
     # Enemy rebuttal is generated in ONE call (pause -> typewriter on the client),
     # so the round emits the canonical utterance and NO per-token deltas.
     monkeypatch.setattr(
         "app.gateway.candidates.run_candidates",
-        _fake_candidates("Animals don't deserve human rights."),
+        _fake_candidates("Animals don't deserve human rights.", captured=captured),
     )
 
     async def fake_score(topic, items, fallback_model=None, **k):
@@ -143,6 +148,8 @@ async def test_human_round_emits_enemy_utterance_no_token_stream(
     assert enemy_utt[0].data["text"].strip().startswith("Animals don't deserve human rights")
     assert enemy_utt[0].data["side"] == "against"
     assert "server_ts" in enemy_utt[0].data and "elapsed_ms" in enemy_utt[0].data
+    assert captured["timeout"] == orch.settings.enemy_rebuttal_completion_timeout_s
+    assert captured["max_tokens"] == orch.settings.enemy_rebuttal_max_tokens
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +323,63 @@ async def test_round1_enemy_never_uses_cached_opening(
     )
     enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
     assert enemy_utt and enemy_utt[0].data["text"].startswith("That premise fails")
+
+
+async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_redis: _FakeRedis,
+) -> None:
+    """Cached openings are prompt context only; the enemy still rebuts the player."""
+    import app.debate.materialize as mz
+
+    captured: dict[str, Any] = {}
+
+    async def fake_cached_opening(topic: str, side: str = "against") -> str | None:
+        if side == "against":
+            return "I argue AGAINST four-day weeks because coordination debt compounds."
+        if side == "for":
+            return "I argue FOR four-day weeks because rest improves focus."
+        return None
+
+    async def boom_opening(*a, **k):  # pragma: no cover
+        raise AssertionError("human enemy rebuttals must not materialize an opening")
+
+    async def fake_score(topic, items, fallback_model=None, **k):
+        from app.debate.judge import JudgeScore
+
+        return [JudgeScore(actor_id=it["actor_id"], score=60.0, rationale="ok") for it in items]
+
+    monkeypatch.setattr(mz, "get_cached_opening", fake_cached_opening)
+    monkeypatch.setattr(mz, "get_or_create_opening", boom_opening)
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates",
+        _fake_candidates(
+            "Your rest claim skips coordination debt. Shorter weeks still need trusted handoffs.",
+            captured=captured,
+        ),
+    )
+    monkeypatch.setattr(orch, "score_round", fake_score)
+
+    events = await _drain(
+        orch.run_human_round_stream(
+            "enc-grounded",
+            "A four-day work week should be the standard.",
+            [_combatant("party", "p1", "Confucius"), _combatant("enemy", "e1", "Pedantus18")],
+            None,
+            0,
+            {"party": 1.0, "enemy": 1.0},
+            "Four days should be the standard to improve rest.",
+        )
+    )
+
+    prompt_text = "\n".join(message["content"] for message in captured["messages"])
+    enemy_utt = next(e.data for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy")
+    assert "Four days should be the standard to improve rest." in prompt_text
+    assert "Directly rebut THAT specific claim first" in prompt_text
+    assert "Your own cached opening angle" in prompt_text
+    assert "The opposing cached opening angle" in prompt_text
+    assert "coordination debt" in prompt_text
+    assert enemy_utt["text"].startswith("Your rest claim skips coordination debt.")
 
 
 def test_prompt_states_explicit_side() -> None:
@@ -702,5 +766,5 @@ async def test_generated_actor_turn_gets_second_sentence_floor(
     assert used_fallback is False
     assert reason is None
     assert "4.8%" in text
-    assert text.endswith("team throughput.")
-    assert "team throughput" in text
+    assert text.endswith("clear evidence.")
+    assert "clear evidence" in text

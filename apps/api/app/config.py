@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     llm_embed_model: str = "nomic-embed-text"
     gateway_fallback_enabled: bool = True
     gateway_actor_candidates: str = (
-        "groq/llama-3.1-8b-instant,"
+        "groq/llama-3.3-70b-versatile,"
         "cerebras/llama-3.3-70b,"
+        "gemini/gemini-2.5-flash,"
+        "groq/llama-3.1-8b-instant,"
         "gemini/gemini-2.5-flash-lite,"
         "openrouter/openrouter/free,"
         "ollama/gemma3:1b"
@@ -116,6 +118,12 @@ class Settings(BaseSettings):
     # hang: a truly stalled model is still bounded by `first_token_timeout_s` until
     # it's marked warm. Set to first_token_timeout_s to disable the widening.
     first_token_timeout_warm_s: int = 22
+    # Human-round enemy rebuttals use enemy_actor_candidates above, but with a
+    # tighter completion budget than headless actor turns. Give the candidate
+    # chain enough room for a clean 1-2 sentence answer without drifting beyond
+    # the 3-5s playability target.
+    enemy_rebuttal_completion_timeout_s: int = 5
+    enemy_rebuttal_max_tokens: int = 96
     # Ollama keep_alive sent on the encounter-create prewarm so the actor model
     # stays resident across the battle's idle gaps (turn-to-turn thinking + the
     # player typing). A string Ollama accepts ("10m") or seconds. Empty -> omit.

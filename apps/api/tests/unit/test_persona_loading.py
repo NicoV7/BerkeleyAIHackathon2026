@@ -191,6 +191,27 @@ def test_sanitize_keeps_decimal_percentages_together() -> None:
     assert "4.8%" in text
 
 
+def test_sanitize_repairs_malformed_model_spacing() -> None:
+    # Arrange
+    raw = (
+        "Against: MultipleUFOsightingscanbeexplainedbymisidentificationofnatural"
+        "phenomenaormanmadeobjects,notalientechnologydefyinglawsofphysics. "
+        "Thesesightingsareanecdotalandlackconcreteevidencetosupportthe"
+        "extraordinaryclaimofalienvisits."
+    )
+
+    # Act
+    text = sanitize_battle_utterance(raw)
+
+    # Assert
+    assert text == (
+        "Multiple UFO sightings can be explained by misidentification of natural "
+        "phenomena or manmade objects, not alien technology defying laws of physics. "
+        "These sightings are anecdotal and lack concrete evidence to support the "
+        "extraordinary claim of alien visits."
+    )
+
+
 def test_sentence_floor_adds_role_specific_support_sentence() -> None:
     party = ensure_battle_sentence_floor(
         "Remote teams ship more work when focus time increases.",
@@ -202,6 +223,6 @@ def test_sentence_floor_adds_role_specific_support_sentence() -> None:
     )
 
     assert party.count(".") == 2
-    assert "team throughput" in party
+    assert "clear evidence" in party
     assert enemy.count(".") == 2
-    assert "coordination, trust" in enemy
+    assert "burden of proof" in enemy

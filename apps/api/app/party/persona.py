@@ -30,23 +30,42 @@ ENEMY_DIRECTIVES = [
 
 PARTY_SKILL_FRAGMENTS = [
     "Amplify party momentum instead of restarting the argument.",
-    "Connect every support point back to team performance, not just individual comfort.",
-    "Use one concrete metric, mechanism, or example before claiming team impact.",
+    "Connect every support point back to the topic's central claim.",
+    "Use one concrete metric, mechanism, or example before claiming impact.",
 ]
 
 ENEMY_SKILL_FRAGMENTS = [
     "Challenge the party's premise directly and keep pressure on their weakest claim.",
     "After rebutting, add a new concrete cost, failure mode, or counterexample.",
-    "Rotate objections across coordination latency, trust decay, onboarding gaps, culture drift, and accountability.",
+    "Rotate objections across evidence gaps, causal leaps, weak examples, tradeoffs, and burden of proof.",
     "Do not repeat the same objection twice; escalate to a different failure mode.",
 ]
 
 PARTY_SUPPORT_SENTENCE = (
-    "That matters because focused individual execution compounds into stronger team throughput."
+    "That matters because the strongest side connects its claim to clear evidence."
 )
 ENEMY_SUPPORT_SENTENCE = (
-    "That matters because team performance depends on coordination, trust, and sustainable execution."
+    "That matters because the burden of proof belongs to the side making the claim."
 )
+
+_GLUED_WORDS = frozenset(
+    """
+    a about accuracy accurate across actual actually add added adding against alien aliens all already
+    an anecdotal and answer answered answers any appeal argument arguments are assertion at be because
+    been being better burden but by can cannot case cases causal claim claims clear concrete cost costs
+    could counter counterexample defying demand depends did do does due duties duty earth evidence
+    example examples explain explained explaining explains extraordinary fact facts fail fails failure false
+    from gap gaps had has have however
+    if in into is it lack lacks law laws likely logic made manmade may mechanism mechanisms
+    misidentification more must natural need needs no not objects of on only or phenomena physics
+    point points premise proof prove proves rebut rebuttal rebuttals reason reasons recording recordings
+    sightings side still
+    strong stronger strongest support supports technology than that the their them there therefore these
+    they this those to tradeoff tradeoffs true truth ufo ufos visited visits was weak where which while
+    who why will with without would
+    """.split()
+)
+_GLUED_WORD_MAX_LEN = max(len(part) for part in _GLUED_WORDS)
 
 PERSONA_PROMPT_KEYS = (
     "archetype",
@@ -250,6 +269,7 @@ def sanitize_battle_utterance(
             lines.append(line)
 
     compact = re.sub(r"\s+", " ", " ".join(lines) if lines else text.strip()).strip()
+    compact = _repair_malformed_battle_format(compact)
     if not compact:
         return ""
 
@@ -343,16 +363,16 @@ def _party_reaction_templates(style: str, domain: str) -> dict[str, list[str]]:
     return {
         "takes_damage": [
             f"{style}, that hit shows the objection has force, not that our case fails.",
-            f"{style}, I absorb the cost and keep the mechanism: focus compounds into team throughput.",
-            f"{style}, pressure asks for cleaner proof, so I tighten the link to shared output.",
+            f"{style}, I absorb the pressure and tighten the link between claim and evidence.",
+            f"{style}, pressure asks for cleaner proof, so I sharpen the strongest reason.",
         ],
         "deals_damage": [
-            f"{style}, that landed because our {domain} point tied individual focus to team results.",
-            f"{style}, the enemy felt the hit where their objection ignored practical team gains.",
+            f"{style}, that landed because our {domain} point answered the live objection.",
+            f"{style}, the enemy felt the hit where their objection skipped the central evidence.",
             f"{style}, damage follows evidence; the better mechanism still favors our side.",
         ],
         "enemy_low_hp": [
-            f"{style}, their case is low because each objection retreats from the team outcome.",
+            f"{style}, their case is low because each objection retreats from the evidence.",
             f"{style}, press now: the enemy still has not answered the strongest {domain} proof.",
             f"{style}, they are running out of ground because the mechanism keeps surviving contact.",
         ],
@@ -368,13 +388,13 @@ def _enemy_reaction_templates(style: str, domain: str) -> dict[str, list[str]]:
     return {
         "takes_damage": [
             f"{style}, that hit stings but only proves the party found a narrow exception.",
-            f"{style}, I concede the pressure, not the premise; the coordination cost still stands.",
-            f"{style}, pain clarifies the weak spot, so I move the argument back to team trust.",
+            f"{style}, I concede the pressure, not the premise; the proof burden still stands.",
+            f"{style}, pain clarifies the weak spot, so I move the argument back to evidence.",
         ],
         "deals_damage": [
-            f"{style}, that landed because their productivity claim skipped coordination debt.",
+            f"{style}, that landed because their claim still outran its evidence.",
             f"{style}, the damage follows the {domain} gap they still have not answered.",
-            f"{style}, their case buckled where individual focus had to prove team performance.",
+            f"{style}, their case buckled where assertion had to become proof.",
         ],
         "enemy_low_hp": [
             f"{style}, I am low, but one precise counterexample can still collapse their premise.",
@@ -382,9 +402,9 @@ def _enemy_reaction_templates(style: str, domain: str) -> dict[str, list[str]]:
             f"{style}, pressure is useful because it exposes which proof burden they cannot carry.",
         ],
         "user_low_hp": [
-            f"{style}, the party is low because comfort is not the same as coordinated output.",
-            f"{style}, now press the gap: their team case keeps borrowing evidence from individuals.",
-            f"{style}, their HP falls where the {domain} argument fails to protect the real team.",
+            f"{style}, the party is low because conviction is not the same as evidence.",
+            f"{style}, now press the gap: their case keeps borrowing certainty from anecdotes.",
+            f"{style}, their HP falls where the {domain} argument fails to protect the proof burden.",
         ],
     }
 
@@ -449,11 +469,60 @@ def _prompt_value(value: Any) -> str:
 
 def _strip_label(text: str) -> str:
     return re.sub(
-        r"^(claim|support|evidence|rebuttal|counter|argument)\s*:\s*",
+        r"^(claim|support|evidence|rebuttal|counter|argument|for|against)\s*:\s*",
         "",
         text,
         flags=re.IGNORECASE,
     ).strip()
+
+
+def _repair_malformed_battle_format(text: str) -> str:
+    text = re.sub(
+        r"\b(claim|support|evidence|rebuttal|counter|argument)\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"([,;:])(?=\S)", r"\1 ", text)
+    text = re.sub(r"([.!?])(?=[A-Z])", r"\1 ", text)
+    text = re.sub(r"([a-z])([A-Z]{2,})", r"\1 \2", text)
+    text = re.sub(r"\b([A-Z]{2,})([a-z]{3,})", r"\1 \2", text)
+    text = re.sub(r"\b[A-Za-z]{16,}\b", _repair_glued_word_match, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _repair_glued_word_match(match: re.Match[str]) -> str:
+    word = match.group(0)
+    parts = _segment_glued_word(word)
+    if parts is None:
+        return word
+    if word[0].isupper():
+        parts[0] = parts[0].capitalize()
+    return " ".join(parts)
+
+
+def _segment_glued_word(word: str) -> list[str] | None:
+    lower = word.lower()
+    if lower in _GLUED_WORDS:
+        return None
+    best: list[list[str] | None] = [None] * (len(lower) + 1)
+    best[0] = []
+    for start in range(len(lower)):
+        current = best[start]
+        if current is None:
+            continue
+        for end in range(start + 1, min(len(lower), start + _GLUED_WORD_MAX_LEN) + 1):
+            piece = lower[start:end]
+            if piece not in _GLUED_WORDS:
+                continue
+            candidate = [*current, piece]
+            existing = best[end]
+            if existing is None or len(candidate) < len(existing):
+                best[end] = candidate
+    parts = best[-1]
+    if parts is None or len(parts) < 2:
+        return None
+    return parts
 
 
 def _split_sentence_parts(text: str) -> tuple[list[str], str]:
