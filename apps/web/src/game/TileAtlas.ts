@@ -86,7 +86,7 @@ export function baseFrameFor(tile: number): number | null {
     case TILE.CAVE:
       return FRAME.CAVE;
     case TILE.BLOCKED:
-      return FRAME.CAVE; // generic dark wall
+      return FRAME.GRASS; // overworld obstacle: grass ground + a rock overlay
     default:
       return null; // unknown → procedural fallback
   }
@@ -111,6 +111,10 @@ export function overlayFor(tile: number, jitter: number): Overlay | null {
       return { frame: jitter & 0x40 ? FRAME.TREE_DARK : FRAME.TREE, alpha: 1 };
     case TILE.CAMP:
       return { frame: FRAME.CAMPFIRE, alpha: 1 };
+    case TILE.BLOCKED:
+      // A grey boulder on grass reads as a natural impassable obstacle, instead
+      // of the old dark cave-floor tile that looked like a "black stone" block.
+      return { frame: FRAME.STONE, alpha: 1 };
     // TOWN structures are drawn by the #24 detail overlay (house/shop/inn/barn),
     // so we no longer stamp a generic Kenney structure tile here.
     default:

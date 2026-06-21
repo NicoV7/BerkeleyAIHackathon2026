@@ -622,6 +622,70 @@ export class OverworldScene extends Phaser.Scene {
     };
   }
 
+  /**
+   * Merged COLLISION grid for the anchor + cached neighbours (same set we render),
+   * so the sim's blocked-tile test works across cell boundaries. Without this the
+   * single-chunk sim treats every chunk edge as an out-of-bounds wall, deadlocking
+   * traversal at tile ~63 of a 1024-wide world. Uncovered cells default to
+   * walkable so a not-yet-loaded neighbour never blocks movement.
+   */
+  private buildMergedTiles(anchor: MapState): { tiles: number[][]; originX: number; originY: number } {
+    const chunks = this.renderChunkSet(anchor);
+    let bx0 = Infinity;
+    let by0 = Infinity;
+    let bx1 = -Infinity;
+    let by1 = -Infinity;
+    for (const c of chunks) {
+      const ox = c.origin_x ?? 0;
+      const oy = c.origin_y ?? 0;
+      if (ox < bx0) bx0 = ox;
+      if (oy < by0) by0 = oy;
+      if (ox + c.width > bx1) bx1 = ox + c.width;
+      if (oy + c.height > by1) by1 = oy + c.height;
+    }
+    const w = bx1 - bx0;
+    const h = by1 - by0;
+    const tiles: number[][] = Array.from({ length: h }, () => new Array(w).fill(0));
+    for (const c of chunks) {
+      const ox = (c.origin_x ?? 0) - bx0;
+      const oy = (c.origin_y ?? 0) - by0;
+      for (let y = 0; y < c.height; y++) {
+        const row = c.tiles[y];
+        const dst = tiles[oy + y];
+        for (let x = 0; x < c.width; x++) dst[ox + x] = row[x];
+      }
+    }
+    return { tiles, originX: bx0, originY: by0 };
+  }
+
+  /** Refresh the sim's collision grid to the merged neighbourhood (no render). */
+  private syncSimTiles() {
+    if (!this.sim || !this.mapData) return;
+    const m = this.buildMergedTiles(this.mapData);
+    this.sim.setTiles(m.tiles, m.originX, m.originY);
+  }
+
+  /** Re-paint the neighbourhood (back buffer + seamless swap) and refresh
+   *  collision — used when a newly-cached neighbour extends coverage. */
+  private refreshNeighborhood() {
+    if (!this.sim || !this.mapData) return;
+    this.liveWindow = this.drawMapInto(this.backIndex(), this.mapData);
+    this.swapBuffers();
+    this.syncSimTiles();
+  }
+
+  /** True if `win` is fully inside the current liveWindow (already rendered). */
+  private windowCovered(win: ChunkWindow): boolean {
+    const lw = this.liveWindow;
+    if (!lw) return false;
+    return (
+      win.originX >= lw.originX &&
+      win.originY >= lw.originY &&
+      win.originX + win.width <= lw.originX + lw.width &&
+      win.originY + win.height <= lw.originY + lw.height
+    );
+  }
+
   private async fetchMapAndDraw(centerTile?: { x: number; y: number }) {
     // Phaser auto-starts this scene from `scene: [OverworldScene]` (in
     // Overworld.tsx) before the React wrapper restarts it with run config, so the
@@ -690,9 +754,10 @@ export class OverworldScene extends Phaser.Scene {
         const bbox = this.drawMapInto(this.backIndex(), data);
         this.swapBuffers();
         this.mapData = data;
-        this.sim.setTiles(data.tiles, originX, originY);
-        // Live coverage = the painted bbox (anchor + neighbours), not one chunk.
+        // Collision spans the merged neighbourhood, not one chunk, so the player
+        // can cross cell boundaries instead of hitting an OOB wall.
         this.liveWindow = bbox;
+        this.syncSimTiles();
         this.lastDetailTile = { x: -1, y: -1 };
         this.buildSigns();
         this.spawnEnemies(data.enemies);
@@ -720,6 +785,7 @@ export class OverworldScene extends Phaser.Scene {
       this.activeCell = { x: this.cellOf(start.x), y: this.cellOf(start.y) };
 
       this.liveWindow = this.drawMapInto(this.frontBuffer, data);
+      this.syncSimTiles();
       this.buildSigns();
       this.spawnEnemies(data.enemies);
       this.spawnNpcs();
@@ -1473,11 +1539,23 @@ export class OverworldScene extends Phaser.Scene {
       const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
       if (!res.ok || !this.sys?.isActive()) return;
       const data = (await res.json()) as MapState;
-      // Cache only — neighbours are PAINTED at the next re-centre (one atomic
-      // back-buffer swap), never by repainting the live front buffer. Repainting
-      // the front each time a neighbour streamed in caused visible "tiles
-      // swapping / re-rendering"; the warm cache just makes the next swap instant.
       this.rememberChunk(data);
+      // A newly-cached adjacent neighbour: extend collision (so the player can
+      // walk into it) and, if it adds coverage, paint it via a seamless swap.
+      // Grid-aligned origins mean tiles never shift — no churn, just fill-in.
+      if (this.sim && this.mapData) {
+        const win = this.windowOf(data);
+        const adjacent = windowsWithinRenderHalo(
+          this.windowOf(this.mapData),
+          win,
+          CHUNK_RENDER_HALO_TILES
+        );
+        if (adjacent && !this.windowCovered(win)) {
+          this.refreshNeighborhood();
+        } else if (adjacent) {
+          this.syncSimTiles();
+        }
+      }
     } catch {
       // Best-effort warm-up; on-demand fetch covers any miss.
     } finally {
