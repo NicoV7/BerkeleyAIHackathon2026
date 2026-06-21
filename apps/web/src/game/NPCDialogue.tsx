@@ -76,6 +76,7 @@ interface NPCDialogueProps {
   onClose: () => void;
   onOnboarded?: () => void;
   onQuestSettled?: () => void;
+  onTextFocusChange?: (focused: boolean) => void;
 }
 
 export function NPCDialogue({
@@ -84,6 +85,7 @@ export function NPCDialogue({
   onClose,
   onOnboarded,
   onQuestSettled,
+  onTextFocusChange,
 }: NPCDialogueProps) {
   const isIntro = npc?.npc_id === INTRO_SCRIPT.npcId;
 
@@ -96,6 +98,7 @@ export function NPCDialogue({
       npc={npc}
       onClose={onClose}
       onQuestSettled={onQuestSettled}
+      onTextFocusChange={onTextFocusChange}
     />
   );
 }
@@ -266,11 +269,13 @@ function GenericDialogue({
   npc,
   onClose,
   onQuestSettled,
+  onTextFocusChange,
 }: {
   runId: string | null;
   npc: NPCAnchorView;
   onClose: () => void;
   onQuestSettled?: () => void;
+  onTextFocusChange?: (focused: boolean) => void;
 }) {
   const [messages, setMessages] = useState<TalkTurn[]>([]);
   const [draft, setDraft] = useState("");
@@ -292,6 +297,10 @@ function GenericDialogue({
   const canOfferQuest = npc.archetype === "quest_giver";
   const canShop = npc.archetype === "merchant";
   const canRest = npc.archetype === "innkeeper";
+
+  useEffect(() => {
+    return () => onTextFocusChange?.(false);
+  }, [onTextFocusChange]);
 
   useEffect(() => {
     if (!runId) return;
@@ -489,6 +498,8 @@ function GenericDialogue({
               className="pixel-field font-body text-sm flex-1 min-w-0"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
+              onFocus={() => onTextFocusChange?.(true)}
+              onBlur={() => onTextFocusChange?.(false)}
               disabled={loading}
               maxLength={800}
               placeholder="Say something..."

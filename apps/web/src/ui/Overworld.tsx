@@ -25,6 +25,11 @@ function getOverworldScene(game: Phaser.Game | null): OverworldScene | null {
   return (game?.scene?.getScene?.("OverworldScene") as OverworldScene) ?? null;
 }
 
+function setGameKeyboardEnabled(game: Phaser.Game | null, enabled: boolean) {
+  const keyboard = game?.input?.keyboard;
+  if (keyboard) keyboard.enabled = enabled;
+}
+
 export default function Overworld() {
   const { runId, playerName, activeEncounterId, setEncounter } = useGame();
   const { transition } = useIrisTransition();
@@ -35,6 +40,7 @@ export default function Overworld() {
   const [hudMap, setHudMap] = useState<HudMap | null>(null);
   const [playerPos, setPlayerPos] = useState<{ x: number; y: number } | null>(null);
   const [activeNpc, setActiveNpc] = useState<NPCAnchorView | null>(null);
+  const [npcTextFocused, setNpcTextFocused] = useState(false);
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -55,6 +61,7 @@ export default function Overworld() {
 
   useEffect(() => {
     setActiveNpc(null);
+    setNpcTextFocused(false);
     setHudMap(null);
     setPlayerPos(null);
   }, [runId]);
@@ -122,20 +129,20 @@ export default function Overworld() {
     if (activeEncounterId) {
       wasInEncounterRef.current = true;
       scene.scene.pause();
-      // Disable Phaser's GLOBAL KeyboardManager (not the per-scene plugin). The
-      // manager is what calls preventDefault() on the WASD/arrow captures at the
-      // window level; its onKeyDown short-circuits on this `enabled` flag BEFORE
-      // preventDefault, so toggling it here lets WASD/Space reach the battle
-      // textarea. The scene-plugin `enabled` flag does NOT gate that path.
-      if (game.input?.keyboard) game.input.keyboard.enabled = false;
     } else if (wasInEncounterRef.current) {
       wasInEncounterRef.current = false;
-      if (game.input?.keyboard) game.input.keyboard.enabled = true;
       scene.scene.resume();
       // Reset the encounterFired/encounterPending latches so update() runs again.
       scene.resetAfterBattle();
     }
   }, [activeEncounterId]);
+
+  useEffect(() => {
+    // Phaser's global KeyboardManager calls preventDefault() for captured WASD
+    // keys before React inputs can use them. Disable it only while text entry or
+    // battle UI owns the keyboard; the scene can keep animating underneath NPC chat.
+    setGameKeyboardEnabled(gameRef.current, !(activeEncounterId || npcTextFocused));
+  }, [activeEncounterId, npcTextFocused]);
 
   if (!runId) {
     return (
@@ -163,11 +170,15 @@ export default function Overworld() {
       <NPCDialogue
         runId={runId}
         npc={activeNpc}
-        onClose={() => setActiveNpc(null)}
+        onClose={() => {
+          setNpcTextFocused(false);
+          setActiveNpc(null);
+        }}
         onQuestSettled={() => {
           const scene = gameRef.current?.scene.getScene("OverworldScene");
           void (scene as OverworldScene | undefined)?.refreshQuestOffers();
         }}
+        onTextFocusChange={setNpcTextFocused}
       />
     </div>
   );
