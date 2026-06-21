@@ -311,6 +311,7 @@ export class OverworldScene extends Phaser.Scene {
   private enemies = new EnemyManager();
   private npcs = new NPCBehaviorManager();
   private sceneRouter: SceneRouter | null = null;
+  private enterSuppressedTile: { x: number; y: number } | null = null;
 
   // Atmosphere overlays (vignette + night tint). Camera-scrolling, toggleable.
   private postFX = new PostFX();
@@ -367,6 +368,7 @@ export class OverworldScene extends Phaser.Scene {
     this.encounterPending = false;
     this.lastHudTile = { x: -1, y: -1 };
     this.questOfferNpcIds = new Set();
+    this.enterSuppressedTile = data.returnTile ?? null;
   }
 
   preload() {
@@ -748,11 +750,13 @@ export class OverworldScene extends Phaser.Scene {
       this.sceneRouter ??= new SceneRouter({
         runId: this.cfg.runId,
         scenePlugin: this.scene,
+        overworldSceneData: this.cfg,
         // Forward NPC dialogue from interiors to the same React handler the
         // overworld uses, and persist position before leaving for an interior.
         onNpcTalk: this.cfg.onNpcTalk,
         onEncounter: this.cfg.onEncounter,
         onEnterInterior: () => this.flushSync(),
+        onExitInterior: (tile) => this.resumeFromInterior(tile),
       });
 
       const win = this.windowOf(data);
@@ -1518,9 +1522,24 @@ export class OverworldScene extends Phaser.Scene {
     if (!this.sim || !this.sceneRouter) return;
     const tx = this.sim.tileX;
     const ty = this.sim.tileY;
+
+    if (this.enterSuppressedTile) {
+      if (tx === this.enterSuppressedTile.x && ty === this.enterSuppressedTile.y) {
+        return;
+      }
+      this.enterSuppressedTile = null;
+    }
+
     const poi = this.worldPois().find((p) => p.x === tx && p.y === ty);
     if (!poi) return;
     void this.sceneRouter.enter(poi);
+  }
+
+  private resumeFromInterior(returnTile: { x: number; y: number }) {
+    this.enterSuppressedTile = returnTile;
+    this.encounterFired = false;
+    this.encounterPending = false;
+    this.emitPlayerTile();
   }
 
   private maybeRefreshChunk(time: number) {

@@ -35,7 +35,9 @@ import { TILE_SIZE } from "./constants";
 import {
   buildInteriorEnemySpawns,
   buildInteriorGrid,
+  hasMovedOffInteriorEntrance,
   normalizeKind,
+  shouldExitInteriorFromTile,
   type InteriorGrid,
   type InteriorKind,
 } from "./InteriorLayout";
@@ -124,8 +126,8 @@ export class InteriorScene extends Phaser.Scene {
   /** Latched once we begin exiting so movement/exit checks stop firing. */
   private exiting = false;
   private encounterFired = false;
-  /** Grace so the player isn't instantly bounced back out on the entrance DOOR. */
-  private entryGraceMs = 600;
+  /** Entrance DOOR is inert until the player has actually walked off it. */
+  private hasLeftEntranceTile = false;
   private lastTalkNpcId: string | null = null;
   private lastTalkAtMs = 0;
 
@@ -137,7 +139,7 @@ export class InteriorScene extends Phaser.Scene {
     this.sceneData = data;
     this.exiting = false;
     this.encounterFired = false;
-    this.entryGraceMs = 600;
+    this.hasLeftEntranceTile = false;
     this.lastTalkNpcId = null;
   }
 
@@ -420,7 +422,6 @@ export class InteriorScene extends Phaser.Scene {
 
   update(time: number, delta: number) {
     if (this.exiting || !this.sim) return;
-    if (this.entryGraceMs > 0) this.entryGraceMs -= delta;
 
     const intent = this.readIntent();
     this.sim.update(intent, delta);
@@ -430,6 +431,24 @@ export class InteriorScene extends Phaser.Scene {
       velocity: { vx: this.sim.vx, vy: this.sim.vy },
       deltaMs: delta,
     });
+
+    const currentTile = this.currentTile();
+    if (!this.hasLeftEntranceTile) {
+      this.hasLeftEntranceTile = hasMovedOffInteriorEntrance(currentTile, this.grid.entrance);
+    }
+
+    // Step back onto the entrance DOOR after leaving it → return to the overworld.
+    if (
+      shouldExitInteriorFromTile(
+        currentTile,
+        this.grid.exits,
+        this.hasLeftEntranceTile
+      )
+    ) {
+      this.returnToOverworld();
+      return;
+    }
+
     this.npcs.update(time, delta, this.sim.x, this.sim.y, (tx, ty) =>
       this.sim!.isBlockedTile(tx, ty)
     );
@@ -444,17 +463,10 @@ export class InteriorScene extends Phaser.Scene {
         return;
       }
     }
-
-    // Step on a DOOR (after the entry grace) → return to the overworld.
-    if (this.entryGraceMs <= 0 && this.onExitTile()) {
-      this.returnToOverworld();
-    }
   }
 
-  private onExitTile(): boolean {
-    const tx = this.sim.tileX;
-    const ty = this.sim.tileY;
-    return this.grid.exits.some((e) => e.x === tx && e.y === ty);
+  private currentTile(): { x: number; y: number } {
+    return { x: this.sim.tileX, y: this.sim.tileY };
   }
 
   private maybeTriggerNpcTalk(time: number) {
@@ -476,7 +488,7 @@ export class InteriorScene extends Phaser.Scene {
     this.exiting = true;
     this.enemies.destroy();
     this.npcs.destroy();
-    this.sceneData.router.exit();
+    this.sceneData.router.exit(this.scene);
   }
 
   private triggerInteriorEncounter(enemyId: string) {

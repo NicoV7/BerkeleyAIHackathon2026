@@ -4,7 +4,9 @@ import {
   buildInteriorEnemySpawns,
   buildInteriorGrid,
   clampInside,
+  hasMovedOffInteriorEntrance,
   normalizeKind,
+  shouldExitInteriorFromTile,
   type InteriorKind,
 } from "./InteriorLayout";
 
@@ -217,6 +219,21 @@ describe("buildInteriorEnemySpawns", () => {
         true
       );
     }
+  });
+});
+
+describe("interior entrance exit gating", () => {
+  it("only exits from the entrance tile after the player has moved off it", () => {
+    const entrance = { x: 4, y: 7 };
+    const exits = [entrance];
+
+    expect(hasMovedOffInteriorEntrance(entrance, entrance)).toBe(false);
+    expect(shouldExitInteriorFromTile(entrance, exits, false)).toBe(false);
+
+    const roomTile = { x: 4, y: 6 };
+    expect(hasMovedOffInteriorEntrance(roomTile, entrance)).toBe(true);
+    expect(shouldExitInteriorFromTile(roomTile, exits, true)).toBe(false);
+    expect(shouldExitInteriorFromTile(entrance, exits, true)).toBe(true);
   });
 });
 
