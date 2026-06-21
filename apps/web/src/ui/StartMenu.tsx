@@ -74,7 +74,11 @@ function pickHiddenTopic(): string {
 function pickRandomName(currentName: string): string {
   const current = normalizePlayerName(currentName).toLowerCase();
   const pool = RANDOM_NAMES.filter((name) => name.toLowerCase() !== current);
-  return pool[Math.floor(Math.random() * pool.length)] ?? RANDOM_NAMES[0];
+  // If every candidate equals the current name (e.g. a single-entry pool),
+  // fall back to the full list so we never return RANDOM_NAMES[0] when it is
+  // itself the current name.
+  const source = pool.length > 0 ? pool : RANDOM_NAMES;
+  return source[Math.floor(Math.random() * source.length)] ?? RANDOM_NAMES[0];
 }
 
 function readStoredName(): string {

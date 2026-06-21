@@ -98,6 +98,15 @@ export default function Overworld() {
     }
   }, [size]);
 
+  // Keep the in-scene floating name tag in sync if the player's name changes
+  // mid-run (the scene is only started once, so push updates imperatively).
+  useEffect(() => {
+    const scene = gameRef.current?.scene.getScene("OverworldScene") as
+      | OverworldScene
+      | undefined;
+    scene?.setPlayerName?.(playerName);
+  }, [playerName]);
+
   if (!runId) {
     return (
       <div ref={rootRef} className="flex items-center justify-center h-full">

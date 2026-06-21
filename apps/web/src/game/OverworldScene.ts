@@ -456,6 +456,17 @@ export class OverworldScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * Update the floating name tag's text — called by the React wrapper whenever
+   * the store's playerName changes, so the tag stays in sync mid-run.
+   */
+  setPlayerName(name: string) {
+    this.cfg.playerName = name;
+    if (!this.playerNameTag) return;
+    this.playerNameTag.setText(name).setVisible(Boolean(name));
+    this.updateNameTag();
+  }
+
   /** Pin the floating name tag just above the player sprite's head. */
   private updateNameTag() {
     if (!this.playerNameTag.visible) return;
