@@ -6,7 +6,8 @@ NPCs are anchored on FEATURE tiles inside canonical interiors (see schemas:
   1. Reads the recent world events from ``event_log``.
   2. Builds a dialogue prompt blending: anchor archetype + region lore +
      recent events + the player's recruited-figure roster.
-  3. Calls ``hosted_adapter.complete()`` to get text from a free-tier provider.
+  3. Calls a hosted free-tier provider, then falls back to the app's local-first
+     gateway when no hosted key is configured.
   4. Caches one-shot greetings in Redis for ``CACHE_TTL_S`` seconds, keyed by a
      hash of (npc_id, archetype, recent-event-tail, figure-count).
 
@@ -21,6 +22,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.config import settings
+from app.gateway.gateway import gateway
 from app.llm.hosted_adapter import STUB_RESPONSE, HostedAdapter
 from app.llm.hosted_adapter import adapter as default_adapter
 from app.redis_state import get_redis
@@ -31,6 +34,10 @@ CACHE_TTL_S = 30  # seconds; refreshed by event_tail invalidation, not just TTL
 EVENT_TAIL = 6  # recent events included in the prompt + cache key
 CONVERSATION_TTL_S = 15 * 60
 MAX_CONVERSATION_TURNS = 8
+NPC_SYSTEM_PROMPT = (
+    "You are the dialogue engine for a pixel-art debate RPG. Answer as the NPC, "
+    "stay in-world, and keep the response concise enough for a game chatbox."
+)
 
 _PERSONALITY_MODES = (
     "warm",
@@ -267,11 +274,53 @@ def _normalize_dialogue_text(
     player_message: str = "",
     recruited: list[figures.Figure] | None = None,
 ) -> str:
-    """Replace empty/static provider output with deterministic world-aware text."""
+    """Replace empty/static LLM output with deterministic world-aware text."""
     stripped = (text or "").strip()
     if _is_stub_dialogue(stripped):
         return _fallback_dialogue(anchor, region, events, player_message, recruited)
     return stripped
+
+
+def _dialogue_messages(prompt: str) -> list[dict[str, str]]:
+    """Build gateway chat messages for NPC dialogue completions."""
+    return [
+        {"role": "system", "content": NPC_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+
+async def _complete_dialogue(
+    prompt: str,
+    *,
+    adapter: HostedAdapter,
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    """Run NPC text through hosted LLMs, then the local-first model gateway.
+
+    The hosted adapter returns ``STUB_RESPONSE`` when no hosted keys are present.
+    Treat that as a miss and ask the normal app gateway so local Ollama/Pareto
+    setups still produce genuine model dialogue. Callers keep the deterministic
+    fallback for the final no-model/no-network case.
+    """
+    try:
+        hosted = await adapter.complete(
+            prompt, max_tokens=max_tokens, temperature=temperature
+        )
+        if not _is_stub_dialogue(hosted):
+            return hosted.strip()
+    except Exception:  # noqa: BLE001 - gateway fallback handles hosted failures
+        pass
+
+    return (
+        await gateway.complete(
+            _dialogue_messages(prompt),
+            model=settings.actor_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=settings.llm_call_timeout_s,
+        )
+    ).strip()
 
 
 @dataclass
@@ -360,7 +409,12 @@ async def generate_dialogue(
                 pass
             history = [*history, {"role": "player", "text": message}]
         try:
-            text = await adapter.complete(prompt, max_tokens=220, temperature=0.82)
+            text = await _complete_dialogue(
+                prompt,
+                adapter=adapter,
+                max_tokens=220,
+                temperature=0.82,
+            )
             text = _normalize_dialogue_text(
                 text,
                 anchor,
@@ -397,7 +451,12 @@ async def generate_dialogue(
 
     prompt = build_prompt(anchor, region, events, recruited)
     try:
-        text = await adapter.complete(prompt, max_tokens=160, temperature=0.8)
+        text = await _complete_dialogue(
+            prompt,
+            adapter=adapter,
+            max_tokens=160,
+            temperature=0.8,
+        )
         text = _normalize_dialogue_text(text, anchor, region, events, recruited=recruited)
     except Exception:  # noqa: BLE001 - scripted fallback is part of the contract
         text = scripted_greeting(anchor, region, events, recruited)

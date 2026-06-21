@@ -216,8 +216,80 @@ async def test_conversation_keeps_history_and_player_message(
     assert "The player says: What work is nearby?" in adapter.prompts[-1]
 
 
-async def test_silent_provider_falls_back_to_world_event_dialogue(
+async def test_silent_provider_uses_local_gateway_for_conversation(
     fake_redis: _FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await event_log.append(
+        "run-gateway",
+        "dungeon_cleared",
+        poi="den:166:532",
+        name="Cellar of Bad Premises",
+    )
+    calls: list[tuple[list[dict[str, str]], dict[str, Any]]] = []
+
+    async def fake_complete(messages: list[dict[str, str]], **kwargs: Any) -> str:
+        calls.append((messages, kwargs))
+        return "The local model heard you. Cellar of Bad Premises is safer now."
+
+    monkeypatch.setattr(npcs.gateway, "complete", fake_complete)
+
+    result = await npcs.generate_dialogue(
+        "run-gateway",
+        _anchor("innkeeper"),
+        _region(),
+        player_message="Did you hear what happened?",
+        conversation_id="offline-1",
+        adapter=_SilentAdapter(),
+    )
+
+    assert result.text == "The local model heard you. Cellar of Bad Premises is safer now."
+    assert len(calls) == 1
+    messages, kwargs = calls[0]
+    assert kwargs["model"] == npcs.settings.actor_model
+    assert "The player says: Did you hear what happened?" in messages[-1]["content"]
+
+
+async def test_dialogue_falls_back_to_scripted_greeting_when_llms_fail(
+    fake_redis: _FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_gateway(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(npcs.gateway, "complete", fail_gateway)
+
+    result = await npcs.generate_dialogue(
+        "run-fallback", _anchor("merchant"), _region(), adapter=_FailingAdapter()
+    )
+
+    assert result.cached is False
+    assert "Marin the Innkeeper" in result.text
+    assert "counter is open" in result.text
+    assert fake_redis.strings[result.cache_key] == result.text
+
+
+async def test_dialogue_replaces_adapter_stub_with_local_gateway(
+    fake_redis: _FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_complete(*_args: Any, **_kwargs: Any) -> str:
+        return "Make camp here if the road has worn your party thin."
+
+    monkeypatch.setattr(npcs.gateway, "complete", fake_complete)
+
+    result = await npcs.generate_dialogue(
+        "run-stub", _anchor("innkeeper"), _region(), adapter=_StubAdapter()
+    )
+
+    assert result.text != STUB_RESPONSE
+    assert "Make camp here" in result.text
+    assert fake_redis.strings[result.cache_key] == result.text
+
+
+async def test_dialogue_falls_back_to_world_event_when_gateway_fails(
+    fake_redis: _FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await event_log.append(
         "run-offline",
@@ -225,6 +297,11 @@ async def test_silent_provider_falls_back_to_world_event_dialogue(
         poi="den:166:532",
         name="Cellar of Bad Premises",
     )
+
+    async def fail_gateway(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(npcs.gateway, "complete", fail_gateway)
 
     result = await npcs.generate_dialogue(
         "run-offline",
@@ -238,30 +315,6 @@ async def test_silent_provider_falls_back_to_world_event_dialogue(
     assert result.text != STUB_RESPONSE
     assert "Cellar of Bad Premises" in result.text
     assert "breathe easier" in result.text
-
-
-async def test_dialogue_falls_back_to_scripted_greeting_when_adapter_fails(
-    fake_redis: _FakeRedis,
-) -> None:
-    result = await npcs.generate_dialogue(
-        "run-fallback", _anchor("merchant"), _region(), adapter=_FailingAdapter()
-    )
-
-    assert result.cached is False
-    assert "Marin the Innkeeper" in result.text
-    assert "counter is open" in result.text
-    assert fake_redis.strings[result.cache_key] == result.text
-
-
-async def test_dialogue_replaces_adapter_stub_with_scripted_greeting(
-    fake_redis: _FakeRedis,
-) -> None:
-    result = await npcs.generate_dialogue(
-        "run-stub", _anchor("innkeeper"), _region(), adapter=_StubAdapter()
-    )
-
-    assert result.text != STUB_RESPONSE
-    assert "Make camp here" in result.text
 
 
 def test_events_tail_hash_ignores_timestamps() -> None:
