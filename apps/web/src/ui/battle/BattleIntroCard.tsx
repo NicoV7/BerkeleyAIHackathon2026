@@ -8,7 +8,7 @@ type Stance = "for" | "against";
  * Dramatic pre-fight intro card for the Debate RPG battle screen.
  *
  * Phase timeline:
- *   theme      → auto-advances to "choose" after 1.6s
+ *   theme      → auto-advances to "choose" after 5s
  *   choose     → waits for the user to pick FOR / AGAINST
  *   countdown  → 5s, big gold numeral 5→4→3→2→1 (one tick / second)
  *   go         → "READY!" for 0.5s, then "DEBATE!!" for 0.9s (1.4s total)
@@ -100,20 +100,6 @@ export function BattleIntroCard({
         padding: 16,
       }}
     >
-      <style>{`
-        @keyframes intro-pop {
-          from { opacity: 0; transform: scale(0.9) translateY(8px); }
-          to   { opacity: 1; transform: scale(1) translateY(0); }
-        }
-        .intro-card { animation: intro-pop 0.25s ease-out; }
-        @keyframes intro-go-pop {
-          0%   { opacity: 0; transform: scale(1.6); }
-          45%  { opacity: 1; transform: scale(1); }
-          100% { opacity: 1; transform: scale(1); }
-        }
-        .intro-go { animation: intro-go-pop 0.28s ease-out; }
-      `}</style>
-
       <div
         className="pixel-panel intro-card"
         style={{

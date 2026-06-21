@@ -1,11 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 
 export function Overlay({
   children,
   onClose,
   label,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   onClose: () => void;
   label?: string;
 }) {

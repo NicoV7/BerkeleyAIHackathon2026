@@ -102,6 +102,19 @@ select {
   to   { opacity: 1; transform: none; }
 }
 
+@keyframes intro-pop {
+  from { opacity: 0; transform: scale(0.9) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.intro-card { animation: intro-pop 0.25s ease-out; }
+
+@keyframes intro-go-pop {
+  0%   { opacity: 0; transform: scale(1.6); }
+  45%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.intro-go { animation: intro-go-pop 0.28s ease-out; }
+
 @keyframes pixel-fade-in {
   from {
     opacity: 0;

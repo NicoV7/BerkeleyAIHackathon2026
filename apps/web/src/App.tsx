@@ -115,7 +115,7 @@ function HudNav({
   screen,
   onSetScreen,
 }: {
-  screen: string;
+  screen: Screen;
   onSetScreen: (s: Screen) => void;
 }) {
   return (
