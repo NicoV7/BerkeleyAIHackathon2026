@@ -105,8 +105,10 @@ async def create_run(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RunState:
     """Create a new run row, roll a starter party, return RunState."""
+    player_name = (body.player_name or "").strip() or "Player"
     run = Run(
         debate_topic=body.topic,
+        player_name=player_name,
         seed=body.seed,
         player_x=1,
         player_y=1,
@@ -125,6 +127,7 @@ async def create_run(
     return RunState(
         id=run.id,
         debate_topic=run.debate_topic,
+        player_name=run.player_name,
         player_x=run.player_x,
         player_y=run.player_y,
         status=run.status.value,

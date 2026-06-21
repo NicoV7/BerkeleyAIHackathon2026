@@ -178,7 +178,7 @@ function CaptureBanner({
 
 // ---- Main component ----
 export default function PartyScreen() {
-  const { runId } = useGame();
+  const { runId, playerName } = useGame();
   const [party, setParty] = useState<MonsterSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -213,7 +213,7 @@ export default function PartyScreen() {
   return (
     <div className="w-full max-w-2xl mx-auto px-4 py-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="font-display text-base">Party</h2>
+        <h2 className="font-display text-base">{playerName}'s Party</h2>
         <button onClick={fetchParty} disabled={loading} className="pixel-btn text-[10px]">
           {loading ? "Loading…" : "Refresh"}
         </button>

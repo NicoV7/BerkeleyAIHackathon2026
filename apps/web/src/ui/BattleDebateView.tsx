@@ -26,6 +26,7 @@ import {
   setSfxEnabled,
 } from "../lib/sfx";
 import { ReasoningTrend, type TrendSeries } from "./ReasoningTrend";
+import { useIrisTransition } from "./fx/IrisWipe";
 import {
   CombatantState,
   JudgeVerdict,
@@ -204,7 +205,8 @@ function VerdictBadge({ v, fresh }: { v: JudgeVerdict; fresh: boolean }) {
 // ---------------------------------------------------------------------------
 
 export function BattleDebateView() {
-  const { activeEncounterId, runId, setEncounter, setYouScores } = useGame();
+  const { activeEncounterId, runId, playerName, setEncounter, setYouScores } = useGame();
+  const { transition } = useIrisTransition();
   const { status, encounter, transcript, verdicts, capturableIds, drive, argue } =
     useEncounterStream(activeEncounterId);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -253,15 +255,15 @@ export function BattleDebateView() {
       });
   }, [runId]);
 
-  // Live "You" reasoning series: player verdicts (target = a party monster).
+  // Live player reasoning series: player verdicts (target = a party monster).
   const partyIds = useMemo(
     () => new Set(combatants.filter((c) => c.role === "party").map((c) => c.monster_id)),
     [combatants]
   );
   const youSeries: TrendSeries = useMemo(() => {
     const pts = verdicts.filter((v) => partyIds.has(v.target)).map((v) => v.score);
-    return { label: "You", color: "var(--party)", points: pts };
-  }, [verdicts, partyIds]);
+    return { label: playerName, color: "var(--party)", points: pts };
+  }, [verdicts, partyIds, playerName]);
 
   // Publish the player's curve so the training screen can show it beside the agent.
   useEffect(() => {
@@ -349,7 +351,7 @@ export function BattleDebateView() {
   async function handleFlee() {
     // When the battle is already over, just leave — the encounter is finalized.
     if (!isOver) await restAction("/flee");
-    setEncounter(null);
+    transition(() => setEncounter(null));
   }
 
   // ---- No active encounter: inviting empty state ----

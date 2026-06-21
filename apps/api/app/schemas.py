@@ -24,6 +24,7 @@ class HealthResponse(BaseModel):
 
 class CreateRunRequest(BaseModel):
     topic: str = Field(..., description="The debate topic for this entire run")
+    player_name: Optional[str] = Field(None, description="Display name for the player")
     seed: int = 0
 
 
@@ -42,6 +43,7 @@ class MonsterSummary(BaseModel):
 class RunState(BaseModel):
     id: str
     debate_topic: str
+    player_name: str = "Player"
     player_x: int
     player_y: int
     status: str

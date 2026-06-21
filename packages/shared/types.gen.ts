@@ -468,6 +468,11 @@ export interface components {
              */
             topic: string;
             /**
+             * Player Name
+             * @description Display name for the player
+             */
+            player_name?: string | null;
+            /**
              * Seed
              * @default 0
              */
@@ -722,6 +727,11 @@ export interface components {
             id: string;
             /** Debate Topic */
             debate_topic: string;
+            /**
+             * Player Name
+             * @default Player
+             */
+            player_name: string;
             /** Player X */
             player_x: number;
             /** Player Y */

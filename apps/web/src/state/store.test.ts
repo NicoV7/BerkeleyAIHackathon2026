@@ -2,7 +2,7 @@
  * store.test.ts — unit tests for the zustand game store (state/store.ts).
  *
  * Pins the screen-routing side effects baked into the setters:
- *   - setRun stores runId + topic AND routes to "overworld"
+ *   - setRun stores runId + topic + playerName AND routes to "overworld"
  *   - setEncounter(id) routes to "encounter"; setEncounter(null) -> "overworld"
  *   - setScreen is a plain screen transition with no other side effects
  *
@@ -17,8 +17,10 @@ import { useGame } from "./store";
 const INITIAL = {
   runId: null,
   topic: "",
+  playerName: "Player",
   screen: "menu" as const,
   activeEncounterId: null,
+  lastYouScores: [],
 };
 
 beforeEach(() => {
@@ -34,21 +36,31 @@ describe("useGame initial state", () => {
     // Assert
     expect(s.runId).toBeNull();
     expect(s.topic).toBe("");
+    expect(s.playerName).toBe("Player");
     expect(s.screen).toBe("menu");
     expect(s.activeEncounterId).toBeNull();
   });
 });
 
 describe("useGame.setRun", () => {
-  it("stores runId and topic and routes to the overworld", () => {
+  it("stores runId, topic, playerName and routes to the overworld", () => {
     // Act
-    useGame.getState().setRun("run-123", "Climate Policy");
+    useGame.getState().setRun("run-123", "Climate Policy", "Ada");
 
     // Assert
     const s = useGame.getState();
     expect(s.runId).toBe("run-123");
     expect(s.topic).toBe("Climate Policy");
+    expect(s.playerName).toBe("Ada");
     expect(s.screen).toBe("overworld");
+  });
+
+  it("defaults a blank playerName to Player", () => {
+    // Act
+    useGame.getState().setRun("run-123", "Climate Policy", "   ");
+
+    // Assert
+    expect(useGame.getState().playerName).toBe("Player");
   });
 });
 

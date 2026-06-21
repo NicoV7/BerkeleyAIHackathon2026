@@ -63,6 +63,46 @@ select {
   font-family: var(--font-body);
 }
 
+/* ---- Universal screen transition: pixel black fade ---- */
+.iris-wipe {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    repeating-conic-gradient(
+        from 0deg,
+        rgba(255, 255, 255, 0.035) 0 25%,
+        transparent 0 50%
+      )
+      0 0 / 18px 18px,
+    #02020a;
+  image-rendering: pixelated;
+}
+.iris-wipe--closing {
+  animation: pixel-fade-in 0.68s steps(8, end) forwards;
+}
+.iris-wipe--opening {
+  animation: pixel-fade-out 0.68s steps(8, end) forwards;
+}
+@keyframes pixel-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pixel-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 /* ---- Font utility classes ---- */
 .font-display {
   font-family: var(--font-display);
@@ -213,4 +253,677 @@ select {
 }
 .caret-blink {
   animation: blink 0.9s steps(1) infinite;
+}
+
+/* ============================================================================
+   Start menu — title-screen treatment (WS-G).
+   Everything below is scoped under .start-menu so no other screen is touched.
+   Motion + glow only; the palette is the existing design-system vars.
+   ========================================================================== */
+
+.start-menu {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate; /* keep the FX stacking context local to the menu */
+  min-height: 100vh;
+  --avatar-color: var(--accent);
+}
+
+/* —— avatar-tinted radial vignette behind the title —— */
+.start-menu .sm-glow {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      58% 48% at 50% 34%,
+      color-mix(in srgb, var(--avatar-color) 18%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      42% 30% at 50% 26%,
+      color-mix(in srgb, var(--avatar-color) 12%, transparent),
+      transparent 76%
+    ),
+    radial-gradient(120% 90% at 50% 50%, transparent 52%, rgba(0, 0, 0, 0.55));
+  animation: sm-breathe 6s ease-in-out infinite;
+}
+@keyframes sm-breathe {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* —— drifting spark field (two parallax layers) —— */
+.start-menu .sm-stars {
+  position: absolute;
+  inset: -260px 0;
+  z-index: -2;
+  pointer-events: none;
+}
+.start-menu .sm-stars::before,
+.start-menu .sm-stars::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+  will-change: background-position;
+}
+.start-menu .sm-stars::before {
+  background-image:
+    radial-gradient(1px 1px at 20px 30px, rgba(232, 230, 216, 0.45), transparent),
+    radial-gradient(1px 1px at 90px 80px, rgba(232, 230, 216, 0.3), transparent),
+    radial-gradient(1px 1px at 150px 140px, rgba(232, 230, 216, 0.4), transparent),
+    radial-gradient(1px 1px at 60px 190px, rgba(232, 230, 216, 0.25), transparent);
+  background-size: 180px 220px;
+  animation: sm-drift-far 34s linear infinite;
+}
+.start-menu .sm-stars::after {
+  background-image:
+    radial-gradient(
+      1.5px 1.5px at 40px 60px,
+      color-mix(in srgb, var(--avatar-color) 58%, transparent),
+      transparent
+    ),
+    radial-gradient(1.5px 1.5px at 130px 20px, rgba(92, 200, 255, 0.4), transparent),
+    radial-gradient(
+      1.5px 1.5px at 100px 160px,
+      color-mix(in srgb, var(--avatar-color) 36%, transparent),
+      transparent
+    );
+  background-size: 220px 260px;
+  animation: sm-drift-near 20s linear infinite;
+}
+@keyframes sm-drift-far {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 -220px;
+  }
+}
+@keyframes sm-drift-near {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 -260px;
+  }
+}
+
+/* —— faint CRT scanlines over the FX (below the content) —— */
+.start-menu .sm-scanlines {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.45;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.22) 0,
+    rgba(0, 0, 0, 0.22) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* —— content stage: entrance stagger —— */
+.start-menu .sm-stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 88rem);
+  max-width: 88rem;
+  gap: 1.35rem;
+}
+.start-menu .sm-title-block {
+  animation: sm-rise 0.55s ease-out backwards;
+}
+@keyframes sm-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.start-menu .sm-emblem {
+  font-size: 4.25rem;
+  line-height: 1;
+  margin-bottom: 0.75rem;
+  /* entrance moves opacity+transform; the loop only touches `filter` (no clash) */
+  animation:
+    sm-rise 0.55s ease-out 0.02s backwards,
+    sm-emblem-glow 3s ease-in-out 0.6s infinite;
+}
+@keyframes sm-emblem-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 4px rgba(255, 207, 63, 0.35));
+  }
+  50% {
+    filter: drop-shadow(0 0 14px rgba(255, 207, 63, 0.7));
+  }
+}
+
+.start-menu .sm-title {
+  margin: 0;
+  color: var(--accent);
+  font-size: 4.25rem;
+  letter-spacing: 0.04em;
+  /* entrance (opacity+transform) + loop on text-shadow only — no property clash */
+  animation:
+    sm-rise 0.55s ease-out 0.08s backwards,
+    sm-title-glow 3.4s ease-in-out 0.7s infinite;
+}
+@keyframes sm-title-glow {
+  0%,
+  100% {
+    text-shadow:
+      5px 5px 0 #000,
+      0 0 10px rgba(255, 207, 63, 0.45);
+  }
+  50% {
+    text-shadow:
+      5px 5px 0 #000,
+      0 0 22px rgba(255, 207, 63, 0.9),
+      0 0 38px rgba(255, 207, 63, 0.46);
+  }
+}
+
+.start-menu .sm-subtitle {
+  margin: 0.7rem 0 1.15rem;
+  color: var(--muted);
+  font-size: 12px;
+  animation: sm-rise 0.55s ease-out 0.16s backwards;
+}
+
+/* —— compact avatar selector —— */
+.start-menu .sm-avatar-open {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  gap: 1rem;
+  align-items: center;
+  min-width: 28rem;
+  min-height: 4.35rem;
+  margin: 0.2rem auto 1.25rem;
+  padding: 0.85rem 1.55rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 4px solid currentColor;
+  box-shadow:
+    6px 6px 0 #000,
+    inset 0 0 0 2px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  transition:
+    transform 0.08s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+.start-menu .sm-avatar-open:hover,
+.start-menu .sm-avatar-open:focus-visible {
+  background: rgba(0, 0, 0, 0.5);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 14px currentColor,
+    6px 8px 0 #000,
+    inset 0 0 0 2px rgba(0, 0, 0, 0.45);
+}
+.start-menu .sm-avatar-open span {
+  color: var(--muted);
+  font-size: 18px;
+}
+.start-menu .sm-avatar-open strong {
+  font-size: 24px;
+  font-weight: 400;
+}
+
+/* —— name panel —— */
+.start-menu .sm-panel {
+  position: relative;
+  width: min(100%, 84rem);
+  min-height: 18rem;
+  margin: 0 auto;
+  padding: 2.5rem;
+  border: 0;
+  background:
+    linear-gradient(rgba(255, 207, 63, 0.08), rgba(255, 207, 63, 0.08)) left 2rem top 0 /
+      calc(100% - 4rem) 4px no-repeat,
+    linear-gradient(rgba(255, 207, 63, 0.08), rgba(255, 207, 63, 0.08)) left 2rem bottom 0 /
+      calc(100% - 4rem) 4px no-repeat,
+    linear-gradient(rgba(255, 207, 63, 0.06), rgba(255, 207, 63, 0.06)) left 0 top 2rem / 4px
+      calc(100% - 4rem) no-repeat,
+    linear-gradient(rgba(0, 0, 0, 0.34), rgba(0, 0, 0, 0.34)) right 0 top 2rem / 4px
+      calc(100% - 4rem) no-repeat,
+    var(--panel);
+  box-shadow:
+    12px 12px 0 #000,
+    6px 6px 0 rgba(0, 0, 0, 0.65),
+    inset 0 0 0 4px #3a4058,
+    inset 0 0 0 8px #11131f,
+    inset 0 0 0 12px #3a4058,
+    inset 0 0 0 16px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 18px rgba(232, 230, 216, 0.08);
+  animation: sm-rise 0.55s ease-out 0.32s backwards;
+}
+.start-menu .sm-panel::before,
+.start-menu .sm-panel::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+.start-menu .sm-panel::before {
+  inset: -12px;
+  background:
+    linear-gradient(#000, #000) left 12px top 12px / 28px 6px no-repeat,
+    linear-gradient(#000, #000) left 12px top 12px / 6px 28px no-repeat,
+    linear-gradient(#000, #000) left 24px top 24px / 20px 6px no-repeat,
+    linear-gradient(#000, #000) left 24px top 24px / 6px 20px no-repeat,
+    linear-gradient(#000, #000) right 0 top 12px / 28px 6px no-repeat,
+    linear-gradient(#000, #000) right 12px top 12px / 6px 28px no-repeat,
+    linear-gradient(#000, #000) right 16px top 24px / 20px 6px no-repeat,
+    linear-gradient(#000, #000) right 24px top 24px / 6px 20px no-repeat,
+    linear-gradient(#000, #000) left 12px bottom 0 / 28px 6px no-repeat,
+    linear-gradient(#000, #000) left 12px bottom 12px / 6px 28px no-repeat,
+    linear-gradient(#000, #000) left 24px bottom 16px / 20px 6px no-repeat,
+    linear-gradient(#000, #000) left 24px bottom 24px / 6px 20px no-repeat,
+    linear-gradient(#000, #000) right 0 bottom 0 / 28px 6px no-repeat,
+    linear-gradient(#000, #000) right 12px bottom 12px / 6px 28px no-repeat,
+    linear-gradient(#000, #000) right 16px bottom 16px / 20px 6px no-repeat,
+    linear-gradient(#000, #000) right 24px bottom 24px / 6px 20px no-repeat,
+    repeating-linear-gradient(
+        to right,
+        transparent 0 18px,
+        rgba(232, 230, 216, 0.2) 18px 24px,
+        transparent 24px 42px
+      )
+      left 44px top 12px / calc(100% - 88px) 6px no-repeat,
+    repeating-linear-gradient(
+        to right,
+        transparent 0 18px,
+        rgba(0, 0, 0, 0.65) 18px 24px,
+        transparent 24px 42px
+      )
+      left 44px bottom 0 / calc(100% - 88px) 6px no-repeat,
+    repeating-linear-gradient(
+        to bottom,
+        transparent 0 18px,
+        rgba(232, 230, 216, 0.16) 18px 24px,
+        transparent 24px 42px
+      )
+      left 12px top 44px / 6px calc(100% - 88px) no-repeat,
+    repeating-linear-gradient(
+        to bottom,
+        transparent 0 18px,
+        rgba(0, 0, 0, 0.65) 18px 24px,
+        transparent 24px 42px
+      )
+      right 0 top 44px / 6px calc(100% - 88px) no-repeat;
+}
+.start-menu .sm-panel::after {
+  inset: 12px;
+  border: 4px solid rgba(255, 207, 63, 0.16);
+  box-shadow:
+    0 -6px 0 rgba(255, 207, 63, 0.1),
+    -6px 0 0 rgba(255, 207, 63, 0.08),
+    6px 0 0 rgba(0, 0, 0, 0.34),
+    0 6px 0 rgba(0, 0, 0, 0.42),
+    inset 0 0 0 4px rgba(0, 0, 0, 0.28);
+}
+.start-menu .sm-console-grid {
+  display: grid;
+  grid-template-columns: minmax(24rem, 0.92fr) minmax(30rem, 1.08fr);
+  gap: 1.35rem;
+  align-items: stretch;
+}
+.start-menu .sm-console-primary,
+.start-menu .sm-console-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.start-menu .sm-console-primary {
+  justify-content: center;
+}
+.start-menu .sm-console-info {
+  justify-content: space-between;
+  text-align: left;
+  padding: 1.35rem;
+  background: rgba(0, 0, 0, 0.22);
+  border: 2px solid rgba(232, 230, 216, 0.14);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.28);
+}
+.start-menu .sm-label {
+  display: block;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--accent);
+}
+.start-menu .sm-brief {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.start-menu .sm-input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.start-menu .sm-input {
+  flex: 1;
+  min-width: 0;
+}
+.start-menu .sm-name-input {
+  width: 100%;
+  min-height: 4.25rem;
+  text-align: center;
+  font-size: 2rem;
+  color: var(--accent);
+}
+.start-menu .sm-command-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.start-menu .sm-command {
+  min-height: 3.25rem;
+  padding-inline: 0.6rem;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--ink);
+  background: var(--panel2);
+  border-color: rgba(232, 230, 216, 0.22);
+  transition:
+    transform 0.08s ease,
+    box-shadow 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.start-menu .sm-command:hover,
+.start-menu .sm-command:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 12px rgba(255, 207, 63, 0.28),
+    3px 5px 0 #000;
+}
+
+/* —— primary CTA: lift + gold bloom + a periodic gleam sweep —— */
+.start-menu .sm-start {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3.6rem;
+  gap: 0.7rem;
+  font-size: 1rem;
+  transition:
+    transform 0.08s ease,
+    box-shadow 0.12s ease,
+    background 0.1s ease;
+}
+.start-menu .sm-start:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 18px rgba(255, 207, 63, 0.5),
+    3px 5px 0 #000;
+}
+.start-menu .sm-start:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow:
+    0 0 8px rgba(255, 207, 63, 0.4),
+    0 0 0 #000;
+}
+.start-menu .sm-start > span:not(.sm-start__shine) {
+  position: relative;
+  z-index: 1;
+}
+.start-menu .sm-start__icon {
+  font-size: 0.8em;
+}
+.start-menu .sm-start__shine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -70%;
+  width: 45%;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 100%
+  );
+  transform: skewX(-18deg);
+  animation: sm-shine 3.6s ease-in-out 1.2s infinite;
+}
+@keyframes sm-shine {
+  0% {
+    left: -70%;
+  }
+  18%,
+  100% {
+    left: 130%;
+  }
+}
+
+.start-menu .sm-hint {
+  margin-top: 0.9rem;
+  color: var(--muted);
+  font-size: 9px;
+}
+.start-menu .sm-key {
+  margin: 0 0.15rem;
+  padding: 0 0.25rem;
+  color: var(--ink);
+  border: 1px solid rgba(232, 230, 216, 0.3);
+}
+
+/* —— start-screen overlays —— */
+.start-menu .sm-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(5, 7, 12, 0.72);
+}
+.start-menu .sm-overlay-panel {
+  position: relative;
+  width: min(100%, 42rem);
+  max-height: min(78vh, 36rem);
+  overflow: auto;
+  padding: 1.35rem;
+  text-align: left;
+  border-color: var(--accent);
+  box-shadow:
+    0 0 24px rgba(255, 207, 63, 0.22),
+    5px 5px 0 #000;
+  animation: sm-rise 0.18s ease-out backwards;
+}
+.start-menu .sm-overlay-close {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.65rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 2px solid rgba(232, 230, 216, 0.22);
+  box-shadow: 2px 2px 0 #000;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.start-menu .sm-overlay-close:hover,
+.start-menu .sm-overlay-close:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.start-menu .sm-overlay-kicker {
+  padding-right: 2.4rem;
+  color: var(--muted);
+  font-size: 9px;
+}
+.start-menu .sm-overlay-title {
+  margin: 0.45rem 2.4rem 1rem 0;
+  color: var(--accent);
+  font-size: 1.15rem;
+}
+.start-menu .sm-overlay-copy {
+  display: grid;
+  gap: 0.8rem;
+}
+.start-menu .sm-overlay-copy p {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+.start-menu .sm-avatar-panel {
+  width: min(100%, 58rem);
+}
+.start-menu .sm-avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+.start-menu .sm-avatar-card {
+  display: grid;
+  gap: 0.45rem;
+  min-height: 10.5rem;
+  padding: 0.9rem;
+  text-align: left;
+  background: var(--panel2);
+  border: 3px solid currentColor;
+  box-shadow:
+    4px 4px 0 #000,
+    inset 0 0 0 2px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition:
+    transform 0.08s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+.start-menu .sm-avatar-card:hover,
+.start-menu .sm-avatar-card:focus-visible,
+.start-menu .sm-avatar-card--on {
+  background: rgba(255, 207, 63, 0.06);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 16px currentColor,
+    4px 6px 0 #000,
+    inset 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+.start-menu .sm-avatar-card__title {
+  font-size: 11px;
+}
+.start-menu .sm-avatar-card__role {
+  color: var(--muted);
+  font-size: 8px;
+}
+.start-menu .sm-avatar-card__copy {
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .start-menu {
+    min-height: 100svh;
+  }
+  .start-menu .sm-stage {
+    gap: 0.7rem;
+    width: 100%;
+  }
+  .start-menu .sm-console-grid {
+    grid-template-columns: 1fr;
+  }
+  .start-menu .sm-panel {
+    padding: 1rem;
+    min-height: auto;
+  }
+  .start-menu .sm-command-row {
+    grid-template-columns: 1fr;
+  }
+  .start-menu .sm-avatar-open {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+    width: min(100%, 18rem);
+    min-width: 0;
+    min-height: 3.25rem;
+    padding: 0.65rem 0.9rem;
+  }
+  .start-menu .sm-avatar-open span {
+    font-size: 10px;
+  }
+  .start-menu .sm-avatar-open strong {
+    font-size: 14px;
+  }
+  .start-menu .sm-avatar-grid {
+    grid-template-columns: 1fr;
+  }
+  .start-menu .sm-avatar-card {
+    min-height: auto;
+  }
+  .start-menu .sm-name-input {
+    min-height: 2.8rem;
+    font-size: 1rem;
+  }
+  .start-menu .sm-emblem {
+    font-size: 2.6rem;
+  }
+  .start-menu .sm-title {
+    font-size: 1.75rem;
+  }
+  .start-menu .sm-subtitle {
+    font-size: 10px;
+  }
+  .start-menu .sm-start,
+  .start-menu .sm-command {
+    min-height: 2.75rem;
+    font-size: 9px;
+  }
+  .start-menu .sm-command {
+    font-size: 11px;
+  }
+  .start-menu .sm-brief {
+    font-size: 15px;
+    line-height: 1.6;
+  }
+}
+
+/* —— respect reduced-motion: kill the loops, land on the resting state —— */
+@media (prefers-reduced-motion: reduce) {
+  .start-menu .sm-glow,
+  .start-menu .sm-stars::before,
+  .start-menu .sm-stars::after,
+  .start-menu .sm-emblem,
+  .start-menu .sm-title,
+  .start-menu .sm-subtitle,
+  .start-menu .sm-avatar-open,
+  .start-menu .sm-panel,
+  .start-menu .sm-overlay-panel,
+  .start-menu .sm-start__shine {
+    animation: none !important;
+  }
 }

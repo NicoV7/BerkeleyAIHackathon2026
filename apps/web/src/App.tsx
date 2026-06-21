@@ -6,6 +6,8 @@ import { BattleDebateView } from "./ui/BattleDebateView";
 import PartyScreen from "./ui/PartyScreen";
 import { GambitEditor } from "./ui/GambitEditor";
 import TrainingScreen from "./ui/TrainingScreen";
+import StartMenu from "./ui/StartMenu";
+import { IrisTransitionProvider, useIrisTransition } from "./ui/fx/IrisWipe";
 
 // Wave 2: real screens wired in.
 //   overworld -> WS-A (Phaser canvas)
@@ -13,9 +15,17 @@ import TrainingScreen from "./ui/TrainingScreen";
 //   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
 //   training  -> WS-F (TrainingScreen)
 export default function App() {
-  const { runId, screen, topic, setRun, setScreen } = useGame();
+  return (
+    <IrisTransitionProvider>
+      <AppShell />
+    </IrisTransitionProvider>
+  );
+}
+
+function AppShell() {
+  const { runId, screen, playerName, setScreen } = useGame();
+  const { transition } = useIrisTransition();
   const [health, setHealth] = useState<string>("…");
-  const [topicInput, setTopicInput] = useState("Pineapple belongs on pizza");
 
   useEffect(() => {
     api
@@ -24,77 +34,30 @@ export default function App() {
       .catch(() => setHealth("down"));
   }, []);
 
-  async function startRun() {
-    try {
-      const run = await api.post<{ id: string; debate_topic: string }>("/api/runs", {
-        topic: topicInput,
-      });
-      setRun(run.id, run.debate_topic);
-    } catch {
-      // /api/runs lands in WS-A; until then just enter the overworld locally.
-      setRun("local-dev", topicInput);
-    }
-  }
-
-  const SUGGESTED = [
-    "Pineapple belongs on pizza",
-    "AI should be open source",
-    "Cats are better than dogs",
-  ];
-
   return (
     <div className="min-h-screen flex flex-col">
-      <header
-        className="flex items-center justify-between px-4 py-2"
-        style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
-      >
-        <h1 className="font-display text-sm">⚔️ DEBATE RPG</h1>
-        <div className="flex items-center gap-3 font-hud text-[10px]">
-          <span style={{ color: "var(--muted)" }}>
-            api:{" "}
-            <span style={{ color: health === "ok" ? "var(--win)" : "var(--warn)" }}>{health}</span>
-          </span>
-          {runId && (
-            <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
-              topic: {topic}
+      {runId && (
+        <header
+          className="flex items-center justify-between px-4 py-2"
+          style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+        >
+          <h1 className="font-display text-sm">⚔️ DEBATE RPG</h1>
+          <div className="flex items-center gap-3 font-hud text-[10px]">
+            <span style={{ color: "var(--muted)" }}>
+              api:{" "}
+              <span style={{ color: health === "ok" ? "var(--win)" : "var(--warn)" }}>
+                {health}
+              </span>
             </span>
-          )}
-        </div>
-      </header>
+            <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
+              player: {playerName}
+            </span>
+          </div>
+        </header>
+      )}
 
       {!runId ? (
-        <main className="flex-1 grid place-items-center p-4">
-          <div className="pixel-panel p-6 w-[30rem] max-w-[92vw] space-y-4 text-center">
-            <div className="font-display text-lg" style={{ color: "var(--accent)" }}>
-              DEBATE RPG
-            </div>
-            <p className="font-body text-sm" style={{ color: "var(--muted)" }}>
-              Choose the topic every enemy in this run will debate.
-            </p>
-            <input
-              className="pixel-field w-full text-sm"
-              value={topicInput}
-              onChange={(e) => setTopicInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") startRun();
-              }}
-            />
-            <div className="flex gap-1.5 flex-wrap justify-center">
-              {SUGGESTED.map((t) => (
-                <button
-                  key={t}
-                  className="pixel-btn text-[9px] py-1"
-                  onClick={() => setTopicInput(t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            <button className="pixel-btn pixel-btn--accent w-full" onClick={startRun}>
-              Start Run
-            </button>
-          </div>
-        </main>
+        <StartMenu />
       ) : (
         <>
           <nav
@@ -105,7 +68,9 @@ export default function App() {
               <button
                 key={s}
                 className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
-                onClick={() => setScreen(s)}
+                onClick={() => {
+                  if (screen !== s) transition(() => setScreen(s));
+                }}
               >
                 {s}
               </button>

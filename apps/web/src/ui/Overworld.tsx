@@ -15,6 +15,7 @@ import { useEffect, useRef } from "react";
 import { buildEncounterBridge } from "../game/EncounterTrigger";
 import { OverworldScene, TILE_SIZE } from "../game/OverworldScene";
 import { useGame } from "../state/store";
+import { useIrisTransition } from "./fx/IrisWipe";
 
 const MAP_WIDTH = 20;
 const MAP_HEIGHT = 15;
@@ -23,13 +24,16 @@ const CANVAS_H = Math.min(MAP_HEIGHT * TILE_SIZE, window.innerHeight - 120);
 
 export default function Overworld() {
   const { runId, setEncounter } = useGame();
+  const { transition } = useIrisTransition();
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || !runId) return;
 
-    const bridge = buildEncounterBridge(runId, setEncounter);
+    const bridge = buildEncounterBridge(runId, (id) => {
+      transition(() => setEncounter(id));
+    });
 
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.AUTO,
@@ -63,7 +67,7 @@ export default function Overworld() {
       game.destroy(true);
       gameRef.current = null;
     };
-  }, [runId, setEncounter]);
+  }, [runId, setEncounter, transition]);
 
   if (!runId) {
     return (

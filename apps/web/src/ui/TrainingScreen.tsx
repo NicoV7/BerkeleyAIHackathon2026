@@ -40,7 +40,7 @@ interface PreferenceBatch {
 const AGENT_BASELINE = 60;
 
 export default function TrainingScreen() {
-  const { runId, lastYouScores } = useGame();
+  const { runId, playerName, lastYouScores } = useGame();
   const [party, setParty] = useState<MonsterSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -163,7 +163,7 @@ export default function TrainingScreen() {
   const agentAfter = agentScores.length ? agentScores[agentScores.length - 1] : null;
   const progressSeries: TrendSeries[] = [];
   if (lastYouScores.length)
-    progressSeries.push({ label: "You", color: "var(--party)", points: lastYouScores });
+    progressSeries.push({ label: playerName, color: "var(--party)", points: lastYouScores });
   if (agentScores.length)
     progressSeries.push({ label: "Trained agent", color: "var(--accent)", points: agentScores });
 

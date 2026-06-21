@@ -265,6 +265,7 @@ def make_run():
     def _make(**overrides: Any) -> Run:
         defaults: dict[str, Any] = {
             "debate_topic": "Should pineapple go on pizza?",
+            "player_name": "Player",
             "seed": 0,
             "player_x": 0,
             "player_y": 0,

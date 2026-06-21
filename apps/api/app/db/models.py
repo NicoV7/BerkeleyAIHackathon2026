@@ -85,6 +85,7 @@ class Run(SQLModel, table=True):
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     debate_topic: str
+    player_name: str = "Player"
     seed: int = 0
     player_x: int = 0
     player_y: int = 0
