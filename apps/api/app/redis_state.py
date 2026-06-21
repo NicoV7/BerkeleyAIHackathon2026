@@ -12,6 +12,19 @@ Key layout (per encounter_id):
   enc:{id}:judge      list   JSON verdicts {turn, target, score, rationale, damage}
   enc:{id}:momentum   hash   side -> momentum float
 
+Track-A materialization cache (NOT per-encounter; shared across encounters):
+  spec:opening:{hash(topic_text)}:{prompt_ver}
+                      string the enemy's cached OPENING line (arguing AGAINST the
+                             topic). The enemy side is hardcoded ``against`` and the
+                             topic is fixed at create, so the opening is
+                             player-independent and cacheable. Keyed by a stable
+                             md5 digest of the topic text (topics are bare strings,
+                             no topic_id) plus a PROMPT_VERSION so prompt/model
+                             changes invalidate. See app.debate.materialize.
+                             Persistent-ish (OPENING_TTL_SECONDS), survives a
+                             single encounter on purpose. Built by
+                             materialize.get_or_create_opening / pregenerate_opening.
+
 Helpers here are intentionally thin; the debate engine (WS-B) builds richer
 operations on top. Keep the key builders and JSON shapes stable.
 """
@@ -25,6 +38,9 @@ import redis.asyncio as redis
 from app.config import settings
 
 ENCOUNTER_TTL_SECONDS = 2 * 60 * 60  # 2h
+# Cached enemy openings outlive any single encounter on purpose (the win is
+# repeat-topic retrieval across a demo). 7 days; PROMPT_VERSION invalidates early.
+OPENING_TTL_SECONDS = 7 * 24 * 60 * 60
 
 _client: redis.Redis | None = None
 
@@ -65,6 +81,13 @@ def k_momentum(eid: str) -> str:
 
 def encounter_keys(eid: str) -> list[str]:
     return [k_meta(eid), k_transcript(eid), k_hp(eid), k_queue(eid), k_judge(eid), k_momentum(eid)]
+
+
+def k_opening(topic_hash: str, prompt_ver: str) -> str:
+    """Track-A opening cache key. Shared across encounters (not per-encounter):
+    keyed by a stable digest of the topic text + a prompt version. See
+    app.debate.materialize for the hash + version definitions."""
+    return f"spec:opening:{topic_hash}:{prompt_ver}"
 
 
 # ---- Thin helpers ----
