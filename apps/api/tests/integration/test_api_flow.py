@@ -187,8 +187,15 @@ async def live_client(
 # --------------------------------------------------------------------------- #
 
 
-async def _create_run(client: httpx.AsyncClient, topic: str = "Should AI write tests?") -> dict:
-    resp = await client.post("/api/runs", json={"topic": topic, "seed": 7})
+async def _create_run(
+    client: httpx.AsyncClient,
+    topic: str = "Should AI write tests?",
+    player_name: str = "Test Player",
+) -> dict:
+    resp = await client.post(
+        "/api/runs",
+        json={"topic": topic, "player_name": player_name, "seed": 7},
+    )
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -204,15 +211,20 @@ async def test_create_run_returns_run_state_with_party(
 ) -> None:
     # Arrange
     topic = "Is a hotdog a sandwich?"
+    player_name = "Ada"
 
     # Act
-    resp = await live_client.post("/api/runs", json={"topic": topic, "seed": 3})
+    resp = await live_client.post(
+        "/api/runs",
+        json={"topic": topic, "player_name": player_name, "seed": 3},
+    )
 
     # Assert
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert isinstance(body["id"], str) and body["id"]
     assert body["debate_topic"] == topic
+    assert body["player_name"] == player_name
     assert body["status"] == "active"
     assert isinstance(body["party"], list) and len(body["party"]) >= 1
     member = body["party"][0]

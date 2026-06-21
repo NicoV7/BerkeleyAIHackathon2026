@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from app.schemas import POI, Region
 
 # Tile legend (shared with the overworld, map.py): matches the FE renderer.
-#   0 = walkable, 1 = blocked/wall, 2 = campsite overlay (walkable).
+#   0 = grass/walkable, 1 = blocked/wall, 2 = campsite overlay (walkable).
 # Interiors additionally use these *walkable* semantic markers so the FE can
-# render them distinctly without breaking the existing legend (anything != 1 is
-# walkable to WorldSim.isBlockedTile, which only blocks on 1):
+# render them distinctly without breaking the existing legend. The expansive
+# overworld adds semantic walkable terrain plus blocked water/mountain types.
 WALKABLE = 0
 BLOCKED = 1
 CAMP = 2
@@ -27,6 +27,12 @@ FLOOR = 0  # interior floor (alias of walkable)
 WALL = 1  # interior wall (alias of blocked)
 DOOR = 3  # interior exit/entrance marker (walkable)
 FEATURE = 4  # interior feature: chest/altar/NPC anchor etc. (walkable)
+FOREST = 5  # overworld forest floor (walkable)
+WATER = 6  # overworld water (blocked)
+MOUNTAIN = 7  # overworld mountains/cliffs (blocked)
+TOWN = 8  # overworld/town plaza (walkable)
+CAVE = 9  # cave or dungeon entrance (walkable)
+BLOCKED_TILES = {BLOCKED, WATER, MOUNTAIN}
 
 
 @dataclass

@@ -177,3 +177,18 @@ async def get_run(
     saved_at = await _read_saved_at(session, run_id)
 
     return _run_resume_state(run, monsters, saved_at)
+
+
+@router.get("/runs/{run_id}/party", response_model=list[MonsterSummary])
+async def get_run_party(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[MonsterSummary]:
+    """Return the player's current party for HUD, party, and training screens."""
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    monsters = await _player_monsters(session, run_id)
+    party, _captured = _split_party_captured(monsters)
+    return party

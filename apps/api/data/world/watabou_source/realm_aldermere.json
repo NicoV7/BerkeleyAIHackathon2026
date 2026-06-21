@@ -1,0 +1,49 @@
+{
+  "type": "FeatureCollection",
+  "properties": {
+    "version": "0.7.3",
+    "name": "Aldermere"
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "type": "north" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [0, 0], [60, 0], [60, 12], [0, 12], [0, 0]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "type": "south" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [0, 30], [60, 30], [60, 42], [0, 42], [0, 30]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "type": "east" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [42, 14], [60, 14], [60, 28], [42, 28], [42, 14]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "type": "west" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [0, 14], [18, 14], [18, 28], [0, 28], [0, 14]
+        ]]
+      }
+    }
+  ]
+}

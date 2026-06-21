@@ -19,7 +19,7 @@
  */
 
 import type Phaser from "phaser";
-import { TILE_SIZE } from "./OverworldScene";
+import { TILE_SIZE } from "./constants";
 
 export type EnemyFsmState = "idle" | "wander" | "chase";
 

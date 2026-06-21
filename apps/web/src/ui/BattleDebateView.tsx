@@ -51,6 +51,8 @@ import {
   setSfxEnabled,
 } from "../lib/sfx";
 import { ReasoningTrend, type TrendSeries } from "./ReasoningTrend";
+import SummonOverlay, { type SummonResult } from "../game/SummonOverlay";
+import { useIrisTransition } from "./fx/IrisWipe";
 import {
   CombatantState,
   JudgeVerdict,
@@ -559,8 +561,9 @@ function EstimateBadge({ score, turn }: { score: number; turn: number }) {
 // ---------------------------------------------------------------------------
 
 export function BattleDebateView() {
-  const { activeEncounterId, runId, topic: runTopic, setEncounter, setYouScores, setBattleLocked } =
+  const { activeEncounterId, runId, topic: runTopic, playerName, setEncounter, setYouScores, setBattleLocked } =
     useGame();
+  const { transition } = useIrisTransition();
   const {
     status,
     encounter,
@@ -577,6 +580,8 @@ export function BattleDebateView() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [summonOpen, setSummonOpen] = useState(false);
+  const [summonNotice, setSummonNotice] = useState<string | null>(null);
 
   // Player input
   const [argText, setArgText] = useState("");
@@ -647,8 +652,8 @@ export function BattleDebateView() {
   );
   const youSeries: TrendSeries = useMemo(() => {
     const pts = verdicts.filter((v) => partyIds.has(v.target)).map((v) => v.score);
-    return { label: "You", color: "var(--party)", points: pts };
-  }, [verdicts, partyIds]);
+    return { label: playerName, color: "var(--party)", points: pts };
+  }, [verdicts, partyIds, playerName]);
 
   // Publish the player's curve so the training screen can show it beside the agent.
   useEffect(() => {
@@ -840,6 +845,11 @@ export function BattleDebateView() {
     });
   }
 
+  function handleSummoned(result: SummonResult) {
+    setSummonNotice(`${result.figure.name} is ready for the next exchange.`);
+    setActionError(null);
+  }
+
   async function restAction(path: string, body?: unknown) {
     if (!activeEncounterId || busy) return;
     setActionError(null);
@@ -868,7 +878,7 @@ export function BattleDebateView() {
     // Release the nav lock and return to the overworld (setEncounter(null) sets
     // screen -> "overworld" and clears battleLocked).
     setBattleLocked(false);
-    setEncounter(null);
+    transition(() => setEncounter(null));
   }
 
   // ---- No active encounter: inviting empty state ----
@@ -896,6 +906,13 @@ export function BattleDebateView() {
           Combatants are passed so the headline can read "{name} LEVEL N". */}
       <LevelUpOverlay combatants={combatants} />
 
+      <SummonOverlay
+        runId={runId}
+        open={summonOpen}
+        topic={encounter?.topic ?? runTopic}
+        onClose={() => setSummonOpen(false)}
+        onSummoned={handleSummoned}
+      />
       {captureFlash && (
         <div
           className="capture-flash absolute inset-0 z-50 pointer-events-none"
@@ -1246,6 +1263,11 @@ export function BattleDebateView() {
             {actionError}
           </span>
         )}
+        {summonNotice && !actionError && (
+          <span className="font-body text-[11px] flex-1" style={{ color: "var(--party)" }}>
+            {summonNotice}
+          </span>
+        )}
         {isOver && (
           <span className="font-display text-sm" style={{ color: phase === "won" ? "var(--win)" : "var(--danger)" }}>
             {phase === "won" ? "VICTORY" : "DEFEAT"}
@@ -1297,6 +1319,13 @@ export function BattleDebateView() {
             {recallError}
           </span>
         )}
+        <button
+          className="pixel-btn"
+          disabled={!runId || isOver || running}
+          onClick={() => setSummonOpen(true)}
+        >
+          Summon
+        </button>
         {isCapturable && (
           <button className="pixel-btn pixel-btn--accent" disabled={busy} onClick={handleCapture}>
             Capture

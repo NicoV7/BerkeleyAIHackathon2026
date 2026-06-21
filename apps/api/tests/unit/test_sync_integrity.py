@@ -30,6 +30,7 @@ from app.routers.map import (  # noqa: E402
     _LAST_SYNC_SEQ,
     SyncPositionRequest,
     _generate_tiles,
+    _world_dims_for,
     sync_position,
 )
 
@@ -99,8 +100,9 @@ def test_sync_clamps_out_of_bounds(make_run) -> None:
     body = SyncPositionRequest(x=9999, y=9999, seq=1)
     result = asyncio.run(sync_position(run.id, body, session))  # type: ignore[arg-type]
 
-    assert 0 <= result.player_x <= MAP_WIDTH - 1
-    assert 0 <= result.player_y <= MAP_HEIGHT - 1
+    world_width, world_height = _world_dims_for(run.seed)
+    assert 0 <= result.player_x <= world_width - 1
+    assert 0 <= result.player_y <= world_height - 1
     # The clamped corner may itself be blocked; either way it never escapes bounds.
 
 
@@ -111,8 +113,9 @@ def test_sync_clamps_negative_into_bounds(make_run) -> None:
     body = SyncPositionRequest(x=-50, y=-50, seq=1)
     result = asyncio.run(sync_position(run.id, body, session))  # type: ignore[arg-type]
 
-    assert 0 <= result.player_x <= MAP_WIDTH - 1
-    assert 0 <= result.player_y <= MAP_HEIGHT - 1
+    world_width, world_height = _world_dims_for(run.seed)
+    assert 0 <= result.player_x <= world_width - 1
+    assert 0 <= result.player_y <= world_height - 1
 
 
 # --------------------------------------------------------------------------- #

@@ -10,8 +10,7 @@
  * Responsibilities:
  *   - Read input intent (handed in each frame) → velocity.
  *   - Integrate position in WORLD (pixel) space, dt-scaled.
- *   - Collide against the tile array already received from /map
- *     (0 = walkable, 1 = blocked, 2 = campsite overlay → still walkable).
+ *   - Collide against the tile array already received from /map.
  *   - Drive a Phaser camera to follow the player.
  *
  * Coordinates: the sim works in pixel space; tile <-> pixel conversion uses
@@ -20,7 +19,9 @@
  */
 
 import type Phaser from "phaser";
-import { TILE_SIZE } from "./OverworldScene";
+import { TILE_SIZE } from "./constants";
+
+const BLOCKED_TILE_VALUES = new Set([1, 6, 7]);
 
 /** Movement intent for a single frame, normalised to [-1, 1] per axis. */
 export interface MoveIntent {
@@ -29,10 +30,14 @@ export interface MoveIntent {
 }
 
 export interface WorldSimConfig {
-  /** Tile grid: 0 = walkable, 1 = blocked, 2 = campsite (walkable overlay). */
+  /** Tile grid using the API tile legend; water/mountain/walls are blocked. */
   tiles: number[][];
-  width: number; // tiles
-  height: number; // tiles
+  width: number; // loaded chunk width in tiles
+  height: number; // loaded chunk height in tiles
+  worldWidth?: number; // full world width in tiles
+  worldHeight?: number; // full world height in tiles
+  tileOriginX?: number; // global x of tiles[0][0]
+  tileOriginY?: number; // global y of tiles[0][0]
   /** Start position in TILE coords. */
   startTileX: number;
   startTileY: number;
@@ -55,6 +60,8 @@ export class WorldSim {
   private tiles: number[][];
   private readonly widthPx: number;
   private readonly heightPx: number;
+  private tileOriginX: number;
+  private tileOriginY: number;
 
   /** Player center in WORLD (pixel) space. */
   public x: number;
@@ -66,15 +73,19 @@ export class WorldSim {
 
   constructor(cfg: WorldSimConfig) {
     this.tiles = cfg.tiles;
-    this.widthPx = cfg.width * TILE_SIZE;
-    this.heightPx = cfg.height * TILE_SIZE;
+    this.widthPx = (cfg.worldWidth ?? cfg.width) * TILE_SIZE;
+    this.heightPx = (cfg.worldHeight ?? cfg.height) * TILE_SIZE;
+    this.tileOriginX = cfg.tileOriginX ?? 0;
+    this.tileOriginY = cfg.tileOriginY ?? 0;
     this.x = cfg.startTileX * TILE_SIZE + TILE_SIZE / 2;
     this.y = cfg.startTileY * TILE_SIZE + TILE_SIZE / 2;
   }
 
   /** Hot-swap tiles (e.g. after a scene transition reloads the map). */
-  setTiles(tiles: number[][]) {
+  setTiles(tiles: number[][], tileOriginX = this.tileOriginX, tileOriginY = this.tileOriginY) {
     this.tiles = tiles;
+    this.tileOriginX = tileOriginX;
+    this.tileOriginY = tileOriginY;
   }
 
   /** Current player position in TILE coords (rounded to the occupied tile). */
@@ -86,13 +97,15 @@ export class WorldSim {
   }
 
   /**
-   * True if the given TILE is blocked (1) or out of bounds. Campsite tiles (2)
-   * and walkable tiles (0) are passable.
+   * True if the given TILE is blocked or out of bounds. Campsites, roads,
+   * forests, towns, caves, and features are passable; walls/water/mountains are not.
    */
   isBlockedTile(tx: number, ty: number): boolean {
-    if (ty < 0 || ty >= this.tiles.length) return true;
-    if (tx < 0 || tx >= this.tiles[0].length) return true;
-    return this.tiles[ty][tx] === 1;
+    const lx = tx - this.tileOriginX;
+    const ly = ty - this.tileOriginY;
+    if (ly < 0 || ly >= this.tiles.length) return true;
+    if (lx < 0 || lx >= this.tiles[0].length) return true;
+    return BLOCKED_TILE_VALUES.has(this.tiles[ly][lx]);
   }
 
   /**

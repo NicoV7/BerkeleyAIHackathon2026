@@ -1,0 +1,81 @@
+# Canonical world curation — hand-edited region names, lore, and NPC anchors.
+#
+# The bake script reads this YAML alongside the watabou_source/ JSON files and
+# composes the canonical world. Names here OVERRIDE Watabou's own titles; lore
+# strings appear in NPC dialogue context; npc_anchors place scripted NPCs on
+# FEATURE tiles inside the corresponding POI's interior.
+#
+# Schema:
+#   world:
+#     name: str          - world title (shown on the boot screen / save UI)
+#     seed: int          - canonical world seed (any int; pinned for determinism)
+#   overworld:
+#     source: str        - watabou_source/ filename (no path) for the realm/region
+#     regions:
+#       - match: str     - substring matched against region.name (case-insensitive)
+#         name: str      - override name
+#         lore: str      - one-sentence flavor used in NPC prompts
+#   towns:
+#     - source: str      - watabou_source/ filename for a town JSON
+#       overworld_poi: "kind:x:y"   - POI in the overworld this town is mapped to
+#       name: str
+#       lore: str
+#       npcs:
+#         - archetype: villager|merchant|quest_giver|figure|innkeeper
+#           name: str
+#           figure_id: str (only for archetype: figure)
+#   dungeons:
+#     - source: str
+#       overworld_poi: "kind:x:y"
+#       name: str
+#       lore: str
+
+world:
+  name: "Aldermere"
+  seed: 1729
+
+overworld:
+  source: realm_aldermere.json
+  regions:
+    - match: north
+      name: "The Aldermere Meadows"
+      lore: "Bright wheat-fields ringed by oak — a kingdom at peace, for now."
+    - match: south
+      name: "The Sunless Halls"
+      lore: "A drowned valley where the sun has not fallen in seventy years."
+    - match: east
+      name: "Drystone Reach"
+      lore: "Ruined keeps and worn stones — the old wars left their bones here."
+    - match: west
+      name: "Whispering Wilds"
+      lore: "Forests where no traveller speaks above a hush. Listening, always."
+
+towns:
+  - source: town_aldermere.json
+    overworld_poi: "town:5:7"
+    name: "Aldermere Village"
+    lore: "The capital — where the player begins. Innkeeper Marin knows everyone."
+    npcs:
+      - archetype: innkeeper
+        name: "Marin the Innkeeper"
+      - archetype: merchant
+        name: "Talia the Apothecary"
+      - archetype: quest_giver
+        name: "Captain Veyl of the Guard"
+      - archetype: figure
+        name: "Socrates"
+        figure_id: socrates
+      - archetype: figure
+        name: "Marie Curie"
+        figure_id: curie
+
+dungeons:
+  - source: dungeon_drystone.json
+    overworld_poi: "den:13:9"
+    name: "Drystone Keep"
+    lore: "An ancient ruined keep. Its lord vanished a generation ago — and his court still holds council in the deep."
+
+  - source: dungeon_sunless.json
+    overworld_poi: "den:16:12"
+    name: "The Sunless Halls"
+    lore: "A drowned palace beneath the south basin. Listens. Judges. Waits."

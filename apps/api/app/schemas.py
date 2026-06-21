@@ -24,6 +24,7 @@ class HealthResponse(BaseModel):
 
 class CreateRunRequest(BaseModel):
     topic: str = Field(..., description="The debate topic for this entire run")
+    player_name: Optional[str] = Field(None, description="Display name for the player")
     seed: int = 0
     # Theme picked at run start; each battle draws a random topic within it.
     # Optional/additive — when absent, battles fall back to the full catalog.
@@ -62,6 +63,7 @@ class RunState(BaseModel):
     debate_topic: str
     # Theme chosen at run start (additive/Optional for backward compat).
     theme: Optional[str] = None
+    player_name: str = "Player"
     player_x: int
     player_y: int
     status: str
@@ -82,12 +84,40 @@ class MapState(BaseModel):
     player_x: int
     player_y: int
     enemies: list[TileEnemy] = []
+    # Wave 5: chunked overworld payloads. ``width``/``height`` describe the
+    # returned tile window, while these additive fields describe its global
+    # placement inside the full world.
+    origin_x: int = 0
+    origin_y: int = 0
+    world_width: Optional[int] = None
+    world_height: Optional[int] = None
+    chunk_size: Optional[int] = None
     # Wave 2: structured POIs overlaid on the grid (camp/town/den/landmark/goal).
     # Additive/Optional so the existing MapState consumers keep working.
     pois: list["POI"] = []
 
 
 # ---- World structure (Wave 2 WorldSpec-lite; strict subset of the Wave-C WorldSpec) ----
+
+
+class NPCAnchor(BaseModel):
+    """A scripted NPC anchor inside a town/region.
+
+    Anchors are placed on FEATURE tiles by the canonical world bake and consumed
+    by the living-layer at runtime (apps/api/app/world/npcs.py). The runtime NPC
+    state (mood, dialogue cache, recruitment status) lives in Redis keyed by
+    ``npc_id``; the anchor is just the placement contract.
+
+    Archetypes drive dialogue prompts: villagers gossip about world events,
+    merchants give dynamic quests, quest_givers gate dungeon-clear progression,
+    and figures unlock the summon roster after a trial-debate. Additive only.
+    """
+    npc_id: str
+    archetype: Literal["villager", "merchant", "quest_giver", "figure", "innkeeper"]
+    x: int
+    y: int
+    name: str = ""
+    figure_id: Optional[str] = None  # set for archetype=="figure" — links to figures catalog
 
 
 class POI(BaseModel):
@@ -107,6 +137,13 @@ class POI(BaseModel):
     #     blindly. None => server infers from `kind` (town->town, den->cave).
     interior_seed: Optional[int] = None
     interior_kind: Optional[Literal["town", "cave", "dungeon"]] = None
+    # Wave 4 (canonical world + living layer) — additive Optional fields.
+    # ``npc_anchors`` lists scripted NPC placements inside this POI's interior
+    # (consumed by the living-layer to spawn villagers/merchants/quest_givers/
+    # figures). ``scripted`` marks a POI as part of the canonical hand-curated
+    # world (vs. seed-procedural) so the FE can decorate it differently.
+    npc_anchors: list[NPCAnchor] = []
+    scripted: bool = False
 
 
 class Region(BaseModel):
@@ -114,6 +151,10 @@ class Region(BaseModel):
     biome: str = "plains"
     # Inclusive tile bounds [x0,y0,x1,y1]; optional so a flat map can omit them.
     bounds: Optional[list[int]] = None
+    # Wave 4 (canonical world) — optional region lore string surfaced to the FE
+    # when entering the region; also used in NPC dialogue prompts as scene
+    # context ("you are in {region.name}, where {region.lore}").
+    lore: Optional[str] = None
 
 
 class WorldSpecLite(BaseModel):

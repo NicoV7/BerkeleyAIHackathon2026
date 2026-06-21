@@ -21,6 +21,21 @@ from app.world import generator as gen
 
 
 # --------------------------------------------------------------------------- #
+# Module-wide canonical opt-out
+# --------------------------------------------------------------------------- #
+# This file tests the AGENT-GENERATED + SEED-PROCEDURAL paths. Skipping the
+# canonical world for every test here keeps those contracts isolated. The
+# canonical path has its own dedicated test_world_canonical.py.
+
+@pytest.fixture(autouse=True)
+def _no_canonical_world(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.world import canonical as canonical_mod
+
+    monkeypatch.setattr(canonical_mod, "get_canonical_world", lambda: None)
+    monkeypatch.setattr(canonical_mod, "get_canonical_interior", lambda _k: None)
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 
