@@ -120,14 +120,14 @@
       8,
       8,
       8,
-      8,
+      4,
       8,
       3,
       8,
       4,
       8,
       8,
-      8,
+      4,
       8,
       8,
       8,
@@ -194,7 +194,7 @@
       8,
       8,
       8,
-      8,
+      4,
       8,
       8,
       1
@@ -226,7 +226,7 @@
       8,
       8,
       1,
-      1,
+      4,
       1,
       1,
       1,
@@ -255,7 +255,7 @@
       8,
       8,
       3,
-      8,
+      4,
       8,
       1,
       1,
@@ -376,20 +376,60 @@
             "y": 9
           },
           {
-            "archetype": "figure",
-            "figure_id": "socrates",
-            "name": "Socrates",
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Bram Cellarwatch",
             "npc_id": "town_208_560__3",
             "x": 6,
             "y": 8
           },
           {
-            "archetype": "figure",
-            "figure_id": "curie",
-            "name": "Marie Curie",
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Edda Willowward",
             "npc_id": "town_208_560__4",
             "x": 14,
             "y": 9
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Lysa Road-Eye",
+            "npc_id": "town_208_560__5",
+            "x": 4,
+            "y": 10
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Pip of the Pump",
+            "npc_id": "town_208_560__6",
+            "x": 16,
+            "y": 8
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Noll Greenacre",
+            "npc_id": "town_208_560__7",
+            "x": 8,
+            "y": 5
+          },
+          {
+            "archetype": "figure",
+            "figure_id": "socrates",
+            "name": "Socrates",
+            "npc_id": "town_208_560__8",
+            "x": 11,
+            "y": 11
+          },
+          {
+            "archetype": "figure",
+            "figure_id": "curie",
+            "name": "Marie Curie",
+            "npc_id": "town_208_560__9",
+            "x": 15,
+            "y": 5
           }
         ],
         "scripted": true,
