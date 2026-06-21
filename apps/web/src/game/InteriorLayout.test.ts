@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { INTERIOR_TILE, type InteriorSpec } from "./SceneRouter";
 import {
+  buildInteriorEnemySpawns,
   buildInteriorGrid,
   clampInside,
   normalizeKind,
@@ -111,12 +112,111 @@ describe("buildInteriorGrid", () => {
     expect(npcReachable).toBe(true);
   });
 
+  it.each(kinds)("%s keeps every anchor reachable from the entrance", (kind) => {
+    // Deeper interiors (hollow town houses, chambers-and-corridors dungeons) must
+    // never strand the player or an anchor behind walls.
+    const s = spec({
+      width: 20,
+      height: 16,
+      pois: [
+        {
+          kind: "landmark",
+          x: 15,
+          y: 12,
+          name: "Loot",
+          npc_anchors: [
+            { npc_id: "n1", archetype: "merchant", x: 4, y: 3, name: "Sella" },
+            { npc_id: "n2", archetype: "innkeeper", x: 17, y: 4, name: "Bram" },
+          ],
+        },
+      ],
+    });
+    const g = buildInteriorGrid(s, kind);
+    for (const t of [{ x: 15, y: 12 }, { x: 4, y: 3 }, { x: 17, y: 4 }]) {
+      const p = clampInside(t, g.width, g.height);
+      expect(reachable(g.tiles, g.entrance, p)).toBe(true);
+    }
+  });
+
   it("emits a navigable room even for a degenerate (tiny/empty) spec", () => {
     const g = buildInteriorGrid(spec({ width: 1, height: 1, pois: [] }), "cave");
     // Clamped up to the minimum dims so it is still a real room.
     expect(g.width).toBeGreaterThanOrEqual(8);
     expect(g.height).toBeGreaterThanOrEqual(6);
     expect(g.tiles[g.entrance.y][g.entrance.x]).toBe(INTERIOR_TILE.DOOR);
+  });
+});
+
+describe("buildInteriorEnemySpawns", () => {
+  it("keeps towns safe while populating caves and dungeons", () => {
+    const s = spec({ width: 20, height: 16 });
+    const town = buildInteriorGrid(s, "town");
+    const cave = buildInteriorGrid(s, "cave");
+    const dungeon = buildInteriorGrid(s, "dungeon");
+
+    expect(buildInteriorEnemySpawns(s, town, "town")).toHaveLength(0);
+    expect(buildInteriorEnemySpawns(s, cave, "cave").length).toBeGreaterThan(0);
+    expect(buildInteriorEnemySpawns(s, dungeon, "dungeon").length).toBeGreaterThan(
+      buildInteriorEnemySpawns(s, cave, "cave").length
+    );
+  });
+
+  it("places deterministic dungeon enemies away from exits and walls", () => {
+    const s = spec({ width: 20, height: 16 });
+    const grid = buildInteriorGrid(s, "dungeon");
+
+    const first = buildInteriorEnemySpawns(s, grid, "dungeon");
+    const second = buildInteriorEnemySpawns(s, grid, "dungeon");
+
+    expect(second).toEqual(first);
+    for (const spawn of first) {
+      expect(grid.tiles[spawn.tileY][spawn.tileX]).not.toBe(INTERIOR_TILE.WALL);
+      expect(grid.exits).not.toContainEqual({ x: spawn.tileX, y: spawn.tileY });
+      const distance =
+        Math.abs(spawn.tileX - grid.entrance.x) + Math.abs(spawn.tileY - grid.entrance.y);
+      expect(distance).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it("keeps entrance patrols visible near the first dungeon room", () => {
+    const s = spec({ width: 22, height: 16 });
+    const grid = buildInteriorGrid(s, "dungeon");
+
+    const spawns = buildInteriorEnemySpawns(s, grid, "dungeon");
+    const nearEntrance = spawns.filter((spawn) => {
+      const distance =
+        Math.abs(spawn.tileX - grid.entrance.x) + Math.abs(spawn.tileY - grid.entrance.y);
+      return distance <= 9;
+    });
+
+    expect(nearEntrance.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("populates the canonical Sunless Halls dungeon spec", () => {
+    const sunlessHalls = spec({
+      seed: 1729,
+      width: 22,
+      height: 16,
+      start: { kind: "start", x: 4, y: 4, name: "The Sunless Halls", npc_anchors: [] },
+      pois: [
+        { kind: "start", x: 4, y: 4, name: "The Sunless Halls", npc_anchors: [] },
+        { kind: "landmark", x: 11, y: 10, name: "Heart", npc_anchors: [] },
+        { kind: "goal", x: 5, y: 12, name: "Deep Chamber", npc_anchors: [] },
+      ],
+    });
+    const grid = buildInteriorGrid(sunlessHalls, "dungeon");
+
+    const spawns = buildInteriorEnemySpawns(sunlessHalls, grid, "dungeon");
+
+    expect(spawns.length).toBeGreaterThan(0);
+    expect(spawns.some((spawn) => spawn.tileX <= 12 && spawn.tileY <= 8)).toBe(true);
+    expect(reachable(grid.tiles, grid.entrance, { x: 11, y: 10 })).toBe(true);
+    expect(reachable(grid.tiles, grid.entrance, { x: 5, y: 12 })).toBe(true);
+    for (const spawn of spawns) {
+      expect(reachable(grid.tiles, grid.entrance, { x: spawn.tileX, y: spawn.tileY })).toBe(
+        true
+      );
+    }
   });
 });
 

@@ -41,7 +41,7 @@ const PLAYER_PALETTE = {
   gold: 0xffcf3f,
 } as const;
 
-type PixelPainter = (color: number, x: number, y: number, w?: number, h?: number) => void;
+export type PixelPainter = (color: number, x: number, y: number, w?: number, h?: number) => void;
 
 /** Returns the generated texture key for a directional player frame. */
 export function playerTextureKey(direction: PlayerDirection, frame: number): string {
@@ -163,7 +163,7 @@ function drawPlayerFrame(
   else drawSideFrame(px, legShift);
 }
 
-function drawFrontFrame(px: PixelPainter, legShift: number): void {
+export function drawFrontFrame(px: PixelPainter, legShift: number): void {
   const { boot, cyan, cyanDark, cyanLight, gold, hair, ink, skin } = PLAYER_PALETTE;
   px(hair, 4, 1, 8, 2);
   px(skin, 5, 3, 6, 4);
