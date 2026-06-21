@@ -1129,7 +1129,9 @@ export class OverworldScene extends Phaser.Scene {
       deltaMs: delta,
     });
     this.emitPlayerTile();
-    this.npcs.update(time, this.sim.x, this.sim.y);
+    this.npcs.update(time, delta, this.sim.x, this.sim.y, (tx, ty) =>
+      this.sim!.isBlockedTile(tx, ty)
+    );
     this.maybeTriggerNpcTalk(time);
     this.maybeEnterInterior();
     this.maybeRefreshChunk(time);
