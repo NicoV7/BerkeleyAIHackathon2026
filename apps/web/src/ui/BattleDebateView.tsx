@@ -241,6 +241,14 @@ function useTypewriter(text: string, active: boolean, speed = 18) {
   return shown;
 }
 
+function reactionLabel(state: string) {
+  return state
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function UtteranceBubble({
   u,
   liveNames,
@@ -255,6 +263,8 @@ function UtteranceBubble({
   const color = isJudge ? "var(--accent)" : isParty ? "var(--party)" : "var(--enemy)";
   const text = useTypewriter(u.text, isNewest);
   const actorName = liveNames[u.actor_id] ?? u.actor_id;
+  const reaction = u.reaction_state ? reactionLabel(u.reaction_state) : null;
+  const moveLabel = reaction ?? u.skill_used;
   // Debaters carry a stance; the judge is neutral. Side comes from the optional
   // backend hint on the utterance, falling back to role (party=FOR, enemy=AGAINST).
   const rawSide = (u as { side?: string }).side;
@@ -283,9 +293,16 @@ function UtteranceBubble({
             {sideLabel(turnSide)}
           </span>
         )}
-        {u.skill_used && (
-          <span className="font-hud text-[9px] px-1" style={{ background: "rgba(255,255,255,0.1)" }}>
-            {u.skill_used}
+        {moveLabel && (
+          <span
+            className="font-hud text-[9px] px-1"
+            style={{
+              background: reaction
+                ? "rgba(255,255,255,0.18)"
+                : "rgba(255,255,255,0.1)",
+            }}
+          >
+            {moveLabel}
           </span>
         )}
         <span className="ml-auto font-hud text-[9px]" style={{ color: "var(--muted)" }}>

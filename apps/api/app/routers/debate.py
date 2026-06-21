@@ -373,12 +373,13 @@ async def _write_battle_memories(
     }.get(result, "The debate ended.")
 
     # Render the full conversation once, labeled by speaker.
-    lines = [f"{names.get(u['actor_id'], u['actor_role'])}: {u['text']}" for u in transcript]
+    debate_lines = [u for u in transcript if not u.get("reaction_state")]
+    lines = [f"{names.get(u['actor_id'], u['actor_role'])}: {u['text']}" for u in debate_lines]
     convo = "\n".join(lines)
 
     for pid in (enc.party_ids or []):
         my_hp = final_hp.get(pid)
-        my_lines = [u["text"] for u in transcript if u["actor_id"] == pid]
+        my_lines = [u["text"] for u in debate_lines if u["actor_id"] == pid]
         content = (
             f"Debate on '{topic}'. {outcome} "
             f"Final HP: {my_hp}. My arguments: " + " | ".join(my_lines) +
@@ -499,6 +500,7 @@ def _utt_fields(d: dict) -> dict:
         "ts": d["ts"],
         "server_ts": d.get("server_ts"),
         "elapsed_ms": d.get("elapsed_ms"),
+        "reaction_state": d.get("reaction_state"),
     }
 
 
@@ -736,6 +738,8 @@ def _transcript_slice(transcript: list[dict], n: int = 5) -> list[str]:
     """Render the last N transcript lines as `"<actor_role>: <text>"` strings."""
     out: list[str] = []
     for u in transcript[-n:]:
+        if u.get("reaction_state"):
+            continue
         role = u.get("actor_role") or "?"
         text = (u.get("text") or "").strip()
         if not text:

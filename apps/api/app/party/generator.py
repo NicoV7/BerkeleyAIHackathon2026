@@ -12,9 +12,11 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import DebateType, Monster, MonsterOwner
 from app.party import archetypes as _archetypes
 from app.party import balance as _balance
+from app.party import persona as _persona
 
 # ---------------------------------------------------------------------------
 # Inline skill catalog (tiny seed list — global catalog seeded in Wave 2)
@@ -128,15 +130,34 @@ def _build_persona(rng: random.Random) -> dict[str, Any]:
     }
 
 
-def _build_harness(persona: dict[str, Any], debate_type: DebateType) -> dict[str, Any]:
+def _build_harness(
+    persona: dict[str, Any],
+    debate_type: DebateType,
+    *,
+    role: str = "party",
+) -> dict[str, Any]:
     system_prompt = (
-        f"You are a debater of type {debate_type.value}. "
-        f"Background: {persona['backstory']} "
-        f"Tone: {persona['tone']}. "
-        f"Quirk: {persona['quirks']}. "
-        "Debate forcefully but fairly. Keep responses under 80 words."
+        f"Thin {role} battle harness for {debate_type.value}: obey role, stance, and output contract."
     )
-    return {"system_prompt": system_prompt}
+    domain = _archetypes.domain_for_type(debate_type)
+    fragments = []
+    if domain.get("description"):
+        fragments.append(str(domain["description"]))
+    if role == "enemy":
+        fragments.append(
+            "Open by rebutting the party's latest claim, then add one concrete failure mode."
+        )
+    else:
+        fragments.append(
+            "Coordinate with the party's current argument and avoid repeating it."
+        )
+    return _persona.normalize_harness(
+        {
+            "system_prompt": system_prompt,
+            "skill_prompt_fragments": fragments,
+        },
+        role=role,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +235,19 @@ def build_wild_monster(
         owner=MonsterOwner.wild,
         name=name,
         type=dtype,
-        persona=persona,
-        harness=_build_harness(persona, dtype),
+        persona=_persona.ensure_battle_reactions(
+            persona,
+            dtype,
+            role="enemy",
+            fallback_name=name,
+        ),
+        harness=_build_harness(persona, dtype, role="enemy"),
         skills=skills,
         level=level,
         xp=0,
         max_hp=max_hp,
         evolution_stage=evolution_stage,
-        model="gemma3:1b",
+        model=settings.actor_model,
         # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
         created_at=datetime.utcnow(),
     )
@@ -247,14 +273,19 @@ async def roll_starter_party(session: AsyncSession, run_id: str, seed: int = 0) 
             owner=MonsterOwner.player,
             name=name,
             type=dtype,
-            persona=persona,
-            harness=_build_harness(persona, dtype),
+            persona=_persona.ensure_battle_reactions(
+                persona,
+                dtype,
+                role="party",
+                fallback_name=name,
+            ),
+            harness=_build_harness(persona, dtype, role="party"),
             skills=skills,
             level=1,
             xp=0,
             max_hp=100,
             evolution_stage=0,
-            model="gemma3:1b",
+            model=settings.actor_model,
             # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
             created_at=datetime.utcnow(),
         )

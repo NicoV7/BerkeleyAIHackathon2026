@@ -18,9 +18,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Encounter, EncounterResult, Monster, MonsterOwner, Run
+from app.config import settings
+from app.db.models import DebateType, Encounter, EncounterResult, Monster, MonsterOwner, Run
 from app.db.session import get_session
 from app.debate.orchestrator import Combatant
+from app.party.persona import ensure_battle_reactions, normalize_harness
 from app.redis_state import (
     ENCOUNTER_TTL_SECONDS,
     encounter_keys,
@@ -51,19 +53,34 @@ router = APIRouter(prefix="/api/encounters", tags=["encounter"])
 
 def _fabricate_enemy(run_id: str) -> Monster:
     """Minimal stand-in wild enemy when WS-A's generator is absent."""
+    persona = ensure_battle_reactions(
+        {"style": "provocative", "bio": "A wandering contrarian.", "tone": "combative"},
+        DebateType.chaos,
+        role="enemy",
+        fallback_name="Wild Sophist",
+    )
     return Monster(
         id=str(uuid.uuid4()),
         run_id=run_id,
         owner=MonsterOwner.wild,
         name="Wild Sophist",
-        # type defaults to logos via the model; pick CHAOS for variety
-        persona={"style": "provocative", "bio": "A wandering contrarian."},
-        skills=["Reframe", "Counterexample"],
+        type=DebateType.chaos,
+        persona=persona,
+        harness=normalize_harness(
+            {
+                "system_prompt": (
+                    "Thin enemy battle harness: obey role, stance, and output contract."
+                ),
+                "skill_prompt_fragments": [
+                    "Rebut the party's latest claim with one concrete failure mode."
+                ],
+            },
+            role="enemy",
+        ),
+        skills=["Reframe Attack", "Whataboutism"],
         level=2,
         max_hp=90,
-        # Pin to a model that's reliably pulled locally so WS-B is self-sufficient
-        # before WS-A's generator lands. WS-A's real monsters carry their own model.
-        model="gemma3:1b",
+        model=settings.actor_model,
     )
 
 
@@ -110,15 +127,32 @@ async def _resolve_party(session: AsyncSession, run_id: str) -> list[Monster]:
     if party:
         return party
     # Fabricate a minimal player monster so WS-B is self-sufficient pre-WS-A.
+    persona = ensure_battle_reactions(
+        {"style": "earnest", "bio": "An aspiring champion of reason.", "tone": "measured"},
+        DebateType.logos,
+        role="party",
+        fallback_name="Rookie Debater",
+    )
     pm = Monster(
         id=str(uuid.uuid4()),
         run_id=run_id,
         owner=MonsterOwner.player,
         name="Rookie Debater",
-        persona={"style": "earnest", "bio": "An aspiring champion of reason."},
-        skills=["Steelman", "Evidence Drop"],
+        type=DebateType.logos,
+        persona=persona,
+        harness=normalize_harness(
+            {
+                "system_prompt": (
+                    "You are a concise party debater who builds on allies and "
+                    "answers the enemy's latest claim."
+                )
+            },
+            role="party",
+        ),
+        skills=["Steel Man", "Logical Thrust"],
         level=2,
         max_hp=100,
+        model=settings.actor_model,
     )
     session.add(pm)
     await session.flush()
@@ -140,8 +174,13 @@ def _to_combatant(m: Monster, role: str) -> Combatant:
         max_hp=m.max_hp,
         level=m.level,
         owner=str(owner),
-        persona=dict(m.persona or {}),
-        harness=dict(m.harness or {}),
+        persona=ensure_battle_reactions(
+            m.persona or {},
+            mtype,
+            role=role,
+            fallback_name=m.name,
+        ),
+        harness=normalize_harness(m.harness or {}, role=role),
         skills=list(m.skills or []),
         model=m.model,
         # Gacha-wave stats — flow into compute_damage + MP economy.
@@ -240,8 +279,13 @@ async def load_combatants(eid: str) -> list[Combatant]:
                 max_hp=int(c["max_hp"]),
                 level=int(c.get("level", 1)),
                 owner=c.get("owner", "wild"),
-                persona=c.get("persona", {}) or {},
-                harness=c.get("harness", {}) or {},
+                persona=ensure_battle_reactions(
+                    c.get("persona", {}) or {},
+                    c["type"],
+                    role=c["role"],
+                    fallback_name=c["name"],
+                ),
+                harness=normalize_harness(c.get("harness", {}) or {}, role=c["role"]),
                 skills=c.get("skills", []) or [],
                 model=c.get("model"),
                 # Gacha-wave: rehydrate stats from the roster (default to neutral
@@ -322,6 +366,7 @@ async def build_encounter_state(eid: str) -> EncounterState:
             ts=u["ts"],
             server_ts=u.get("server_ts"),
             elapsed_ms=u.get("elapsed_ms"),
+            reaction_state=u.get("reaction_state"),
         )
         for u in transcript_raw
     ]

@@ -34,6 +34,7 @@ export interface Utterance {
   ts: number;
   server_ts?: number;
   elapsed_ms?: number;
+  reaction_state?: string | null;
 }
 
 export interface JudgeVerdict {
@@ -70,6 +71,7 @@ export interface TokenDelta {
   /** Server wall-clock timestamp and elapsed generation time for latency telemetry. */
   server_ts?: number;
   elapsed_ms?: number;
+  reaction_state?: string | null;
 }
 
 /**
@@ -85,6 +87,7 @@ export interface LiveUtterance {
   text: string;
   server_ts?: number;
   elapsed_ms?: number;
+  reaction_state?: string | null;
   /** True once the matching `utterance` closed the buffer (drives fallback). */
   done: boolean;
   /** When true, no tokens streamed — view should typewriter the whole text. */
@@ -515,6 +518,7 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
                   text: u.text,
                   server_ts: u.server_ts,
                   elapsed_ms: u.elapsed_ms,
+                  reaction_state: u.reaction_state,
                   done: true,
                   fallback: true,
                 },

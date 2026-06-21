@@ -43,6 +43,7 @@ def test_config_exposes_fast_path_knobs_with_short_defaults() -> None:
     # A SHORT per-call timeout — emphatically not the old 120s ceiling.
     assert 0 < s.llm_call_timeout_s <= 30
     assert hasattr(s, "prewarm_enabled")
+    assert s.battle_damage_multiplier >= 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -146,7 +147,8 @@ async def test_generate_utterance_uses_fast_model_and_short_timeout(
         _combatant(), "school uniforms", [], {"behavior": "argue"}, [], {"m1": "Sage"}
     )
 
-    assert text == "A crisp real argument."
+    assert text.startswith("A crisp real argument.")
+    assert "team throughput" in text
     assert captured["model"] == settings.actor_model
     assert captured["timeout"] == settings.llm_call_timeout_s
     assert captured["max_tokens"] <= 128
@@ -201,7 +203,8 @@ async def test_enemy_rebuttal_path_uses_fast_model(monkeypatch: pytest.MonkeyPat
     enemy = Combatant("e1", "Foe", "ETHOS", "enemy", 100, 100, model=None)
     out = await orch._generate_utterance(enemy, "ai safety", [], {}, [], {"e1": "Foe"})
 
-    assert out == "Enemy rebuts sharply."
+    assert out.startswith("Enemy rebuts sharply.")
+    assert "coordination, trust" in out
     assert captured["model"] == settings.actor_model
     assert captured["timeout"] == settings.llm_call_timeout_s
 

@@ -6,7 +6,7 @@ encounter; the debate engine snapshots to Postgres on completion.
 
 Key layout (per encounter_id):
   enc:{id}:meta       hash   topic, turn_no, phase, current_actor, status
-  enc:{id}:transcript list   JSON utterances {turn, actor_id, actor_role, skill_used, text, ts}
+  enc:{id}:transcript list   JSON utterances {turn, actor_id, actor_role, skill_used, text, ts, reaction_state?}
   enc:{id}:hp         hash   monster_id -> current_hp
   enc:{id}:mp         hash   monster_id -> current_mp  (gacha wave)
   enc:{id}:queue      list   turn order (monster_ids) for the round

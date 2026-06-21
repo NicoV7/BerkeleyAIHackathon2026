@@ -31,6 +31,7 @@ OPTIONAL_ROUTERS = [
     "training",
     "runs",
     "world",
+    "models",
     # Gacha wave (Wave A): named-persona summoning + post-battle drops.
     # Replaces the deleted `capture` router.
     "gacha",

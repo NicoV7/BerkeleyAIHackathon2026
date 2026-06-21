@@ -23,6 +23,56 @@ open http://localhost:5173   # web   (API docs: http://localhost:8000/docs)
 curl localhost:8000/api/health
 ```
 
+## Hosted Model Fallbacks
+
+The API gateway can route battle actors and judges through fast hosted providers
+with a local Ollama fallback. Put provider keys only in the ignored root `.env`
+file (`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`); `.env.example` intentionally contains placeholders only.
+
+Default latency-first candidates are configured with:
+
+```bash
+GATEWAY_ACTOR_CANDIDATES=groq/llama-3.1-8b-instant,cerebras/llama-3.3-70b,gemini/gemini-2.5-flash-lite,openrouter/openrouter/free,ollama/gemma3:1b
+GATEWAY_JUDGE_CANDIDATES=groq/llama-3.3-70b-versatile,cerebras/llama-3.3-70b,gemini/gemini-2.5-flash,ollama/gemma3:1b
+```
+
+Use the Pareto pseudo-models from code paths that should prefer the fastest
+acceptable provider:
+
+```python
+await gateway.complete(messages, model="pareto-actor")
+await gateway.complete(messages, model="pareto-judge", json_mode=True)
+```
+
+To refresh the in-process benchmark frontier, run from `apps/api`:
+
+```bash
+uv run python -m app.scripts.bench_models --role actor --runs 3
+uv run python -m app.scripts.bench_models --role judge --runs 3
+```
+
+The redacted runtime status is available at `GET /api/models/pareto`.
+
+## Battle Harness Training
+
+Run a small prompt-genome loop that trains both the party agent and the enemy
+agent against each other. The loop uses the Pareto actor model by default,
+scores latency first, and keeps only mutations that clear quality/reliability
+floors.
+
+```bash
+cd apps/api
+uv run python -m app.scripts.run_battle_training --cycles 1 --rounds 1 --variants 1 --model pareto-actor
+```
+
+The runner prints JSON with party/enemy score deltas, accepted mutation ops,
+latency measurements, and final genomes. It does not fine-tune weights and does
+not print provider secrets.
+
+Encounter pacing is controlled by `BATTLE_DAMAGE_MULTIPLIER` (default `1.0`).
+Raise it to shorten battles, lower it if playtests feel too abrupt.
+
 ## Layout
 ```
 apps/web/         Vite + React + Phaser
