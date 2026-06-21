@@ -25,6 +25,18 @@ import {
   playerTextureKey,
 } from "./PlayerAnimator";
 import { PostFX } from "./PostFX";
+import {
+  chunkKey,
+  neighborPrefetchCentres,
+  nearChunkEdge,
+  shouldSwapChunk,
+  type ChunkWindow,
+} from "./ChunkStream";
+import {
+  DUNGEON_INTERIOR_KEY,
+  InteriorScene,
+  TOWN_INTERIOR_KEY,
+} from "./InteriorScene";
 import { SceneRouter, type RegionSpec, type RoutablePOI } from "./SceneRouter";
 import {
   SHEET_COLS,
@@ -134,6 +146,10 @@ export interface OverworldConfig {
     height: number;
     tiles: number[][];
     enemies: { id: string; x: number; y: number }[];
+    // Global tile origin of this chunk window, so the HUD can map GLOBAL quest
+    // target coords into the minimap's chunk-local space (WS-7 render side).
+    originX: number;
+    originY: number;
   }) => void;
   onPlayerMove?: (x: number, y: number) => void;
   returnTile?: { x: number; y: number };
@@ -178,15 +194,30 @@ export class OverworldScene extends Phaser.Scene {
   private mapData: MapState | null = null;
   private worldData: WorldState | null = null;
 
-  // Graphics objects
-  // terrainRT: the atlas terrain blitted here (real pixel-art tiles + edge
-  // autotiling + bridges). tileGraphics: drawn ON TOP for the procedural
-  // fallback (unmapped tile-ints) and POI markers, so nothing renders blank.
-  private terrainRT: Phaser.GameObjects.RenderTexture | null = null;
+  // Graphics objects — DOUBLE BUFFERED (WS-8).
+  // Two terrain RenderTextures (front = visible, back = hidden) plus two matching
+  // fallback Graphics layers. A new chunk is fully stamped into the BACK pair,
+  // then we swap depths so it becomes the front; the old terrain stays on screen
+  // the whole time the new chunk fetches + stamps, so there is never a black gap.
+  // The fallback Graphics draws unmapped tile-ints + POI markers on top of the
+  // atlas RT (so nothing renders blank).
+  private terrainRT: [
+    Phaser.GameObjects.RenderTexture | null,
+    Phaser.GameObjects.RenderTexture | null,
+  ] = [null, null];
+  private tileGraphics!: [Phaser.GameObjects.Graphics, Phaser.GameObjects.Graphics];
+  /** Index (0|1) of the buffer currently shown to the player. */
+  private frontBuffer = 0;
+  /** The chunk window currently displayed in the front buffer. */
+  private liveWindow: ChunkWindow | null = null;
   private atlasReady = false;
-  private tileGraphics!: Phaser.GameObjects.Graphics;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
+
+  // Depth bands for the two terrain layers. Front sits just under the actors;
+  // back sits below the front so the in-progress chunk is hidden until swapped.
+  private static readonly RT_DEPTH = [-2, -4] as const;
+  private static readonly G_DEPTH = [-1, -3] as const;
 
   // Client-side world simulation + roaming enemy runtime
   private sim: WorldSim | null = null;
@@ -227,6 +258,12 @@ export class OverworldScene extends Phaser.Scene {
   private chunkFetchPending = false;
   private lastChunkFetchAtMs = 0;
   private lastHudTile = { x: -1, y: -1 };
+  // Prefetch cache: chunk windows already fetched (or in flight) keyed by origin,
+  // so a swap is usually instant. Bounded to keep memory flat as the player roams.
+  private prefetchedChunks = new Map<string, MapState>();
+  private prefetchInFlight = new Set<string>();
+  private lastPrefetchTile = { x: Number.NaN, y: Number.NaN };
+  private static readonly PREFETCH_CACHE_LIMIT = 24;
 
   constructor() {
     super({ key: "OverworldScene" });
@@ -348,14 +385,26 @@ export class OverworldScene extends Phaser.Scene {
 
   async create() {
     // Terrain atlas blits below the fallback graphics; both below actors.
+    // Double-buffered: a front (visible) + back (hidden) fallback Graphics layer,
+    // mirroring the two terrain RenderTextures created lazily in ensureTerrainRT.
     this.atlasReady = this.textures.exists(ATLAS_KEY);
-    this.tileGraphics = this.add.graphics();
-    this.tileGraphics.setDepth(-1);
+    const g0 = this.add.graphics();
+    g0.setDepth(OverworldScene.G_DEPTH[0]);
+    const g1 = this.add.graphics();
+    g1.setDepth(OverworldScene.G_DEPTH[1]);
+    this.tileGraphics = [g0, g1];
+    this.frontBuffer = 0;
+    this.liveWindow = null;
     this.cameras.main.setBackgroundColor("#1a1a2e");
 
     // Bake the procedural pixel-art sprites once (no external assets).
     this.bakeSprites();
     createPlayerTextures(this);
+
+    // Register the interior scenes (WS-3) into THIS game's SceneManager so the
+    // SceneRouter can start them by key. One InteriorScene class is added under
+    // two keys (town vs dungeon palette). Idempotent across scene restarts.
+    this.registerInteriorScenes();
 
     this.playerSprite = this.textures.exists(playerTextureKey("down", 1))
       ? this.add.sprite(0, 0, playerTextureKey("down", 1))
@@ -388,6 +437,42 @@ export class OverworldScene extends Phaser.Scene {
     await this.fetchMapAndDraw();
   }
 
+  /**
+   * Register the interior scenes into the running game's SceneManager so the
+   * SceneRouter can `scene.start(key)` them. Adds the single InteriorScene class
+   * under the town + dungeon keys. Idempotent: skips keys already registered (the
+   * overworld scene restarts on every encounter/return, which re-runs create()).
+   */
+  private registerInteriorScenes() {
+    const mgr = this.scene;
+    for (const key of [TOWN_INTERIOR_KEY, DUNGEON_INTERIOR_KEY]) {
+      if (!mgr.get(key)) {
+        // Phaser accepts a Scene instance; we pass the key into the constructor.
+        mgr.add(key, new InteriorScene(key), false);
+      }
+    }
+  }
+
+  /** Build the /map request URL for a chunk centred on an optional tile. */
+  private mapUrl(centerTile?: { x: number; y: number }): string {
+    const params = new URLSearchParams();
+    params.set("chunk_size", String(CHUNK_FETCH_RADIUS_TILES * 2));
+    if (centerTile) {
+      params.set("center_x", String(centerTile.x));
+      params.set("center_y", String(centerTile.y));
+    }
+    return `/api/runs/${this.cfg.runId}/map?${params.toString()}`;
+  }
+
+  private windowOf(data: MapState): ChunkWindow {
+    return {
+      originX: data.origin_x ?? 0,
+      originY: data.origin_y ?? 0,
+      width: data.width,
+      height: data.height,
+    };
+  }
+
   private async fetchMapAndDraw(centerTile?: { x: number; y: number }) {
     // Phaser auto-starts this scene from `scene: [OverworldScene]` (in
     // Overworld.tsx) before the React wrapper restarts it with run config, so the
@@ -396,39 +481,67 @@ export class OverworldScene extends Phaser.Scene {
     // we fire GET /api/runs/undefined/map → 404.
     if (!this.cfg?.runId) return;
     try {
-      const params = new URLSearchParams();
-      params.set("chunk_size", String(CHUNK_FETCH_RADIUS_TILES * 2));
-      if (centerTile) {
-        params.set("center_x", String(centerTile.x));
-        params.set("center_y", String(centerTile.y));
+      // Use a warm prefetched chunk if the desired window is already cached so the
+      // swap is instant (no in-flight gap at all). Otherwise fetch on demand.
+      let data: MapState | null = centerTile
+        ? this.takePrefetched(centerTile)
+        : null;
+      const worldNeeded = !this.worldData;
+      if (!data) {
+        const [mapRes, worldRes] = await Promise.all([
+          fetch(this.mapUrl(centerTile)),
+          worldNeeded
+            ? fetch(`/api/runs/${this.cfg.runId}/world`)
+            : Promise.resolve(null),
+        ]);
+        if (!mapRes.ok) return;
+        data = (await mapRes.json()) as MapState;
+        if (worldNeeded) {
+          this.worldData = worldRes?.ok
+            ? ((await worldRes.json()) as WorldState)
+            : null;
+        }
+      } else if (worldNeeded) {
+        const worldRes = await fetch(`/api/runs/${this.cfg.runId}/world`);
+        this.worldData = worldRes.ok
+          ? ((await worldRes.json()) as WorldState)
+          : null;
       }
-      const [mapRes, worldRes] = await Promise.all([
-        fetch(`/api/runs/${this.cfg.runId}/map?${params.toString()}`),
-        this.worldData
-          ? Promise.resolve(null)
-          : fetch(`/api/runs/${this.cfg.runId}/world`),
-      ]);
-      if (!mapRes.ok) return;
-      const data = (await mapRes.json()) as MapState;
-      const world =
-        this.worldData ??
-        (worldRes?.ok ? ((await worldRes.json()) as WorldState) : null);
       // The scene may have been destroyed (React StrictMode double-mount, HMR,
       // navigation away) while the fetch was in flight; bail before touching
       // `this.add`, which would null-deref through the dead game object factory.
       if (!this.sys?.isActive()) return;
-      this.mapData = data;
-      this.worldData = world;
-      this.sceneRouter = new SceneRouter({
+
+      this.sceneRouter ??= new SceneRouter({
         runId: this.cfg.runId,
         scenePlugin: this.scene,
+        // Forward NPC dialogue from interiors to the same React handler the
+        // overworld uses, and persist position before leaving for an interior.
+        onNpcTalk: this.cfg.onNpcTalk,
+        onEnterInterior: () => this.flushSync(),
       });
 
-      const originX = data.origin_x ?? 0;
-      const originY = data.origin_y ?? 0;
+      const win = this.windowOf(data);
+      const { originX, originY } = win;
+
       if (this.sim) {
+        // DOUBLE BUFFER: the live (front) terrain stays visible. Stamp the new
+        // chunk fully into the BACK buffer, then atomically swap. `this.mapData`
+        // + the sim's collision tiles are only swapped AFTER the new terrain is
+        // on screen, so there is never a frame with cleared-but-not-redrawn land.
+        if (!shouldSwapChunk(this.liveWindow, win)) {
+          // Same window re-fetched (e.g. enemy refresh): just refresh actors.
+          this.mapData = data;
+          this.spawnEnemies(data.enemies);
+          this.spawnNpcs();
+          this.emitHudMap();
+          return;
+        }
+        this.drawMapInto(this.backIndex(), data);
+        this.swapBuffers();
+        this.mapData = data;
         this.sim.setTiles(data.tiles, originX, originY);
-        this.drawMap();
+        this.liveWindow = win;
         this.spawnEnemies(data.enemies);
         this.spawnNpcs();
         this.emitHudMap();
@@ -436,7 +549,8 @@ export class OverworldScene extends Phaser.Scene {
         return;
       }
 
-      // Spin up the client-side simulation seeded at the persisted player tile.
+      // First load: spin up the sim + draw straight into the front buffer.
+      this.mapData = data;
       const start = this.cfg.returnTile ?? { x: data.player_x, y: data.player_y };
       this.sim = new WorldSim({
         tiles: data.tiles,
@@ -451,7 +565,8 @@ export class OverworldScene extends Phaser.Scene {
       });
       this.lastSyncedTile = { x: start.x, y: start.y };
 
-      this.drawMap();
+      this.drawMapInto(this.frontBuffer, data);
+      this.liveWindow = win;
       this.spawnEnemies(data.enemies);
       this.spawnNpcs();
 
@@ -463,6 +578,26 @@ export class OverworldScene extends Phaser.Scene {
     } catch (e) {
       console.error("Failed to fetch map:", e);
     }
+  }
+
+  /** The hidden buffer index (the one NOT currently shown). */
+  private backIndex(): number {
+    return this.frontBuffer ^ 1;
+  }
+
+  /**
+   * Atomically swap the front/back buffers: the freshly-stamped back terrain
+   * becomes visible (front depth) and the old front drops behind it. Done in a
+   * single frame so the transition is seamless — the new chunk is already fully
+   * drawn before this runs (see drawMapInto), so there is no black gap.
+   */
+  private swapBuffers() {
+    const back = this.backIndex();
+    this.terrainRT[back]?.setDepth(OverworldScene.RT_DEPTH[0]);
+    this.terrainRT[this.frontBuffer]?.setDepth(OverworldScene.RT_DEPTH[1]);
+    this.tileGraphics[back].setDepth(OverworldScene.G_DEPTH[0]);
+    this.tileGraphics[this.frontBuffer].setDepth(OverworldScene.G_DEPTH[1]);
+    this.frontBuffer = back;
   }
 
   private emitHudMap() {
@@ -478,6 +613,8 @@ export class OverworldScene extends Phaser.Scene {
         x: e.x - originX,
         y: e.y - originY,
       })),
+      originX,
+      originY,
     });
   }
 
@@ -490,58 +627,62 @@ export class OverworldScene extends Phaser.Scene {
     this.cfg.onPlayerMove?.(x, y);
   }
 
-  /** Tile-int at (x,y) in CHUNK-LOCAL coords; out-of-bounds returns the same
-   * tile so autotiling treats the chunk border as "no edge" (avoids fake
+  /** Tile-int at (x,y) in CHUNK-LOCAL coords of `tiles`; out-of-bounds returns the
+   * same tile so autotiling treats the chunk border as "no edge" (avoids fake
    * shorelines/borders at the seam where the next chunk will load). */
-  private tileAt(x: number, y: number, fallback: number): number {
-    const t = this.mapData?.tiles;
-    if (!t || y < 0 || y >= t.length || x < 0 || x >= t[0].length) return fallback;
-    return t[y][x];
+  private tileAt(tiles: number[][], x: number, y: number, fallback: number): number {
+    if (y < 0 || y >= tiles.length || x < 0 || x >= tiles[0].length) return fallback;
+    return tiles[y][x];
   }
 
   /** Orthogonal neighbours of a chunk-local tile (border → self, see tileAt). */
-  private neighborsOf(x: number, y: number, self: number): Neighbors {
+  private neighborsOf(tiles: number[][], x: number, y: number, self: number): Neighbors {
     return {
-      n: this.tileAt(x, y - 1, self),
-      s: this.tileAt(x, y + 1, self),
-      e: this.tileAt(x + 1, y, self),
-      w: this.tileAt(x - 1, y, self),
+      n: this.tileAt(tiles, x, y - 1, self),
+      s: this.tileAt(tiles, x, y + 1, self),
+      e: this.tileAt(tiles, x + 1, y, self),
+      w: this.tileAt(tiles, x - 1, y, self),
     };
   }
 
   /**
-   * Redraw the whole (chunk) map. WS-8 will double-buffer chunks; we keep the
-   * "rebuild on every drawMap" contract and just change WHAT is drawn:
-   *   - atlas frames stamped into terrainRT (real pixel-art tiles),
+   * Draw a whole chunk into the given BUFFER (front or back) from `data`. This is
+   * the double-buffer primitive: it never touches `this.mapData`, so the caller
+   * can stamp a new chunk into the hidden back buffer while the front stays
+   * visible, then swap. Renders:
+   *   - atlas frames stamped into terrainRT[buffer] (real pixel-art tiles),
    *   - edge autotiling (water shorelines, forest/grass borders) + bridges,
-   *   - procedural color jitter ONLY for tile-ints with no atlas frame.
+   *   - procedural color jitter ONLY for tile-ints with no atlas frame,
+   *   - POI markers on the matching fallback Graphics layer.
    */
-  private drawMap() {
-    if (!this.mapData) return;
-    const g = this.tileGraphics;
+  private drawMapInto(buffer: number, data: MapState) {
+    const g = this.tileGraphics[buffer];
     g.clear();
 
-    const originX = this.mapData.origin_x ?? 0;
-    const originY = this.mapData.origin_y ?? 0;
-    const widthPx = this.mapData.width * TILE_SIZE;
-    const heightPx = this.mapData.height * TILE_SIZE;
+    const originX = data.origin_x ?? 0;
+    const originY = data.origin_y ?? 0;
+    const widthPx = data.width * TILE_SIZE;
+    const heightPx = data.height * TILE_SIZE;
 
-    const rt = this.atlasReady ? this.ensureTerrainRT(widthPx, heightPx) : null;
+    const rt = this.atlasReady
+      ? this.ensureTerrainRT(buffer, widthPx, heightPx)
+      : null;
     if (rt) {
       rt.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
       rt.clear();
     }
 
-    for (let y = 0; y < this.mapData.height; y++) {
-      for (let x = 0; x < this.mapData.width; x++) {
-        const tile = this.mapData.tiles[y][x];
+    const { tiles } = data;
+    for (let y = 0; y < data.height; y++) {
+      for (let x = 0; x < data.width; x++) {
+        const tile = tiles[y][x];
         const px = (originX + x) * TILE_SIZE;
         const py = (originY + y) * TILE_SIZE;
-        const jitter = tileJitter(x, y);
+        const jitter = tileJitter(originX + x, originY + y);
 
         const base = baseFrameFor(tile);
         if (rt && base !== null) {
-          this.drawAtlasTile(rt, tile, x, y, px, py, jitter);
+          this.drawAtlasTile(rt, tiles, originX, originY, tile, x, y, px, py, jitter);
         } else {
           // Procedural fallback so unmapped tile-ints never render blank.
           this.drawFallbackTile(g, tile, px, py, jitter);
@@ -549,7 +690,7 @@ export class OverworldScene extends Phaser.Scene {
       }
     }
 
-    this.drawPois();
+    this.drawPois(g);
   }
 
   /** Stamp one atlas-backed tile (+ overlay + autotile edges + bridge) into rt.
@@ -557,6 +698,9 @@ export class OverworldScene extends Phaser.Scene {
    * the tile's chunk-local pixel offset. */
   private drawAtlasTile(
     rt: Phaser.GameObjects.RenderTexture,
+    tiles: number[][],
+    originX: number,
+    originY: number,
     tile: number,
     x: number,
     y: number,
@@ -564,11 +708,9 @@ export class OverworldScene extends Phaser.Scene {
     py: number,
     jitter: number
   ) {
-    const originX = this.mapData!.origin_x ?? 0;
-    const originY = this.mapData!.origin_y ?? 0;
     const lx = px - originX * TILE_SIZE;
     const ly = py - originY * TILE_SIZE;
-    const nb = this.neighborsOf(x, y, tile);
+    const nb = this.neighborsOf(tiles, x, y, tile);
 
     // Base ground frame (grass/water/road/stone/...). A ROAD touching WATER is
     // swapped for the wooden bridge plank.
@@ -700,32 +842,37 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
-  /** Lazily create / resize the terrain RenderTexture to the current chunk. */
+  /** Lazily create / resize the terrain RenderTexture for one buffer slot. */
   private ensureTerrainRT(
+    buffer: number,
     widthPx: number,
     heightPx: number
   ): Phaser.GameObjects.RenderTexture {
-    if (
-      this.terrainRT &&
-      (this.terrainRT.width !== widthPx || this.terrainRT.height !== heightPx)
-    ) {
-      this.terrainRT.destroy();
-      this.terrainRT = null;
+    const existing = this.terrainRT[buffer];
+    if (existing && (existing.width !== widthPx || existing.height !== heightPx)) {
+      existing.destroy();
+      this.terrainRT[buffer] = null;
     }
-    if (!this.terrainRT) {
-      this.terrainRT = this.add.renderTexture(0, 0, widthPx, heightPx);
-      this.terrainRT.setOrigin(0, 0);
-      this.terrainRT.setDepth(-2);
+    if (!this.terrainRT[buffer]) {
+      const rt = this.add.renderTexture(0, 0, widthPx, heightPx);
+      rt.setOrigin(0, 0);
+      // The back buffer is created hidden (behind the front); swapBuffers raises
+      // it to the front depth once the chunk is fully stamped.
+      rt.setDepth(
+        buffer === this.frontBuffer
+          ? OverworldScene.RT_DEPTH[0]
+          : OverworldScene.RT_DEPTH[1]
+      );
+      this.terrainRT[buffer] = rt;
     }
-    return this.terrainRT;
+    return this.terrainRT[buffer]!;
   }
 
   private worldPois(): RoutablePOI[] {
     return this.worldData?.pois?.length ? this.worldData.pois : (this.mapData?.pois ?? []);
   }
 
-  private drawPois() {
-    const g = this.tileGraphics;
+  private drawPois(g: Phaser.GameObjects.Graphics) {
     for (const poi of this.worldPois()) {
       if (poi.kind === "start") continue;
       const px = poi.x * TILE_SIZE;
@@ -863,27 +1010,109 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   private maybeRefreshChunk(time: number) {
-    if (!this.sim || !this.mapData || this.chunkFetchPending) return;
+    if (!this.sim || !this.mapData || !this.liveWindow) return;
+
+    const tx = this.sim.tileX;
+    const ty = this.sim.tileY;
+
+    // Always keep warming neighbour chunks while roaming so the next swap is
+    // instant (data already cached). Cheap + throttled to once per tile change.
+    this.maybePrefetchNeighbors(tx, ty);
+
+    if (this.chunkFetchPending) return;
     if (time - this.lastChunkFetchAtMs < CHUNK_FETCH_THROTTLE_MS) return;
 
-    const originX = this.mapData.origin_x ?? 0;
-    const originY = this.mapData.origin_y ?? 0;
-    const localX = this.sim.tileX - originX;
-    const localY = this.sim.tileY - originY;
-    const nearEdge =
-      localX < CHUNK_EDGE_MARGIN_TILES ||
-      localY < CHUNK_EDGE_MARGIN_TILES ||
-      localX >= this.mapData.width - CHUNK_EDGE_MARGIN_TILES ||
-      localY >= this.mapData.height - CHUNK_EDGE_MARGIN_TILES;
-    if (!nearEdge) return;
+    // Re-centre only when the player nears the live chunk's edge margin. Because
+    // the swap stamps into the BACK buffer first (the front stays visible), there
+    // is no black gap even if the fetch is slow.
+    if (!nearChunkEdge(this.liveWindow, tx, ty, CHUNK_EDGE_MARGIN_TILES)) return;
 
     this.chunkFetchPending = true;
     this.lastChunkFetchAtMs = time;
-    void this.fetchMapAndDraw({ x: this.sim.tileX, y: this.sim.tileY }).finally(
-      () => {
-        this.chunkFetchPending = false;
-      }
+    void this.fetchMapAndDraw({ x: tx, y: ty }).finally(() => {
+      this.chunkFetchPending = false;
+    });
+  }
+
+  /**
+   * Warm the 8 neighbour chunks (cardinals + diagonals) around the player so a
+   * future re-centre swap is instant. Fires at most once per tile and dedupes by
+   * chunk origin; results are cached in `prefetchedChunks` for fetchMapAndDraw to
+   * consume. Best-effort: any failure is silently dropped (the on-demand fetch in
+   * fetchMapAndDraw is the safety net).
+   */
+  private maybePrefetchNeighbors(tx: number, ty: number) {
+    if (tx === this.lastPrefetchTile.x && ty === this.lastPrefetchTile.y) return;
+    this.lastPrefetchTile = { x: tx, y: ty };
+
+    const stride = CHUNK_FETCH_RADIUS_TILES; // re-centre when one radius away
+    const centres = neighborPrefetchCentres(
+      tx,
+      ty,
+      stride,
+      this.mapData?.world_width ?? undefined,
+      this.mapData?.world_height ?? undefined
     );
+    for (const c of centres) {
+      void this.prefetchChunk(c.x, c.y);
+    }
+  }
+
+  /** Fetch one chunk into the prefetch cache, keyed by its returned origin. */
+  private async prefetchChunk(centerX: number, centerY: number) {
+    // Dedupe by center so two near-tiles don't double-fetch the same region.
+    const reqKey = chunkKey(centerX, centerY);
+    if (this.prefetchInFlight.has(reqKey)) return;
+    this.prefetchInFlight.add(reqKey);
+    try {
+      const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
+      if (!res.ok || !this.sys?.isActive()) return;
+      const data = (await res.json()) as MapState;
+      const key = chunkKey(data.origin_x ?? 0, data.origin_y ?? 0);
+      // Skip the chunk we're already showing; only cache distinct neighbours.
+      if (this.liveWindow && key === chunkKey(this.liveWindow.originX, this.liveWindow.originY)) {
+        return;
+      }
+      this.prefetchedChunks.set(key, data);
+      this.evictPrefetchOverflow();
+    } catch {
+      // Best-effort warm-up; on-demand fetch covers any miss.
+    } finally {
+      this.prefetchInFlight.delete(reqKey);
+    }
+  }
+
+  /**
+   * Take a prefetched chunk whose window contains the requested centre, removing
+   * it from the cache. Lets fetchMapAndDraw skip the network entirely (instant
+   * swap) when the player crosses into an already-warmed neighbour.
+   */
+  private takePrefetched(centerTile: { x: number; y: number }): MapState | null {
+    for (const [key, data] of this.prefetchedChunks) {
+      const ox = data.origin_x ?? 0;
+      const oy = data.origin_y ?? 0;
+      if (
+        centerTile.x >= ox &&
+        centerTile.y >= oy &&
+        centerTile.x < ox + data.width &&
+        centerTile.y < oy + data.height &&
+        // Don't reuse the chunk we already display.
+        shouldSwapChunk(this.liveWindow, this.windowOf(data))
+      ) {
+        this.prefetchedChunks.delete(key);
+        return data;
+      }
+    }
+    return null;
+  }
+
+  /** Keep the prefetch cache bounded (drop oldest insertions first). */
+  private evictPrefetchOverflow() {
+    while (this.prefetchedChunks.size > OverworldScene.PREFETCH_CACHE_LIMIT) {
+      const oldest = this.prefetchedChunks.keys().next().value;
+      if (oldest === undefined) break;
+      this.prefetchedChunks.delete(oldest);
+    }
   }
 
   /** Remove the collided enemy and hand off to the React encounter flow. */
@@ -956,7 +1185,10 @@ export class OverworldScene extends Phaser.Scene {
   destroy() {
     this.enemies.destroy();
     this.npcs.destroy();
-    this.terrainRT?.destroy();
-    this.terrainRT = null;
+    this.terrainRT[0]?.destroy();
+    this.terrainRT[1]?.destroy();
+    this.terrainRT = [null, null];
+    this.prefetchedChunks.clear();
+    this.prefetchInFlight.clear();
   }
 }
