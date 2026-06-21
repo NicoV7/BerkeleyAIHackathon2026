@@ -1,26 +1,74 @@
 /**
- * PostFX — atmosphere overlays applied to the overworld scene (Wave 0).
+ * PostFX — atmosphere overlays applied to the overworld scene.
  *
- * Two demo-quality visuals without shaders:
- *   1. Vignette — a soft circular dim attached to the camera so edges fade.
- *      Scrolls with the camera, hides the hard map border, adds "depth."
- *   2. Day/night tint — a single full-screen alpha rectangle the scene can
- *      pulse over time. Default tint is a faint cool blue so the overworld
- *      reads as twilight rather than flat green.
+ *   1. Vignette — a soft edge dim attached to the camera so edges fade, hides
+ *      the hard map border, adds "depth."
+ *   2. Day/night cycle (V2) — a full-screen grade rectangle animated through
+ *      dawn → noon → dusk → night via update(time). Night is FLOORED to a cool
+ *      blue at moderate alpha (never black) so the world stays readable —
+ *      "don't make dark too dark". Noon is fully clear.
  *
- * Both are toggleable for verification (success criterion #0: confirm the
- * visual upgrade is real by toggling and comparing).
+ * Both are toggleable for verification (toggle and compare).
  */
 import Phaser from "phaser";
 
 const VIGNETTE_EDGE_FRAC = 0.22; // how far the dark frame reaches inward (fraction of viewport)
 const VIGNETTE_MAX_ALPHA = 0.78; // darkness at the very edge
-const NIGHT_TINT = 0x0a1530;
-const NIGHT_ALPHA = 0.18;
+
+/** Full real-time duration (ms) of one dawn→night→dawn cycle. */
+const DAY_CYCLE_MS = 90_000;
+/** Start mid-morning so the first frame the player sees is bright. */
+const DAY_START_PHASE = 0.4;
+
+interface GradeKey {
+  /** Cycle phase in [0,1). */
+  t: number;
+  /** Grade tint (0xRRGGBB) multiplied over the scene. */
+  color: number;
+  /** Grade alpha — night floored so it never goes fully dark. */
+  alpha: number;
+}
+
+// Keyframes around the clock. Night (~0.0/1.0) is a cool blue capped at 0.42
+// alpha; noon (~0.5) is clear; dawn/dusk are warm. Linearly interpolated.
+const DAY_KEYS: GradeKey[] = [
+  { t: 0.0, color: 0x0a1530, alpha: 0.42 }, // deep night (floored, not black)
+  { t: 0.22, color: 0x0c1838, alpha: 0.4 }, // late night
+  { t: 0.3, color: 0xff8a4c, alpha: 0.2 }, // dawn, warm
+  { t: 0.42, color: 0xffffff, alpha: 0.0 }, // morning, clear
+  { t: 0.58, color: 0xffffff, alpha: 0.0 }, // afternoon, clear
+  { t: 0.7, color: 0xff6a30, alpha: 0.24 }, // dusk, warm/red
+  { t: 0.82, color: 0x16224e, alpha: 0.4 }, // nightfall, cool
+  { t: 1.0, color: 0x0a1530, alpha: 0.42 }, // wrap → deep night
+];
+
+/** Channel-wise lerp between two 0xRRGGBB colors. */
+function lerpColor(a: number, b: number, f: number): number {
+  const ar = (a >> 16) & 0xff;
+  const ag = (a >> 8) & 0xff;
+  const ab = a & 0xff;
+  const r = Math.round(ar + (((b >> 16) & 0xff) - ar) * f);
+  const g = Math.round(ag + (((b >> 8) & 0xff) - ag) * f);
+  const bl = Math.round(ab + ((b & 0xff) - ab) * f);
+  return (r << 16) | (g << 8) | bl;
+}
+
+/** Sample the day/night grade (color + alpha) at cycle phase t in [0,1). */
+function sampleGrade(t: number): { color: number; alpha: number } {
+  for (let i = 0; i < DAY_KEYS.length - 1; i++) {
+    const a = DAY_KEYS[i];
+    const b = DAY_KEYS[i + 1];
+    if (t >= a.t && t <= b.t) {
+      const f = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
+      return { color: lerpColor(a.color, b.color, f), alpha: a.alpha + (b.alpha - a.alpha) * f };
+    }
+  }
+  return { color: DAY_KEYS[0].color, alpha: DAY_KEYS[0].alpha };
+}
 
 export class PostFX {
   private vignette?: Phaser.GameObjects.Graphics;
-  private nightTint?: Phaser.GameObjects.Rectangle;
+  private grade?: Phaser.GameObjects.Rectangle;
   private enabled = true;
 
   attach(scene: Phaser.Scene): void {
@@ -33,15 +81,28 @@ export class PostFX {
     this.vignette.setDepth(1000);
     this.drawVignette(this.vignette, w, h);
 
-    this.nightTint = scene.add.rectangle(w / 2, h / 2, w, h, NIGHT_TINT, NIGHT_ALPHA);
-    this.nightTint.setScrollFactor(0);
-    this.nightTint.setDepth(999);
+    const g0 = sampleGrade(DAY_START_PHASE);
+    this.grade = scene.add.rectangle(w / 2, h / 2, w, h, g0.color, g0.alpha);
+    this.grade.setScrollFactor(0);
+    this.grade.setDepth(999);
+  }
+
+  /**
+   * Advance the day/night cycle. `timeMs` is the scene clock; the grade colour +
+   * alpha are sampled from the keyframes so the sky warms at dawn, clears at noon,
+   * reddens at dusk, and settles to a readable (floored) cool night.
+   */
+  update(timeMs: number): void {
+    if (!this.grade || !this.enabled) return;
+    const phase = ((DAY_START_PHASE + timeMs / DAY_CYCLE_MS) % 1 + 1) % 1;
+    const { color, alpha } = sampleGrade(phase);
+    this.grade.setFillStyle(color, alpha);
   }
 
   setEnabled(on: boolean): void {
     this.enabled = on;
     this.vignette?.setVisible(on);
-    this.nightTint?.setVisible(on);
+    this.grade?.setVisible(on);
   }
 
   toggle(): boolean {
@@ -51,9 +112,9 @@ export class PostFX {
 
   destroy(): void {
     this.vignette?.destroy();
-    this.nightTint?.destroy();
+    this.grade?.destroy();
     this.vignette = undefined;
-    this.nightTint = undefined;
+    this.grade = undefined;
   }
 
   private drawVignette(g: Phaser.GameObjects.Graphics, w: number, h: number): void {

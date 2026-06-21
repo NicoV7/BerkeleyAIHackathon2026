@@ -974,6 +974,9 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   update(time: number, delta: number) {
+    // Animate the day/night cycle every frame, even before the sim/map loads.
+    this.postFX.update(time);
+
     if (!this.sim || !this.mapData || this.encounterFired || this.encounterPending)
       return;
 
