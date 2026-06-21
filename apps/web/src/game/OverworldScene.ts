@@ -50,6 +50,12 @@ const BLOCKED_TILES = new Set<number>([
   TILE.MOUNTAIN,
 ]);
 
+const SHEET = "/tiles/roguelikeSheet_transparent.png";
+const CHAR_SHEET = "/sprites/roguelikeChar_transparent.png";
+const SHEET_TILE = 16;
+const PLAYER_FRAME = 10;
+const ENEMY_FRAME = 7;
+
 /**
  * Deterministic per-tile 32-bit hash. Used to drive sub-tile color jitter so
  * the overworld stops looking like a flat grid without any noise libraries.
@@ -104,6 +110,13 @@ export interface OverworldConfig {
   runId: string;
   onEncounter: (wildId: string) => void;
   onNpcTalk?: (npc: NPCAnchorView) => void;
+  onMapLoaded?: (m: {
+    width: number;
+    height: number;
+    tiles: number[][];
+    enemies: { id: string; x: number; y: number }[];
+  }) => void;
+  onPlayerMove?: (x: number, y: number) => void;
   returnTile?: { x: number; y: number };
 }
 
@@ -187,6 +200,7 @@ export class OverworldScene extends Phaser.Scene {
   private lastTalkAtMs = 0;
   private chunkFetchPending = false;
   private lastChunkFetchAtMs = 0;
+  private lastHudTile = { x: -1, y: -1 };
 
   constructor() {
     super({ key: "OverworldScene" });
@@ -197,10 +211,22 @@ export class OverworldScene extends Phaser.Scene {
     // Fresh transition state on (re)start — refreshMap restarts via create().
     this.encounterFired = false;
     this.encounterPending = false;
+    this.lastHudTile = { x: -1, y: -1 };
   }
 
   preload() {
-    // No external assets — everything is drawn procedurally.
+    this.load.spritesheet("rogue", SHEET, {
+      frameWidth: SHEET_TILE,
+      frameHeight: SHEET_TILE,
+      margin: 0,
+      spacing: 1,
+    });
+    this.load.spritesheet("chars", CHAR_SHEET, {
+      frameWidth: SHEET_TILE,
+      frameHeight: SHEET_TILE,
+      margin: 0,
+      spacing: 1,
+    });
   }
 
   /**
@@ -281,9 +307,10 @@ export class OverworldScene extends Phaser.Scene {
     // Bake the procedural pixel-art sprites once (no external assets).
     this.bakeSprites();
 
-    // Player sprite (cyan hero — matches --party). pixelArt upscaling keeps it crisp.
-    this.playerSprite = this.add.sprite(0, 0, "player");
-    this.playerSprite.setDisplaySize(TILE_SIZE - 4, TILE_SIZE - 4);
+    this.playerSprite = this.textures.exists("chars")
+      ? this.add.sprite(0, 0, "chars", PLAYER_FRAME)
+      : this.add.sprite(0, 0, "player");
+    this.playerSprite.setDisplaySize(TILE_SIZE, TILE_SIZE);
     this.playerSprite.setDepth(10);
 
     // Input
@@ -352,6 +379,8 @@ export class OverworldScene extends Phaser.Scene {
         this.drawMap();
         this.spawnEnemies(data.enemies);
         this.spawnNpcs();
+        this.emitHudMap();
+        this.emitPlayerTile();
         return;
       }
 
@@ -377,9 +406,36 @@ export class OverworldScene extends Phaser.Scene {
       // Position player + attach the follow camera now that the sim exists.
       this.sim.applyToSprite(this.playerSprite);
       this.sim.attachCamera(this.cameras.main, this.playerSprite);
+      this.emitHudMap();
+      this.emitPlayerTile();
     } catch (e) {
       console.error("Failed to fetch map:", e);
     }
+  }
+
+  private emitHudMap() {
+    if (!this.mapData) return;
+    const originX = this.mapData.origin_x ?? 0;
+    const originY = this.mapData.origin_y ?? 0;
+    this.cfg.onMapLoaded?.({
+      width: this.mapData.width,
+      height: this.mapData.height,
+      tiles: this.mapData.tiles,
+      enemies: this.mapData.enemies.map((e) => ({
+        id: e.id,
+        x: e.x - originX,
+        y: e.y - originY,
+      })),
+    });
+  }
+
+  private emitPlayerTile() {
+    if (!this.sim) return;
+    const x = this.sim.tileX - (this.mapData?.origin_x ?? 0);
+    const y = this.sim.tileY - (this.mapData?.origin_y ?? 0);
+    if (x === this.lastHudTile.x && y === this.lastHudTile.y) return;
+    this.lastHudTile = { x, y };
+    this.cfg.onPlayerMove?.(x, y);
   }
 
   private drawMap() {
@@ -500,8 +556,10 @@ export class OverworldScene extends Phaser.Scene {
     }));
 
     this.enemies.spawn(spawns, (enemy: Enemy) => {
-      const spr = this.add.sprite(enemy.x, enemy.y, "enemy");
-      spr.setDisplaySize(TILE_SIZE - 6, TILE_SIZE - 6);
+      const spr = this.textures.exists("chars")
+        ? this.add.sprite(enemy.x, enemy.y, "chars", ENEMY_FRAME)
+        : this.add.sprite(enemy.x, enemy.y, "enemy");
+      spr.setDisplaySize(TILE_SIZE, TILE_SIZE);
       spr.setDepth(5);
 
       // Pulsing animation (relative to the baked display scale).
@@ -552,6 +610,7 @@ export class OverworldScene extends Phaser.Scene {
     // 1) Integrate smooth player movement + local collision.
     this.sim.update(this.readIntent(), delta);
     this.sim.applyToSprite(this.playerSprite);
+    this.emitPlayerTile();
     this.npcs.update(time, this.sim.x, this.sim.y);
     this.maybeTriggerNpcTalk(time);
     this.maybeEnterInterior();
@@ -630,6 +689,7 @@ export class OverworldScene extends Phaser.Scene {
     this.enemies.remove(wildId);
     if (this.mapData) {
       this.mapData.enemies = this.mapData.enemies.filter((e) => e.id !== wildId);
+      this.emitHudMap();
     }
     // Persist position before the scene flips to the battle screen.
     this.flushSync();
