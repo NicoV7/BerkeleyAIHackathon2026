@@ -192,12 +192,24 @@ async def _create_run(
     topic: str = "Should AI write tests?",
     player_name: str = "Test Player",
 ) -> dict:
+    """Create a run AND grant its first agent (WS-2 onboarding).
+
+    Runs now start EMPTY (empty-start gate), so downstream encounter/party tests
+    that need a party member must grant one first. We reuse the onboarding
+    first-pull endpoint (the intended new-game grant path).
+    """
     resp = await client.post(
         "/api/runs",
         json={"topic": topic, "player_name": player_name, "seed": 7},
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()
+    run = resp.json()
+    # Grant the first agent so the run has a party (idempotent).
+    pull = await client.post(
+        f"/api/runs/{run['id']}/onboarding/first-pull", json={"seed": 7}
+    )
+    assert pull.status_code == 200, pull.text
+    return run
 
 
 # --------------------------------------------------------------------------- #
@@ -206,31 +218,50 @@ async def _create_run(
 
 
 @pytest.mark.asyncio
-async def test_create_run_returns_run_state_with_party(
+async def test_create_run_starts_empty_then_first_pull_grants_one(
     live_client: httpx.AsyncClient,
 ) -> None:
-    # Arrange
+    # WS-2 onboarding: a NEW run starts with NO party agents (empty start). The
+    # scripted intro NPC then grants the first agent via the onboarding endpoint.
     topic = "Is a hotdog a sandwich?"
     player_name = "Ada"
 
-    # Act
+    # Act — create the run.
     resp = await live_client.post(
         "/api/runs",
         json={"topic": topic, "player_name": player_name, "seed": 3},
     )
 
-    # Assert
+    # Assert — created, active, and EMPTY party.
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert isinstance(body["id"], str) and body["id"]
     assert body["debate_topic"] == topic
     assert body["player_name"] == player_name
     assert body["status"] == "active"
-    assert isinstance(body["party"], list) and len(body["party"]) >= 1
-    member = body["party"][0]
+    assert body["party"] == []
+    run_id = body["id"]
+
+    # First-pull grants exactly one agent...
+    pull = await live_client.post(
+        f"/api/runs/{run_id}/onboarding/first-pull", json={"seed": 7}
+    )
+    assert pull.status_code == 200, pull.text
+    pull_body = pull.json()
+    assert pull_body["granted"] is True
+    assert pull_body["party_size"] == 1
+    member = pull_body["monster"]
     for key in ("id", "name", "type", "owner", "level", "max_hp"):
         assert key in member, f"party member missing {key}"
     assert member["owner"] == "player"
+
+    # ...and is idempotent (a second call does not double-grant).
+    pull2 = await live_client.post(
+        f"/api/runs/{run_id}/onboarding/first-pull", json={"seed": 7}
+    )
+    assert pull2.status_code == 200, pull2.text
+    assert pull2.json()["granted"] is False
+    assert pull2.json()["party_size"] == 1
 
 
 @pytest.mark.asyncio

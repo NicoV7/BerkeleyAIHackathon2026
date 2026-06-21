@@ -18,6 +18,20 @@ class Settings(BaseSettings):
     llm_default_model: str = "gemma3:4b"
     llm_judge_model: str = "gemma3:4b"
     llm_embed_model: str = "nomic-embed-text"
+    gateway_fallback_enabled: bool = True
+    gateway_actor_candidates: str = (
+        "groq/llama-3.1-8b-instant,"
+        "cerebras/llama-3.3-70b,"
+        "gemini/gemini-2.5-flash-lite,"
+        "openrouter/openrouter/free,"
+        "ollama/gemma3:1b"
+    )
+    gateway_judge_candidates: str = (
+        "groq/llama-3.3-70b-versatile,"
+        "cerebras/llama-3.3-70b,"
+        "gemini/gemini-2.5-flash,"
+        "ollama/gemma3:1b"
+    )
 
     # --- Latency fast-path (battle playability) ------------------------------
     # The default debater/judge models (gemma3:4b) are too slow on a contended
@@ -66,11 +80,31 @@ class Settings(BaseSettings):
     first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
     actor_max_tokens: int = 64
     prewarm_enabled: bool = True
+    # WS-4 warm-path latency. Once the actor model is confirmed WARM (a prewarm
+    # ping at encounter create succeeded, so the model is resident in Ollama and
+    # not paying the cold-load tax), the live streaming path may wait a bit longer
+    # for the first token before failing over to a templated fallback. This LOWERS
+    # the fallback rate on a healthy-but-busy model without re-introducing the cold
+    # hang: a truly stalled model is still bounded by `first_token_timeout_s` until
+    # it's marked warm. Set to first_token_timeout_s to disable the widening.
+    first_token_timeout_warm_s: int = 22
+    # Ollama keep_alive sent on the encounter-create prewarm so the actor model
+    # stays resident across the battle's idle gaps (turn-to-turn thinking + the
+    # player typing). A string Ollama accepts ("10m") or seconds. Empty -> omit.
+    ollama_keep_alive: str = "10m"
     ollama_base_url: str = "http://ollama:11434"
     anthropic_api_key: str = ""
     anthropic_base_url: str = "https://api.anthropic.com"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+    groq_api_key: str = ""
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    cerebras_api_key: str = ""
+    cerebras_base_url: str = "https://api.cerebras.ai/v1"
+    gemini_api_key: str = ""
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Judge provider switch (additive; default keeps the judge fully local).
     #
@@ -114,17 +148,18 @@ class Settings(BaseSettings):
     # LLM generator and falls back to procedural on any failure.
     world_gen_enabled: bool = False
 
+    # Onboarding (WS-2): a NEW run starts with NO party agents so the scripted
+    # intro NPC grants the first agent via the gacha pull / onboarding endpoint.
+    # ON by default (the onboarding flow is the intended new-game experience);
+    # flip to False to restore the legacy auto-rolled 2-3 monster starter party.
+    empty_start_enabled: bool = True
+
     # Living-layer hosted LLM adapter (Wave 4) — completely-free providers only.
     # The hosted adapter (app/llm/hosted_adapter.py) round-robins across these in
     # priority order with retry-on-429 failover, and degrades to a static stub
     # response when no keys are configured (so offline-dev never hangs).
     #
     # IMPORTANT: never commit real values for these. Keep them in .env.local.
-    groq_api_key: str = ""
-    cerebras_api_key: str = ""
-    gemini_api_key: str = ""
-    openrouter_api_key: str = ""
-
     # App
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173"

@@ -106,13 +106,15 @@ describe("useGame.setScreen", () => {
   });
 
   it("supports every declared Screen value", () => {
-    // Arrange
+    // Arrange: WS-6 removed the "training" screen (moved into Camp) and the
+    // "encounter" tab (battle-only), but "encounter" remains a valid Screen the
+    // setEncounter path routes to, so it stays in this list.
     const screens = [
       "menu",
       "overworld",
       "encounter",
       "party",
-      "training",
+      "demo",
     ] as const;
 
     // Act + Assert: each transition lands on the requested screen.
@@ -120,5 +122,54 @@ describe("useGame.setScreen", () => {
       useGame.getState().setScreen(target);
       expect(useGame.getState().screen).toBe(target);
     }
+  });
+});
+
+describe("useGame diegetic surfaces (WS-3)", () => {
+  beforeEach(() => {
+    // Diegetic fields aren't in the shared INITIAL snapshot; clear them so each
+    // case starts with no surface open.
+    useGame.setState({ atCamp: false, shopNpcId: null, overlay: null });
+  });
+
+  it("openCamp / closeCamp toggle the camp surface", () => {
+    useGame.getState().openCamp();
+    expect(useGame.getState().atCamp).toBe(true);
+
+    useGame.getState().closeCamp();
+    expect(useGame.getState().atCamp).toBe(false);
+  });
+
+  it("openShop stores the npc id; closeShop clears it", () => {
+    useGame.getState().openShop("merchant");
+    expect(useGame.getState().shopNpcId).toBe("merchant");
+
+    useGame.getState().closeShop();
+    expect(useGame.getState().shopNpcId).toBeNull();
+  });
+
+  it("only one surface floats at a time: opening one closes the others", () => {
+    // Adventure-menu overlay then a diegetic shop -> overlay clears.
+    useGame.getState().openOverlay("inventory");
+    useGame.getState().openShop("merchant");
+    expect(useGame.getState().overlay).toBeNull();
+    expect(useGame.getState().shopNpcId).toBe("merchant");
+    expect(useGame.getState().atCamp).toBe(false);
+
+    // Camp then a menu overlay -> camp clears.
+    useGame.getState().openCamp();
+    expect(useGame.getState().shopNpcId).toBeNull();
+    useGame.getState().openOverlay("quests");
+    expect(useGame.getState().atCamp).toBe(false);
+    expect(useGame.getState().overlay).toBe("quests");
+  });
+
+  it("entering a battle clears every floating surface", () => {
+    useGame.getState().openCamp();
+    useGame.getState().setEncounter("enc-9");
+    const s = useGame.getState();
+    expect(s.atCamp).toBe(false);
+    expect(s.shopNpcId).toBeNull();
+    expect(s.overlay).toBeNull();
   });
 });

@@ -37,10 +37,20 @@ export default function Overworld() {
   const [activeNpc, setActiveNpc] = useState<NPCAnchorView | null>(null);
 
   useLayoutEffect(() => {
-    const measure = () => setSize({ w: window.innerWidth, h: window.innerHeight });
+    const measure = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      const width = rect?.width ?? window.innerWidth;
+      const height = rect?.height ?? window.innerHeight;
+      setSize({ w: Math.floor(width), h: Math.floor(height) });
+    };
     measure();
+    const observer = new ResizeObserver(measure);
+    if (rootRef.current) observer.observe(rootRef.current);
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
   }, []);
 
   useEffect(() => {

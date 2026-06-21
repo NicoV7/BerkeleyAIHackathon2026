@@ -160,6 +160,19 @@ async def _finalize(eid: str, result: EncounterResult) -> list[dict]:
                     eid, enc.run_id, dropped.id, dropped.tier,
                 )
 
+        # WS-1 economy: award coins on a win / capture. This is guarded by the
+        # SAME idempotency as everything above — the `enc.result != ongoing`
+        # early-return at the top means a retried finalize never double-awards.
+        # The credit is an atomic in-place SQL UPDATE on the run row (no
+        # read-then-write) so it composes with the wallet/shop debit path.
+        if result in (EncounterResult.win, EncounterResult.capture):
+            awarded = await _award_coins(session, enc, roster, result)
+            if awarded:
+                log.info(
+                    "economy: coins awarded encounter=%s run=%s amount=%d",
+                    eid, enc.run_id, awarded,
+                )
+
         # Wave D: award XP + apply per-level stat gains. Best-effort —
         # progression must never block finalize. Each party monster that
         # levels emits a LevelUp event the WS /stream handler forwards to the
@@ -169,9 +182,69 @@ async def _finalize(eid: str, result: EncounterResult) -> list[dict]:
         except Exception:  # noqa: BLE001
             level_up_events = []
 
+    # WS-2 living layer: on a win, emit an ``enemy_killed`` world event for each
+    # defeated enemy so ``hunt_enemy`` quests complete (and pay out). Best-effort:
+    # the quest/event log is decoupled from the battle, so a failure here never
+    # affects the finalize result. Done OUTSIDE the DB session block above — the
+    # event log is Redis-backed and quest rewards open their own session.
+    if result == EncounterResult.win:
+        try:
+            await _emit_enemy_killed(enc.run_id, roster)
+        except Exception:  # noqa: BLE001 — world-event emit must never break finalize
+            pass
+
     # Conversation is durably stored — free the cache.
     await clear_conversation(eid)
     return level_up_events
+
+
+async def _emit_enemy_killed(run_id: str, roster: list[dict]) -> None:
+    """Emit ``enemy_killed`` for every enemy combatant, completing hunt quests.
+
+    Each enemy combatant fires one event carrying both ``enemy_kind`` (the
+    monster name, so a quest can target a kind) and ``monster_id`` (so a quest
+    can target a specific spawned enemy). Quest completion + reward payout reuse
+    the SAME helpers the world router uses, so there is no duplicated logic.
+    """
+    from app.world import event_log, quests
+
+    enemies = [c for c in roster if c.get("role") == "enemy"]
+    if not enemies:
+        return
+    for enemy in enemies:
+        name = str(enemy.get("name") or enemy.get("monster_id") or "")
+        monster_id = str(enemy.get("monster_id") or "")
+        await event_log.append(
+            run_id, "enemy_killed", enemy_kind=name, monster_id=monster_id
+        )
+        completed = await quests.maybe_complete_quests(
+            run_id, "enemy_killed", enemy_kind=name, monster_id=monster_id
+        )
+        if completed:
+            await _payout_quest_rewards(run_id, completed)
+
+
+async def _payout_quest_rewards(run_id: str, completed: list[str]) -> None:
+    """Pay coins/items for newly-completed quests via the economy award helper.
+
+    Opens its own short-lived session (the finalize session is already closed by
+    the time we emit world events) and commits once. Best-effort.
+    """
+    if not completed:
+        return
+    try:
+        from app.economy.award import award as award_reward
+        from app.world import quests
+
+        specs = await quests.completed_reward_specs(run_id, completed)
+        async with SessionLocal() as session:
+            for qid in completed:
+                spec = specs.get(qid) or {}
+                if spec:
+                    await award_reward(session, run_id, spec)
+            await session.commit()
+    except Exception as e:  # noqa: BLE001
+        log.info("quest reward payout skipped (%s)", e)
 
 
 async def _award_party_xp(
@@ -263,6 +336,61 @@ def _roll_drop_tier(rng: random.Random) -> str:
         if pick <= acc:
             return tier
     return "common"
+
+
+# ---- WS-1: coin award on win / capture -------------------------------------
+
+# Coin reward scaled by result and the toughest enemy faced. Env-tunable base so
+# balancing is a one-line change; defaults give ~30 coins for a win, ~50 for a
+# capture, plus a small per-enemy-level bonus.
+_COIN_BASE_WIN = int(os.getenv("ECON_COIN_BASE_WIN", "30"))
+_COIN_BASE_CAPTURE = int(os.getenv("ECON_COIN_BASE_CAPTURE", "50"))
+_COIN_PER_ENEMY_LEVEL = int(os.getenv("ECON_COIN_PER_ENEMY_LEVEL", "5"))
+
+
+def _coin_reward(roster: list[dict], result: EncounterResult) -> int:
+    """Pure reward curve: base (by result) + per-enemy-level bonus."""
+    enemy_level = 1
+    for c in roster:
+        if c.get("role") == "enemy":
+            try:
+                lvl = int(c.get("level", 1) or 1)
+            except (TypeError, ValueError):
+                continue
+            enemy_level = max(enemy_level, lvl)
+    base = _COIN_BASE_CAPTURE if result == EncounterResult.capture else _COIN_BASE_WIN
+    return max(0, base + _COIN_PER_ENEMY_LEVEL * (enemy_level - 1))
+
+
+async def _award_coins(
+    session: AsyncSession,
+    enc: Encounter,
+    roster: list[dict],
+    result: EncounterResult,
+) -> int:
+    """Credit coins to the run's wallet via an atomic in-place SQL UPDATE.
+
+    No read-then-write — ``coins = coins + :amt`` composes safely with the
+    wallet/shop debit path in the economy router. Idempotency is inherited from
+    the caller's ``enc.result != ongoing`` guard (a retried finalize returns
+    early before reaching here), so the credit fires exactly once per battle.
+    Best-effort: a failure here never breaks finalize. Returns coins awarded.
+    """
+    from sqlalchemy import text
+
+    amount = _coin_reward(roster, result)
+    if amount <= 0:
+        return 0
+    try:
+        await session.execute(
+            text("UPDATE runs SET coins = coins + :amt WHERE id = :rid"),
+            {"amt": amount, "rid": enc.run_id},
+        )
+        await session.commit()
+        return amount
+    except Exception:  # noqa: BLE001 — never let a coin credit 500 finalize
+        await session.rollback()
+        return 0
 
 
 async def _maybe_drop_summon_item(

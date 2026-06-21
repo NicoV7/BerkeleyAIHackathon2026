@@ -73,7 +73,7 @@ class TestSkillCost:
             ("Leading Question", 15),
             ("Logical Thrust", 20),
             ("Reframe Attack", 30),
-            ("Rhetorical Flourish", 15),
+            ("Rhetorical Flourish", 40),
             ("Socratic Probe", 20),
             ("Steel Man", 35),
             ("Whataboutism", 25),
