@@ -29,16 +29,15 @@ export default function Overworld() {
   const [hudMap, setHudMap] = useState<HudMap | null>(null);
   const [playerPos, setPlayerPos] = useState<{ x: number; y: number } | null>(null);
 
-  // Measure the parent (<main>) and keep size in sync with layout/window changes.
+  // Size the canvas to the viewport. Using window dimensions directly is more
+  // robust than observing parentElement, which breaks if the component moves in
+  // the DOM and doesn't work when ancestor elements lack explicit heights.
   useLayoutEffect(() => {
-    const parent = rootRef.current?.parentElement;
-    if (!parent) return;
     const measure = () =>
-      setSize({ w: parent.clientWidth, h: parent.clientHeight });
+      setSize({ w: window.innerWidth, h: window.innerHeight });
     measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(parent);
-    return () => ro.disconnect();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
   }, []);
 
   // Create the Phaser game once we have a real size and an active run.
@@ -110,7 +109,7 @@ export default function Overworld() {
     <div
       ref={rootRef}
       className="relative w-full overflow-hidden"
-      style={{ height: size.h || "100%" }}
+      style={{ height: size.h || "100vh" }}
     >
       <div ref={containerRef} className="absolute inset-0" />
       <div
