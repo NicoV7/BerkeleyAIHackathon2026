@@ -866,19 +866,6 @@ async def run_human_round_stream(
 
     enemy_turn = turn_no + 1
 
-    # --- PARALLELIZE: judge the player's ALREADY-KNOWN argument concurrently with
-    # generating (streaming) the enemy rebuttal. The player score doesn't depend on
-    # the enemy text, so the two LLM calls overlap instead of running back-to-back.
-    # We kick off the player-judge task first, then stream the enemy so its tokens
-    # reach the WS as they arrive (perceived latency = first enemy token).
-    player_judge_task = asyncio.create_task(
-        score_round(
-            topic,
-            [{"actor_id": player.monster_id, "text": text}],
-            fallback_model=fallback_model,
-        )
-    )
-
     # --- Enemy rebuttal (autonomous, STREAMED) ---
     battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
     action = _decide_action(enemy, battle_state)
@@ -919,19 +906,21 @@ async def run_human_round_stream(
     await append_utterance(eid, enemy_utt)
     yield Event("utterance", enemy_utt)
 
-    # --- Judge: the player score was computed concurrently with enemy generation;
-    # now judge the enemy text. Gather both so any straggler resolves together. ---
-    enemy_judge_task = asyncio.create_task(
-        score_round(
-            topic,
-            [{"actor_id": enemy.monster_id, "text": enemy_text}],
-            fallback_model=fallback_model,
-        )
+    # --- Judge BOTH utterances in ONE call. (Was two concurrent score_round calls,
+    # but the enemy almost always falls back instantly on a cold local model, so the
+    # "player-judge overlaps enemy generation" optimization rarely paid off — meanwhile
+    # the SECOND judge call doubled local judge latency, the measured bottleneck. One
+    # combined call halves it. score_round maps results back by actor_id, so per-actor
+    # damage attribution is preserved.) ---
+    scores = await score_round(
+        topic,
+        [
+            {"actor_id": player.monster_id, "text": text},
+            {"actor_id": enemy.monster_id, "text": enemy_text},
+        ],
+        fallback_model=fallback_model,
     )
-    player_scores, enemy_scores = await asyncio.gather(
-        player_judge_task, enemy_judge_task
-    )
-    score_by_id = {js.actor_id: js for js in (*player_scores, *enemy_scores)}
+    score_by_id = {js.actor_id: js for js in scores}
 
     # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---
     verdicts: list[dict[str, Any]] = []

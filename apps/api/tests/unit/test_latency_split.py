@@ -64,7 +64,7 @@ def _system_text(actor: Combatant, topic: str) -> str:
 def test_first_token_timeout_is_small_and_split_from_call_timeout() -> None:
     # first_token_timeout_s is the SMALL streaming first-token guard.
     assert isinstance(settings.first_token_timeout_s, int)
-    assert settings.first_token_timeout_s <= 10, "first-token guard must be small (~8s)"
+    assert settings.first_token_timeout_s <= 16, "first-token guard must stay small (~15s)"
     # llm_call_timeout_s is the LARGER non-streaming budget; the two are distinct.
     assert settings.llm_call_timeout_s > settings.first_token_timeout_s
     # actor_max_tokens is a small, punchy cap.

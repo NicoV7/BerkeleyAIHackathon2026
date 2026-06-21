@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     actor_model: str = "llama3.2:3b"
     judge_model_fast: str = "llama3.2:3b"
     llm_call_timeout_s: int = 28
-    first_token_timeout_s: int = 8
+    first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
     actor_max_tokens: int = 64
     prewarm_enabled: bool = True
     ollama_base_url: str = "http://ollama:11434"

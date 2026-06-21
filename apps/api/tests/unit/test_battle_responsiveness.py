@@ -133,29 +133,29 @@ async def test_human_round_streams_enemy_tokens(
 # --------------------------------------------------------------------------- #
 
 
-async def test_human_round_overlaps_judge_and_enemy_generation(
+async def test_human_round_judges_both_in_one_combined_call(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    order: list[str] = []
+    """Judging is ONE combined score_round call scoring BOTH actors (was two calls).
+
+    Local judging is the measured round-time bottleneck; one call halves it. Per-actor
+    damage attribution must survive (score_round maps results back by actor_id).
+    """
+    calls: list[list[str]] = []
 
     async def fake_stream(messages, model=None, **k):
-        order.append("enemy_gen_start")
-        await asyncio.sleep(0.02)  # simulate generation latency
-        order.append("enemy_gen_end")
         for tok in ["Rights ", "demand ", "duties."]:
             yield tok
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
-        # The player-only judge call starts BEFORE enemy generation finishes.
-        if any(it["actor_id"] == "p1" for it in items):
-            order.append("player_judge_start")
-            await asyncio.sleep(0.02)
-            order.append("player_judge_end")
-        else:
-            order.append("enemy_judge")
-        return [JudgeScore(actor_id=it["actor_id"], score=55.0, rationale="ok") for it in items]
+        calls.append([it["actor_id"] for it in items])
+        # distinct scores per actor so attribution is observable
+        return [
+            JudgeScore(actor_id=it["actor_id"], score=70.0 if it["actor_id"] == "p1" else 40.0, rationale="ok")
+            for it in items
+        ]
 
     monkeypatch.setattr(orch.gateway, "stream", fake_stream)
     monkeypatch.setattr(orch, "score_round", fake_score)
@@ -164,36 +164,29 @@ async def test_human_round_overlaps_judge_and_enemy_generation(
         _combatant("party", "p1", "Sage"),
         _combatant("enemy", "e1", "Brute"),
     ]
-    await _drain(
+    events = await _drain(
         orch.run_human_round_stream(
             "enc2", "topic", combatants, None, 0,
             {"party": 1.0, "enemy": 1.0}, "My argument.",
         )
     )
 
-    # Concurrency proof: the player judge STARTS before enemy generation ENDS —
-    # impossible if they ran strictly sequentially.
-    assert "player_judge_start" in order and "enemy_gen_end" in order
-    assert order.index("player_judge_start") < order.index("enemy_gen_end")
-    # Both player and enemy ultimately get judged.
-    assert "player_judge_end" in order and "enemy_judge" in order
+    # Exactly ONE judge call, and it scored BOTH actors together.
+    assert len(calls) == 1, f"expected one combined judge call, got {len(calls)}"
+    assert set(calls[0]) == {"p1", "e1"}
+    # Attribution preserved: the player (score 70 → dmg) hit the enemy; verdicts carry both ids.
+    verdicts = [e.data for e in events if e.kind == "verdict"]
+    by_actor = {v["actor_id"]: v for v in verdicts}
+    assert {"p1", "e1"} <= set(by_actor)
+    assert by_actor["p1"]["target"] == "e1" and by_actor["e1"]["target"] == "p1"
 
 
-async def test_human_round_uses_asyncio_gather(
+async def test_human_round_streams_enemy_tokens(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    """The round must gather the judge tasks (overlap), not await them one by one."""
-    gather_called = {"n": 0}
-    real_gather = asyncio.gather
-
-    def spy_gather(*aws, **kw):
-        gather_called["n"] += 1
-        return real_gather(*aws, **kw)
-
-    monkeypatch.setattr(orch.asyncio, "gather", spy_gather)
-
+    """The enemy rebuttal must STREAM token events (perceived latency = first token)."""
     async def fake_stream(messages, model=None, **k):
-        for tok in ["a ", "b"]:
+        for tok in ["Coun", "ter", "point."]:
             yield tok
 
     async def fake_score(topic, items, fallback_model=None, **k):
@@ -205,12 +198,14 @@ async def test_human_round_uses_asyncio_gather(
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
-    await _drain(
+    events = await _drain(
         orch.run_human_round_stream(
             "enc3", "topic", combatants, None, 0, {"party": 1.0, "enemy": 1.0}, "x"
         )
     )
-    assert gather_called["n"] >= 1
+    token_events = [e for e in events if e.kind == "token"]
+    assert len(token_events) >= 2, "enemy rebuttal must stream multiple token events"
+    assert all(t.data.get("actor_id") == "e1" for t in token_events)
 
 
 # --------------------------------------------------------------------------- #

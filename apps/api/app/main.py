@@ -62,6 +62,16 @@ async def lifespan(app: FastAPI):
     await init_db()
     log.info("DB initialized")
     await _init_memory_cache()
+    # Warm the actor + judge models at startup so the first battle round isn't a cold
+    # start (cold gemma3:1b first-token can exceed the streaming guard → fallback text).
+    try:
+        import asyncio as _asyncio
+
+        from app.debate.orchestrator import prewarm_models
+
+        _asyncio.create_task(prewarm_models())
+    except Exception:  # noqa: BLE001 — prewarm is best-effort, never block startup
+        pass
     yield
     await gateway.aclose()
 
