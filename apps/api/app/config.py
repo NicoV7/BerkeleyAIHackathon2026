@@ -18,6 +18,20 @@ class Settings(BaseSettings):
     llm_default_model: str = "gemma3:4b"
     llm_judge_model: str = "gemma3:4b"
     llm_embed_model: str = "nomic-embed-text"
+    gateway_fallback_enabled: bool = True
+    gateway_actor_candidates: str = (
+        "groq/llama-3.1-8b-instant,"
+        "cerebras/llama-3.3-70b,"
+        "gemini/gemini-2.5-flash-lite,"
+        "openrouter/openrouter/free,"
+        "ollama/gemma3:1b"
+    )
+    gateway_judge_candidates: str = (
+        "groq/llama-3.3-70b-versatile,"
+        "cerebras/llama-3.3-70b,"
+        "gemini/gemini-2.5-flash,"
+        "ollama/gemma3:1b"
+    )
 
     # --- Latency fast-path (battle playability) ------------------------------
     # The default debater/judge models (gemma3:4b) are too slow on a contended
@@ -71,6 +85,14 @@ class Settings(BaseSettings):
     anthropic_base_url: str = "https://api.anthropic.com"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+    groq_api_key: str = ""
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    cerebras_api_key: str = ""
+    cerebras_base_url: str = "https://api.cerebras.ai/v1"
+    gemini_api_key: str = ""
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Judge provider switch (additive; default keeps the judge fully local).
     #
@@ -120,11 +142,6 @@ class Settings(BaseSettings):
     # response when no keys are configured (so offline-dev never hangs).
     #
     # IMPORTANT: never commit real values for these. Keep them in .env.local.
-    groq_api_key: str = ""
-    cerebras_api_key: str = ""
-    gemini_api_key: str = ""
-    openrouter_api_key: str = ""
-
     # App
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173"
