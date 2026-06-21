@@ -243,6 +243,7 @@ class Utterance(BaseModel):
     ts: float
     server_ts: Optional[float] = None
     elapsed_ms: Optional[int] = None
+    reaction_state: Optional[str] = None
 
 
 class JudgeVerdict(BaseModel):

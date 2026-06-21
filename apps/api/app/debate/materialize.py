@@ -30,6 +30,7 @@ from typing import Optional
 
 from app.config import settings
 from app.gateway.gateway import gateway
+from app.party.persona import sanitize_battle_utterance
 from app.redis_state import OPENING_TTL_SECONDS, get_redis, k_opening
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Bump on ANY change to the opening prompt below, to _opening_messages, or to the
 # default opening model — this invalidates every cached opening so stale text is
 # never served. Format: "vN".
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v3"
 
 
 # Both debate sides are materializable now (WS-4 #10). The enemy still argues
@@ -102,7 +103,7 @@ def _fallback_opening(topic_text: str, side: str | None = "against") -> str:
     """Real, side-taking opening for model failure (never the old meta-hedge
     filler). Mirrors orchestrator's default fallbacks so a cache-miss with a
     stalled model still reads like a debate opener for the requested side."""
-    topic_str = topic_text or "this question"
+    topic_str = (topic_text or "this question").strip().rstrip(".:;!?")
     if _norm_side(side) == "for":
         return (
             f"I argue FOR {topic_str}: it carries the stronger reasons and the case "
@@ -129,8 +130,9 @@ def _opening_messages(topic_text: str, side: str | None = "against") -> list[dic
                 f'YOUR ASSIGNED SIDE: {stance}. You argue {stance} the topic "{topic_text}". '
                 "Make ONE concrete claim about the topic and state plainly why you are "
                 f"{stance} it. Do NOT concede, do NOT switch sides, do NOT argue the other "
-                "side. Be vivid and concise (1-2 sentences). Do NOT narrate or use stage "
-                "directions — argue the actual topic."
+                "side. Output exactly TWO short plain sentences. Keep each sentence under "
+                "22 words. No headings, markdown, bullets, labels like Claim/Support/"
+                "Rebuttal, narration, prompt descriptions, or stage directions."
             ),
         },
         {
@@ -141,7 +143,7 @@ def _opening_messages(topic_text: str, side: str | None = "against") -> list[dic
 
 
 def _sanitize(text: str) -> str:
-    return "".join(ch for ch in text if ch >= " " or ch in "\n\t")
+    return sanitize_battle_utterance(text)
 
 
 async def _generate_opening(

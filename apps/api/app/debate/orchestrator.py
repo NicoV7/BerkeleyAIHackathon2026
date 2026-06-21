@@ -15,9 +15,9 @@ Round structure (one "round" == one pass over the turn queue):
      topic + side + RAG memories + persona/skills). Party actors consult the
      gambits seam for a forced action. Generate the utterance; append to the
      shared transcript immediately so later actors in the round see it.
-  2. After the round, the judge scores every utterance at once. Each scored
-     utterance damages the opposing side (split across living enemies). Momentum
-     updates from the round's net swing.
+  2. After the round, the judge scores every utterance at once. The side with the
+     stronger average score wins the cycle, and only that side's best utterance
+     deals damage. Momentum updates from the round's net swing.
   3. Win/loss when a whole side hits 0 HP. Wild enemies under 25% HP are
      flagged capturable.
 
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -38,6 +39,16 @@ from app.debate.judge import heuristic_score, score_round
 from app.debate.latency_metrics import RoundTimer
 from app.debate.topics import domain_match_mult
 from app.gateway.gateway import gateway
+from app.party.persona import (
+    ensure_battle_sentence_floor,
+    ensure_battle_reactions,
+    harness_prompt_line,
+    normalize_harness,
+    normalize_persona,
+    persona_prompt_line,
+    sanitize_battle_utterance,
+    select_battle_reaction,
+)
 
 # ---- Defensive integration seams --------------------------------------------
 
@@ -181,6 +192,13 @@ async def _resolve_counter_context(
 # a module-level constant so tests + helpers in app.debate.mp share one source.
 MP_REGEN_PER_ROUND = 10
 
+# Winner-only cycle damage uses judge margin, not raw score. A 70-60 cycle maps to
+# an effective damage score of 80 (50 + 10 margin * 2 + 10 winner bonus), which
+# keeps ordinary winning cycles meaningful while close/tied cycles stay controlled.
+CYCLE_DAMAGE_MARGIN_MULT = 2.0
+CYCLE_DAMAGE_WIN_BONUS = 10.0
+CYCLE_TIE_EPSILON = 0.5
+
 
 # ---- Latency fast-path ------------------------------------------------------
 
@@ -208,6 +226,11 @@ def _actor_timeout() -> float:
 def _actor_max_tokens() -> int:
     """Token cap for an actor turn — small for punchy 1-2 sentence arguments."""
     return int(getattr(settings, "actor_max_tokens", 64) or 64)
+
+
+def _battle_damage_multiplier() -> float:
+    """Applied-damage pacing multiplier for shortening encounters."""
+    return max(0.1, float(getattr(settings, "battle_damage_multiplier", 1.0) or 1.0))
 
 
 def _human_judge_deadline() -> float:
@@ -572,37 +595,14 @@ def _build_battle_state(
     }
 
 
-def _persona_value(value: Any) -> str:
-    """Compact persona JSON values for prompt injection."""
-    if isinstance(value, (list, tuple, set)):
-        return ", ".join(str(v) for v in value if str(v).strip())
-    if isinstance(value, dict):
-        return ", ".join(f"{k}: {v}" for k, v in value.items() if str(v).strip())
-    return str(value).strip()
-
-
 def _persona_line(actor: Combatant) -> str:
     """Render all supported persona flavors into a concise prompt line."""
-    p = actor.persona or {}
-    if not isinstance(p, dict):
-        return ""
-    bits = []
-    labels = {
-        "style": "style",
-        "voice": "voice",
-        "tagline": "tagline",
-        "bio": "bio",
-        "backstory": "backstory",
-        "tone": "tone",
-        "quirks": "quirks",
-        "evolution_notes": "evolution",
-    }
-    for key, label in labels.items():
-        value = p.get(key)
-        rendered = _persona_value(value) if value is not None else ""
-        if rendered:
-            bits.append(f"{label}: {rendered}")
-    return "; ".join(bits)
+    return persona_prompt_line(normalize_persona(actor.persona, fallback_name=actor.name))
+
+
+def _harness_line(actor: Combatant) -> str:
+    """Render trained harness fields for prompt injection."""
+    return harness_prompt_line(normalize_harness(actor.harness, role=actor.role))
 
 
 def _skill_names(actor: Combatant) -> list[str]:
@@ -613,6 +613,24 @@ def _skill_names(actor: Combatant) -> list[str]:
         elif isinstance(s, dict) and s.get("name"):
             names.append(str(s["name"]))
     return names
+
+
+def _argument_transcript(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only debate turns, excluding event reaction chatter."""
+    return [u for u in transcript if not u.get("reaction_state")]
+
+
+def _has_opposing_turn(actor: Combatant, transcript: list[dict[str, Any]]) -> bool:
+    """Whether this actor has an opposing utterance to answer."""
+    for utt in _argument_transcript(transcript):
+        role = utt.get("actor_role")
+        if role in ("party", "enemy"):
+            if role != actor.role:
+                return True
+            continue
+        if utt.get("actor_id") and utt.get("actor_id") != actor.monster_id:
+            return True
+    return False
 
 
 def _build_actor_messages(
@@ -628,11 +646,29 @@ def _build_actor_messages(
     side = _side_for(actor)
     stance_verb = "FOR" if side == "for" else "AGAINST"
     persona = _persona_line(actor)
+    harness = _harness_line(actor)
     skills = _skill_names(actor)
+    has_opposing_turn = _has_opposing_turn(actor, transcript)
+    if has_opposing_turn:
+        turn_contract = (
+            "Make ONE sharp, persuasive argument that advances your side and rebuts the "
+            "latest opposing point. Output exactly TWO short plain sentences: first answer "
+            "the latest opposing claim, second press one decisive reason for your side."
+        )
+    else:
+        turn_contract = (
+            "You are opening for your side. Output exactly TWO short plain sentences: first "
+            "make one concrete opening claim, second support it with one decisive reason. "
+            "Do not mention that no opponent has spoken."
+        )
 
     sys_parts = [
         f"You are {actor.name}, a debate combatant of type {actor.type}, on {team}.",
         f"The debate topic is: {topic}",
+    ]
+    if harness:
+        sys_parts.append(f"Your trained battle harness — {harness}.")
+    sys_parts.extend([
         # UNMISTAKABLE stance anchor: name the side, name the topic, and forbid
         # conceding or flipping. Playtest bug: an AGAINST enemy argued FOR — this
         # block (used by BOTH the streaming and non-streaming builders) makes the
@@ -642,11 +678,12 @@ def _build_actor_messages(
         f"about {topic} and state plainly why you are {stance_verb} it. Do NOT "
         f"concede, do NOT switch sides, and do NOT argue the other side — even to "
         f"steelman it. Every sentence must support the {stance_verb} position.",
-        "Make ONE sharp, persuasive argument that advances your side and rebuts the "
-        "latest opposing point. Be vivid and concise (1-2 sentences). Speak in-character. "
-        "Do NOT narrate, use stage directions, or hedge with vague meta-talk about "
-        "debate strategy — argue the actual topic with a concrete claim.",
-    ]
+        turn_contract + " "
+        "Keep each sentence under 22 words. "
+        "No headings, markdown, bullets, labels like Claim/Support/Rebuttal, stage "
+        "directions, prompt descriptions, assigned-stance descriptions, or vague "
+        "meta-talk about debate strategy.",
+    ])
     if persona:
         sys_parts.append(f"Your persona — {persona}.")
     if skills:
@@ -673,7 +710,7 @@ def _build_actor_messages(
         sys_parts.append(str(counter_context))
 
     # Recent shared transcript window.
-    window = transcript[-TRANSCRIPT_WINDOW:]
+    window = _argument_transcript(transcript)[-TRANSCRIPT_WINDOW:]
     if window:
         convo = []
         for u in window:
@@ -681,7 +718,10 @@ def _build_actor_messages(
             convo.append(f"{who}: {u.get('text','')}")
         history = "Recent exchange:\n" + "\n".join(convo)
     else:
-        history = "You speak first. Open strong."
+        history = (
+            "You speak first. Open with a concrete claim and support. Do not mention "
+            "that no opponent has spoken."
+        )
 
     user = history + "\n\nNow give your argument."
     return [
@@ -733,7 +773,13 @@ async def _generate_utterance_traced(
     used_fallback = not text
     if used_fallback:
         text = _fallback_argument(actor, topic, turn_seed=len(transcript))
-    return _sanitize(text), used_fallback, reason
+    cleaned = _sanitize(text)
+    if not cleaned:
+        used_fallback = True
+        reason = reason or "empty"
+        cleaned = _sanitize(_fallback_argument(actor, topic, turn_seed=len(transcript)))
+    cleaned = _finalize_actor_text(cleaned, actor)
+    return cleaned, used_fallback, reason
 
 
 async def _generate_utterance(
@@ -752,9 +798,23 @@ async def _generate_utterance(
 
 
 def _sanitize(text: str) -> str:
-    """Strip control characters that break strict JSON parsers (incl. the
-    browser's JSON.parse) — small local models occasionally emit them."""
-    return "".join(ch for ch in text if ch >= " " or ch in "\n\t")
+    """Normalize model text into the compact battle-utterance contract."""
+    return sanitize_battle_utterance(text)
+
+
+def _finalize_actor_text(text: str, actor: Combatant) -> str:
+    """Apply final low-latency shape fixes for generated actor turns."""
+    return ensure_battle_sentence_floor(_sanitize(text), role=actor.role)
+
+
+def _looks_like_heading(line: str) -> bool:
+    """Detect decorative headings emitted despite the no-markdown prompt."""
+    if len(line) > 90:
+        return False
+    lowered = line.lower().strip(":")
+    if lowered.startswith(("against ", "for ")):
+        return not re.search(r"[.!?]$", line)
+    return lowered in {"argument", "claim", "support", "evidence", "rebuttal"}
 
 
 # First-token wall-clock guard for the live streaming path. On a contended CPU
@@ -870,6 +930,17 @@ async def _stream_utterance(
     else:
         fallback_reason = None
     full = _sanitize(full)
+    if not full:
+        used_fallback = True
+        if fallback_reason is None:
+            fallback_reason = "empty"
+        full = _sanitize(_fallback_argument(actor, topic, turn_seed=len(transcript)))
+    raw_full = full
+    full = _finalize_actor_text(full, actor)
+    if full != raw_full:
+        suffix = full[len(raw_full):] if full.startswith(raw_full) else full
+        if suffix:
+            yield {"kind": "token", "text": suffix}
     yield {
         "kind": "done",
         "text": full,
@@ -887,10 +958,11 @@ def _apply_round_damage(
     momentum: dict[str, float],
     topic: str = "",
 ) -> list[dict[str, Any]]:
-    """Apply damage from a round's scored utterances. Returns verdict dicts.
+    """Apply cycle-winner damage from a round's scored utterances.
 
-    Each scored utterance damages the opposing side, split across its living
-    members. Momentum nudges based on net per-side scoring this round.
+    The judge still scores every utterance, but only the side with the stronger
+    average score damages the opposing side. That winner's highest-scoring actor
+    produces one damage packet, split across living defenders.
 
     Each `scored` entry is `(actor, score, rationale)` and may carry optional
     dicts: the 4th element for extra verdict fields (e.g. why/logic/persuasion),
@@ -901,29 +973,53 @@ def _apply_round_damage(
     attacker (e.g. SCIENCE monster on a SCIENCE topic) gets the +20% bonus and a
     mismatched attacker the -10% penalty. Default ``""`` reduces to 1.0.
     """
-    verdicts: list[dict[str, Any]] = []
-    side_net: dict[str, float] = {"party": 0.0, "enemy": 0.0}
-
+    entries: list[tuple[Combatant, float, str, dict[str, Any], dict[str, Any]]] = []
+    side_scores: dict[str, list[float]] = {"party": [], "enemy": []}
+    targets_by_actor: dict[str, list[Combatant]] = {}
     for entry in scored:
         actor, score, rationale = entry[0], entry[1], entry[2]
         extra: dict[str, Any] = entry[3] if len(entry) > 3 and isinstance(entry[3], dict) else {}
         damage_meta: dict[str, Any] = (
             entry[4] if len(entry) > 4 and isinstance(entry[4], dict) else {}
         )
-        side_net[actor.role] += (score - 50.0)
+        score = float(score)
+        entries.append((actor, score, str(rationale), extra, damage_meta))
+        if actor.role in side_scores:
+            side_scores[actor.role].append(score)
         enemy_role = "enemy" if actor.role == "party" else "party"
-        targets = [c for c in combatants if c.role == enemy_role and c.alive]
-        if not targets:
+        targets_by_actor[actor.monster_id] = [
+            c for c in combatants if c.role == enemy_role and c.alive
+        ]
+
+    winner_role = _cycle_winner_role(side_scores)
+    winning_entry = _cycle_winning_entry(entries, winner_role)
+    damage_actor_id = winning_entry[0].monster_id if winning_entry else None
+    verdicts: list[dict[str, Any]] = []
+
+    for actor, score, rationale, extra, damage_meta in entries:
+        targets = targets_by_actor.get(actor.monster_id, [])
+        target_id = targets[0].monster_id if targets else None
+        total_dmg = 0
+        if actor.monster_id != damage_actor_id or not targets:
+            verdicts.append(
+                {
+                    "actor_id": actor.monster_id,
+                    "target": target_id,
+                    "score": score,
+                    "rationale": rationale,
+                    "damage": 0,
+                    **extra,
+                }
+            )
             continue
         mom = momentum.get(actor.role, 1.0)
         dmatch = domain_match_mult(getattr(actor, "domain", None) or "GENERAL", topic)
         attack_type = str(damage_meta.get("attack_type") or actor.type)
         skill_mult = float(damage_meta.get("skill_mult", 1.0) or 1.0)
-        total_dmg = 0
-        # Split damage across living defenders.
+        damage_score = _cycle_damage_score(actor.role, score, side_scores)
         for target in targets:
             dmg = compute_damage(
-                score=score,
+                score=damage_score,
                 attacker_type=attack_type,
                 defender_type=target.type,
                 skill_mult=skill_mult,
@@ -936,13 +1032,14 @@ def _apply_round_damage(
                 defender_def=getattr(target, "def_", 10),
                 domain_match=dmatch,
             )
+            dmg = round(dmg * _battle_damage_multiplier())
             dmg = max(0, round(dmg / len(targets)))
             target.hp = max(0, target.hp - dmg)
             total_dmg += dmg
         verdicts.append(
             {
                 "actor_id": actor.monster_id,
-                "target": targets[0].monster_id,
+                "target": target_id,
                 "score": score,
                 "rationale": rationale,
                 "damage": total_dmg,
@@ -951,11 +1048,134 @@ def _apply_round_damage(
         )
 
     # Momentum update: winners of the round gain, losers lose. Clamp 0.7..1.3.
-    for side in ("party", "enemy"):
-        swing = side_net[side] / 100.0  # ~ -0.5..0.5
-        momentum[side] = max(0.7, min(1.3, momentum.get(side, 1.0) + swing * 0.15))
+    party_avg = _side_average(side_scores["party"])
+    enemy_avg = _side_average(side_scores["enemy"])
+    if party_avg is not None and enemy_avg is not None:
+        swing = (party_avg - enemy_avg) / 100.0
+        momentum["party"] = max(0.7, min(1.3, momentum.get("party", 1.0) + swing * 0.15))
+        momentum["enemy"] = max(0.7, min(1.3, momentum.get("enemy", 1.0) - swing * 0.15))
+    else:
+        for side in ("party", "enemy"):
+            avg = _side_average(side_scores[side])
+            if avg is None:
+                continue
+            swing = (avg - 50.0) / 100.0
+            momentum[side] = max(0.7, min(1.3, momentum.get(side, 1.0) + swing * 0.15))
 
     return verdicts
+
+
+def _reaction_utterances(
+    combatants: list[Combatant],
+    verdicts: list[dict[str, Any]],
+    turn_no: int,
+) -> list[dict[str, Any]]:
+    """Build event-triggered personality lines after cycle damage resolves."""
+    by_id = {c.monster_id: c for c in combatants}
+    events: list[dict[str, Any]] = []
+    for v in verdicts:
+        if int(v.get("damage") or 0) <= 0:
+            continue
+        actor = by_id.get(str(v.get("actor_id")))
+        target = by_id.get(str(v.get("target")))
+        if actor is None or target is None:
+            continue
+        _append_reaction(events, actor, "deals_damage", turn_no, v)
+        _append_reaction(events, target, "takes_damage", turn_no, v)
+        low_state = _low_hp_reaction_state(target)
+        if low_state:
+            speaker = actor if actor.role != target.role else target
+            _append_reaction(events, speaker, low_state, turn_no, v)
+        break
+    return events[:3]
+
+
+def _append_reaction(
+    out: list[dict[str, Any]],
+    actor: Combatant,
+    state: str,
+    turn_no: int,
+    verdict: dict[str, Any],
+) -> None:
+    text = _battle_reaction_text(actor, state, f"{turn_no}:{verdict}")
+    if not text:
+        return
+    out.append(
+        {
+            "turn": turn_no,
+            "actor_id": actor.monster_id,
+            "actor_role": actor.role,
+            "side": _side_for(actor),
+            "skill_used": f"reaction:{state}",
+            "reaction_state": state,
+            "text": text,
+            "ts": time.time(),
+            **_event_timing(),
+        }
+    )
+
+
+def _battle_reaction_text(actor: Combatant, state: str, seed: str) -> str:
+    actor.persona = ensure_battle_reactions(
+        actor.persona,
+        actor.type,
+        role=actor.role,
+        fallback_name=actor.name,
+    )
+    return select_battle_reaction(
+        actor.persona,
+        state,
+        debate_type=actor.type,
+        role=actor.role,
+        seed=seed,
+    )
+
+
+def _low_hp_reaction_state(target: Combatant) -> str | None:
+    if not target.alive or target.max_hp <= 0:
+        return None
+    if target.hp > target.max_hp * CAPTURABLE_HP_FRACTION:
+        return None
+    return "enemy_low_hp" if target.role == "enemy" else "user_low_hp"
+
+
+def _side_average(scores: list[float]) -> float | None:
+    return (sum(scores) / len(scores)) if scores else None
+
+
+def _cycle_winner_role(side_scores: dict[str, list[float]]) -> str | None:
+    party_avg = _side_average(side_scores.get("party", []))
+    enemy_avg = _side_average(side_scores.get("enemy", []))
+    if party_avg is None or enemy_avg is None:
+        return None
+    if abs(party_avg - enemy_avg) < CYCLE_TIE_EPSILON:
+        return None
+    return "party" if party_avg > enemy_avg else "enemy"
+
+
+def _cycle_damage_score(
+    winner_role: str,
+    winner_score: float,
+    side_scores: dict[str, list[float]],
+) -> float:
+    opposing_role = "enemy" if winner_role == "party" else "party"
+    opposing_avg = _side_average(side_scores.get(opposing_role, []))
+    if opposing_avg is None:
+        return winner_score
+    margin = max(0.0, winner_score - opposing_avg)
+    return max(50.0, min(100.0, 50.0 + CYCLE_DAMAGE_WIN_BONUS + margin * CYCLE_DAMAGE_MARGIN_MULT))
+
+
+def _cycle_winning_entry(
+    entries: list[tuple[Combatant, float, str, dict[str, Any], dict[str, Any]]],
+    winner_role: str | None,
+) -> tuple[Combatant, float, str, dict[str, Any], dict[str, Any]] | None:
+    if winner_role is None:
+        return None
+    candidates = [entry for entry in entries if entry[0].role == winner_role]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda entry: entry[1])
 
 
 def _skill_cost_safe(skill_name: str | None) -> int:
@@ -1044,10 +1264,12 @@ def _phase_for(combatants: list[Combatant]) -> tuple[str, list[str]]:
     """Compute phase + capturable wild ids from current HP."""
     party_alive = any(c.alive for c in combatants if c.role == "party")
     enemy_alive = any(c.alive for c in combatants if c.role == "enemy")
-    if not enemy_alive:
-        return "won", []
+    if not party_alive and not enemy_alive:
+        return "lost", []
     if not party_alive:
         return "lost", []
+    if not enemy_alive:
+        return "won", []
     capturable = [
         c.monster_id
         for c in combatants
@@ -1255,6 +1477,10 @@ async def run_round_stream(
         yield Event("verdict", verdict_payload)
     await r.expire(k_judge(eid), ENCOUNTER_TTL_SECONDS)
 
+    for reaction in _reaction_utterances(combatants, verdicts, turn_no):
+        await append_utterance(eid, reaction)
+        yield Event("utterance", reaction)
+
     for c in combatants:
         await set_hp(eid, c.monster_id, c.hp)
         # Emit ONE HpUpdate per combatant ({monster_id, hp, max_hp}) — the frontend
@@ -1339,16 +1565,15 @@ async def run_human_round_stream(
       * STREAMED enemy rebuttal — the enemy uses `_stream_utterance` (same token
         mechanism as the auto round), so the WS emits `token` events as they arrive
         and perceived latency is first-token, not full generation.
-      * PARALLELIZED judging — the player's already-known argument is judged in a
-        task that runs CONCURRENTLY with enemy generation; the enemy text is judged
-        right after and both are `asyncio.gather`-ed. LLM calls overlap instead of
-        running strictly sequentially, while damage still applies once both scores
-        exist.
+      * COMBINED judging — both completed turns are scored in one judge call, and
+        only the cycle winner's side inflicts HP damage. The losing verdict still
+        emits with damage=0 so the UI can show both scores without a second hit.
       * CLEAR SIDES — the player's lead argues FOR the topic, the enemy lead argues
         AGAINST it (deterministic). `side` is threaded into both prompts and carried
         on the emitted utterance/token events.
 
-    Damage applies (the player's chosen skill scales it), then hp/phase emit.
+    Winner-only damage applies (the player's chosen skill scales it if they win),
+    then hp/phase emit.
     Mirrors `run_round_stream`'s event protocol so the WS/REST callers are
     unchanged. Mutates `combatants` HP and `momentum` in place.
     """
@@ -1473,6 +1698,7 @@ async def run_human_round_stream(
             from app.debate.materialize import get_or_create_opening
 
             enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
+            enemy_text = _finalize_actor_text(enemy_text, enemy)
             # Emit the materialized opening as a single token so WS clients still get
             # the streamed-text event shape (no per-token cadence, but instant).
             yield Event(
@@ -1572,9 +1798,9 @@ async def run_human_round_stream(
             judge_metric.mark_fallback("judge_deadline")
     score_by_id = {js.actor_id: js for js in scores}
 
-    # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---
-    verdicts: list[dict[str, Any]] = []
-    side_net = {"party": 0.0, "enemy": 0.0}
+    # --- Apply cycle-winner damage. The judge scores both turns, but only the
+    # higher-scoring side's turn mutates HP; the other verdict carries damage=0.
+    scored: list[tuple] = []
     for actor, atk_type, mult in (
         (player, attack_type, skill_power),
         (enemy, enemy.type, 1.0),
@@ -1582,42 +1808,17 @@ async def run_human_round_stream(
         js = score_by_id.get(actor.monster_id)
         if js is None:
             continue
-        side_net[actor.role] += js.score - 50.0
-        target = _lead(combatants, "enemy" if actor.role == "party" else "party")
-        if target is None:
-            continue
-        mom = momentum.get(actor.role, 1.0)
-        # Gacha wave: real ATK/DEF/domain-match flow into the formula. Defaults
-        # on Combatant keep the math identical for pre-gacha rows / tests.
-        dmatch = domain_match_mult(getattr(actor, "domain", None) or "GENERAL", topic)
-        dmg = compute_damage(
-            score=js.score,
-            attacker_type=atk_type,
-            defender_type=target.type,
-            skill_mult=mult,
-            momentum=mom,
-            attacker_level=actor.level,
-            defender_level=target.level,
-            attacker_atk=getattr(actor, "atk", 10),
-            defender_def=getattr(target, "def_", 10),
-            domain_match=dmatch,
-        )
-        target.hp = max(0, target.hp - dmg)
-        verdicts.append(
-            {
-                "turn": turn_no,
-                "actor_id": actor.monster_id,
-                "target": target.monster_id,
-                "score": js.score,
-                "rationale": js.rationale,
-                "damage": dmg,
-            }
-        )
-
-    # Momentum update (same shape as _apply_round_damage).
-    for side in ("party", "enemy"):
-        swing = side_net[side] / 100.0
-        momentum[side] = max(0.7, min(1.3, momentum.get(side, 1.0) + swing * 0.15))
+        scored.append((
+            actor,
+            js.score,
+            js.rationale,
+            {},
+            {"attack_type": atk_type, "skill_mult": mult},
+        ))
+    verdicts = [
+        {**v, "turn": turn_no}
+        for v in _apply_round_damage(combatants, scored, momentum, topic=topic)
+    ]
 
     # --- Persist + emit verdicts, hp, phase ---
     r = get_redis()
@@ -1632,6 +1833,10 @@ async def run_human_round_stream(
         await r.rpush(k_judge(eid), _json_dumps(payload))
         yield Event("verdict", {**payload, "actor_id": v["actor_id"]})
     await r.expire(k_judge(eid), ENCOUNTER_TTL_SECONDS)
+
+    for reaction in _reaction_utterances(combatants, verdicts, turn_no):
+        await append_utterance(eid, reaction)
+        yield Event("utterance", reaction)
 
     for c in combatants:
         await set_hp(eid, c.monster_id, c.hp)
@@ -1687,8 +1892,13 @@ def _monster_to_combatant(m: Any, role: str) -> Combatant:
         max_hp=max_hp,
         level=int(g("level", 1) or 1),
         owner=str(owner),
-        persona=dict(g("persona", {}) or {}),
-        harness=dict(g("harness", {}) or {}),
+        persona=ensure_battle_reactions(
+            g("persona", {}) or {},
+            mtype,
+            role=role,
+            fallback_name=str(g("name", role.title())),
+        ),
+        harness=normalize_harness(g("harness", {}) or {}, role=role),
         skills=list(g("skills", []) or []),
         model=g("model"),
         atk=int(g("atk", 10) or 10),
@@ -1783,6 +1993,7 @@ async def _run_self_play_async(
         round_verdicts = _apply_round_damage(combatants, scored, momentum)
         for v in round_verdicts:
             verdicts.append({**v, "turn": turn_no})
+        transcript.extend(_reaction_utterances(combatants, round_verdicts, turn_no))
 
         # WS-0-LAT: emit the structured round-latency line for this self-play round.
         rt.finish()

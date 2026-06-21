@@ -207,6 +207,7 @@ def _to_utterance(u: dict[str, Any]) -> Utterance:
         skill_used=u.get("skill_used"),
         text=str(u.get("text", "")),
         ts=float(u.get("ts", 0.0)),
+        reaction_state=u.get("reaction_state"),
     )
 
 
