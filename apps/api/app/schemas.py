@@ -83,6 +83,17 @@ class POI(BaseModel):
     x: int
     y: int
     name: str = ""
+    # Wave 2 (Track B) — ENTERABLE INTERIORS. Additive/Optional only (this model
+    # is a FROZEN contract; never break it). When present, this POI opens into a
+    # procedurally generated interior WorldSpecLite via
+    # GET /api/runs/{id}/interior/{poi_id}.
+    #   interior_seed: deterministic seed for the interior (derived from the run
+    #     seed + POI coords so it is stable across reloads). None => no interior.
+    #   interior_kind: which generator to use ("town" | "cave" | "dungeon").
+    #     A *hint*; the server clamps to a known generator and never trusts it
+    #     blindly. None => server infers from `kind` (town->town, den->cave).
+    interior_seed: Optional[int] = None
+    interior_kind: Optional[Literal["town", "cave", "dungeon"]] = None
 
 
 class Region(BaseModel):
