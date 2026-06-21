@@ -18,6 +18,26 @@ class Settings(BaseSettings):
     llm_default_model: str = "gemma3:4b"
     llm_judge_model: str = "gemma3:4b"
     llm_embed_model: str = "nomic-embed-text"
+
+    # --- Latency fast-path (battle playability) ------------------------------
+    # The default debater/judge models (gemma3:4b) are too slow on a contended
+    # local CPU: rounds were timing out at the gateway's old 120s ceiling, so
+    # every utterance fell back to a useless stub. These additive knobs route
+    # actor turns + the judge to a SMALL, fast model and cap every LLM call at a
+    # short per-call timeout so a stuck call fails fast (and we render real
+    # fallback text) instead of hanging the whole round.
+    #
+    #   actor_model       — fast model for combatant turns / enemy rebuttals.
+    #   judge_model_fast  — fast model for scoring (defaults to actor_model).
+    #   llm_call_timeout_s— per-call wall-clock budget for a single completion.
+    #   prewarm_enabled   — fire a tiny throwaway call on encounter creation so
+    #                       the first real turn isn't paying the cold-load tax.
+    # Installed Ollama models, fastest-first-ish: gemma3:1b, llama3.2:3b,
+    # qwen2.5:3b, phi3:mini, gemma3:4b.
+    actor_model: str = "llama3.2:3b"
+    judge_model_fast: str = "llama3.2:3b"
+    llm_call_timeout_s: int = 20
+    prewarm_enabled: bool = True
     ollama_base_url: str = "http://ollama:11434"
     anthropic_api_key: str = ""
     anthropic_base_url: str = "https://api.anthropic.com"

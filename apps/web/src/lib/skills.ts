@@ -53,3 +53,69 @@ export const TYPE_COLOR: Record<string, string> = {
 export function typeColor(type: string | undefined | null): string {
   return TYPE_COLOR[(type ?? "").toUpperCase()] ?? "var(--muted)";
 }
+
+/**
+ * One-line "what it does + when to use" copy per debate type, used as a tooltip
+ * fallback when a skill ships no `description` from the API. Keyed by DebateType.
+ */
+export const TYPE_BLURB: Record<string, string> = {
+  LOGOS: "Logic & data. Best vs emotional (PATHOS) opponents.",
+  PATHOS: "Emotion & story. Best vs credibility (ETHOS) opponents.",
+  ETHOS: "Credibility & authority. Best vs disruptive (CHAOS) opponents.",
+  CHAOS: "Disruption & reframing. Best vs logic (LOGOS) or style (RHETORIC).",
+  SOCRATIC: "Questioning. Best vs style (RHETORIC) or emotion (PATHOS).",
+  RHETORIC: "Style & framing. Best vs logic (LOGOS) opponents.",
+};
+
+/** Human-readable description for a skill chip's tooltip. */
+export function skillTooltip(skill: { name: string; type: string; power: number; description: string }): string {
+  const parts: string[] = [];
+  if (skill.description) parts.push(skill.description);
+  else if (TYPE_BLURB[skill.type]) parts.push(TYPE_BLURB[skill.type]);
+  const dmg = skill.power >= 1 ? `+${Math.round((skill.power - 1) * 100)}% damage` : `${Math.round((1 - skill.power) * 100)}% less damage`;
+  parts.push(`Type: ${skill.type || "—"} · Power ×${skill.power} (${dmg}).`);
+  return parts.join(" ");
+}
+
+// ---------------------------------------------------------------------------
+// Type effectiveness (mirrors packages/shared/enums.ts TYPE_CHART).
+// Kept local so the web bundle has no runtime dependency on the shared module's
+// non-type exports; values must stay in sync with enums.ts.
+// ---------------------------------------------------------------------------
+
+const LOCAL_TYPE_CHART: Record<string, Record<string, number>> = {
+  LOGOS: { PATHOS: 1.5, ETHOS: 0.75, CHAOS: 0.75 },
+  PATHOS: { ETHOS: 1.5, LOGOS: 0.75, SOCRATIC: 0.75 },
+  ETHOS: { CHAOS: 1.5, PATHOS: 0.75, RHETORIC: 0.75 },
+  CHAOS: { LOGOS: 1.5, RHETORIC: 1.5, ETHOS: 0.75 },
+  SOCRATIC: { RHETORIC: 1.5, PATHOS: 1.5, LOGOS: 0.75 },
+  RHETORIC: { SOCRATIC: 0.75, LOGOS: 1.5, CHAOS: 0.75 },
+};
+
+/** Effectiveness multiplier of an attacking type vs a defending type. */
+export function typeEffectiveness(
+  attacker: string | null | undefined,
+  defender: string | null | undefined
+): number {
+  const a = (attacker ?? "").toUpperCase();
+  const d = (defender ?? "").toUpperCase();
+  if (!a || !d) return 1;
+  return LOCAL_TYPE_CHART[a]?.[d] ?? 1;
+}
+
+export interface EffectivenessInfo {
+  multiplier: number;
+  label: string; // "Super effective!" | "Not very effective" | ""
+  color: string; // CSS var
+}
+
+/** Label + color for a skill's type vs the lead enemy's type. */
+export function effectivenessInfo(
+  attacker: string | null | undefined,
+  defender: string | null | undefined
+): EffectivenessInfo {
+  const multiplier = typeEffectiveness(attacker, defender);
+  if (multiplier > 1) return { multiplier, label: "Super effective!", color: "var(--win)" };
+  if (multiplier < 1) return { multiplier, label: "Not very effective", color: "var(--danger)" };
+  return { multiplier, label: "", color: "var(--muted)" };
+}

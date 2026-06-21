@@ -16,7 +16,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { components } from "@debate/shared/types";
 import { useGame } from "../state/store";
-import { parseSkills, typeColor, type ParsedSkill } from "../lib/skills";
+import {
+  parseSkills,
+  typeColor,
+  skillTooltip,
+  effectivenessInfo,
+  type ParsedSkill,
+} from "../lib/skills";
 
 // Argue Copilot contract (POST /api/encounters/{eid}/assist). Sourced from the
 // generated OpenAPI schema so the request/response stay in lockstep with the API.
@@ -66,20 +72,34 @@ function HpBar({ hp, max_hp }: { hp: number; max_hp: number }) {
 function CombatantCard({
   c,
   isLead,
+  isActive,
   floatDmg,
   floatKey,
 }: {
   c: CombatantState;
   isLead: boolean;
+  isActive?: boolean;
   floatDmg: number | null;
   floatKey?: number | string;
 }) {
   const sideColor = c.role === "party" ? "var(--party)" : "var(--enemy)";
   return (
     <div
-      className="pixel-panel p-2 min-w-[150px] flex-1 relative"
-      style={{ borderColor: sideColor }}
+      className="pixel-panel p-2 min-w-[150px] flex-1 relative transition-shadow"
+      style={{
+        borderColor: sideColor,
+        boxShadow: isActive ? `0 0 0 2px ${sideColor}, 3px 3px 0 #000` : undefined,
+        opacity: isActive === false ? 0.78 : 1,
+      }}
     >
+      {isActive && (
+        <div
+          className="absolute -top-2 left-1 font-hud text-[8px] px-1"
+          style={{ background: sideColor, color: "#000" }}
+        >
+          ACTIVE
+        </div>
+      )}
       {floatDmg != null && floatDmg > 0 && (
         <div
           key={`dmg-${floatKey ?? 0}`}
@@ -180,8 +200,21 @@ function UtteranceBubble({
 // Verdict strike — gold score punches in
 // ---------------------------------------------------------------------------
 
+function SubScore({ label, value }: { label: string; value: number }) {
+  return (
+    <span className="font-hud text-[9px] inline-flex items-center gap-1">
+      <span style={{ color: "var(--muted)" }}>{label}</span>
+      <span style={{ color: "var(--ink)" }}>{Math.round(value)}</span>
+    </span>
+  );
+}
+
 function VerdictBadge({ v, fresh }: { v: JudgeVerdict; fresh: boolean }) {
   const positive = v.score >= 50;
+  // Prefer the punchy one-liner (`why`) as the headline; `rationale` is the
+  // fuller explanation shown beneath it.
+  const headline = v.why?.trim();
+  const detail = v.rationale?.trim();
   return (
     <div
       className="pixel-inset p-2"
@@ -195,12 +228,39 @@ function VerdictBadge({ v, fresh }: { v: JudgeVerdict; fresh: boolean }) {
           {Math.round(v.score)}
         </span>
         <span className="font-hud text-[9px]" style={{ color: "var(--muted)" }}>
-          T{v.turn} · -{v.damage} HP
+          T{v.turn}
+        </span>
+        <span
+          className="font-hud text-[9px] ml-auto"
+          style={{ color: v.damage > 0 ? "var(--danger)" : "var(--muted)" }}
+        >
+          -{v.damage} HP
         </span>
       </div>
-      <p className="font-body text-[11px] mt-1 italic" style={{ color: "var(--muted)" }}>
-        {v.rationale}
-      </p>
+
+      {/* Logic / persuasion sub-scores (optional additive judge fields). */}
+      {(typeof v.logic === "number" || typeof v.persuasion === "number") && (
+        <div className="flex gap-3 mt-1">
+          {typeof v.logic === "number" && <SubScore label="LOGIC" value={v.logic} />}
+          {typeof v.persuasion === "number" && (
+            <SubScore label="PERSUASION" value={v.persuasion} />
+          )}
+        </div>
+      )}
+
+      {headline && (
+        <p className="font-body text-[11px] mt-1" style={{ color: "var(--ink)" }}>
+          {headline}
+        </p>
+      )}
+      {detail && (
+        <p
+          className="font-body text-[11px] mt-1 italic"
+          style={{ color: "var(--muted)" }}
+        >
+          {detail}
+        </p>
+      )}
     </div>
   );
 }
@@ -210,9 +270,18 @@ function VerdictBadge({ v, fresh }: { v: JudgeVerdict; fresh: boolean }) {
 // ---------------------------------------------------------------------------
 
 export function BattleDebateView() {
-  const { activeEncounterId, runId, setEncounter, setYouScores } = useGame();
-  const { status, encounter, transcript, verdicts, capturableIds, drive, argue } =
-    useEncounterStream(activeEncounterId);
+  const { activeEncounterId, runId, topic: runTopic, setEncounter, setYouScores } = useGame();
+  const {
+    status,
+    encounter,
+    transcript,
+    verdicts,
+    capturableIds,
+    running,
+    runningTurn,
+    drive,
+    argue,
+  } = useEncounterStream(activeEncounterId);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -243,6 +312,13 @@ export function BattleDebateView() {
   const leadParty = useMemo(() => {
     const party = combatants.filter((c) => c.role === "party");
     return party.length ? party.slice().sort((a, b) => b.max_hp - a.max_hp)[0] : null;
+  }, [combatants]);
+
+  // Lead enemy (first living enemy, else first enemy) — used as the defender for
+  // skill type-effectiveness ("super effective" vs the current opponent).
+  const leadEnemy = useMemo(() => {
+    const enemies = combatants.filter((c) => c.role === "enemy");
+    return enemies.find((c) => c.hp > 0) ?? enemies[0] ?? null;
   }, [combatants]);
 
   // Fetch the player's party once to source the lead monster's skills.
@@ -306,6 +382,19 @@ export function BattleDebateView() {
   const isOver = phase === "won" || phase === "lost";
   const canArgue = phase === "debating" || phase === "intro" || phase === "capturable";
 
+  // Active-turn indicator. While a round is running, infer who is "speaking"
+  // from the newest transcript line; otherwise it's the player's move.
+  const lastActorRole = transcript.length
+    ? transcript[transcript.length - 1].actor_role
+    : null;
+  const turnIndicator: { label: string; color: string } = isOver
+    ? { label: phase === "won" ? "Victory" : "Defeat", color: phase === "won" ? "var(--win)" : "var(--danger)" }
+    : running
+      ? lastActorRole === "party"
+        ? { label: "Enemy arguing…", color: "var(--enemy)" }
+        : { label: "Debating…", color: "var(--accent)" }
+      : { label: "Your turn", color: "var(--party)" };
+
   // SFX: win/lose jingle once when the battle ends.
   useEffect(() => {
     if (playedEndSfx.current) return;
@@ -320,7 +409,7 @@ export function BattleDebateView() {
 
   function submitArgument() {
     const text = argText.trim();
-    if (!text || busy || isOver) return;
+    if (!text || busy || isOver || running) return;
     setActionError(null);
     sfxSubmit();
     argue(text, selectedSkill);
@@ -424,10 +513,26 @@ export function BattleDebateView() {
         />
       )}
 
-      {/* Header */}
+      {/* Header — shows the actual BATTLE (encounter) topic, which can differ
+          from the run topic; falls back to the run topic only while loading. */}
       <div className="flex items-center justify-between px-4 py-2" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
-        <div className="font-hud text-xs truncate">{encounter?.topic ?? "Loading…"}</div>
+        <div className="min-w-0">
+          <div className="font-hud text-[8px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
+            Debate topic
+          </div>
+          <div className="font-hud text-xs truncate" title={encounter?.topic ?? runTopic}>
+            {encounter?.topic || runTopic || "Loading…"}
+          </div>
+        </div>
         <div className="flex items-center gap-3 font-hud text-[10px]">
+          {/* Active-turn indicator */}
+          <span
+            className="px-1.5 py-0.5 inline-flex items-center gap-1"
+            style={{ border: `1px solid ${turnIndicator.color}`, color: turnIndicator.color }}
+          >
+            {running && <span className="caret-blink">●</span>}
+            {turnIndicator.label}
+          </span>
           <span style={{ color: status === "open" ? "var(--win)" : status === "connecting" ? "var(--warn)" : "var(--danger)" }}>
             ● {status}
           </span>
@@ -449,6 +554,18 @@ export function BattleDebateView() {
         </div>
       </div>
 
+      {/* In-progress banner: clear feedback while a round/assist streams so the
+          user is never left staring at nothing for 30-120s. */}
+      {running && !isOver && (
+        <div
+          className="flex items-center gap-2 px-4 py-1.5 font-hud text-[11px]"
+          style={{ background: "rgba(255,255,255,0.04)", color: "var(--accent)", borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+        >
+          <span className="caret-blink">▋</span>
+          Debating…{runningTurn != null ? ` (turn ${runningTurn})` : ""} — the judge and your opponent are thinking, this can take a moment.
+        </div>
+      )}
+
       {/* Combatant HP */}
       <div className="flex gap-2 p-3 flex-wrap" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
         {combatants.length === 0 ? (
@@ -456,15 +573,25 @@ export function BattleDebateView() {
             Awaiting combatant data…
           </div>
         ) : (
-          combatants.map((c) => (
-            <CombatantCard
-              key={c.monster_id}
-              c={c}
-              isLead={c.monster_id === leadParty?.monster_id}
-              floatDmg={floatByTarget[c.monster_id] ?? null}
-              floatKey={lastVerdict?.turn}
-            />
-          ))
+          combatants.map((c) => {
+            // Active combatant: the lead party on the player's turn, the lead
+            // enemy while the opponent is arguing. No highlight once over.
+            const activeId = isOver
+              ? null
+              : turnIndicator.label === "Enemy arguing…"
+                ? leadEnemy?.monster_id
+                : leadParty?.monster_id;
+            return (
+              <CombatantCard
+                key={c.monster_id}
+                c={c}
+                isLead={c.monster_id === leadParty?.monster_id}
+                isActive={activeId != null ? c.monster_id === activeId : undefined}
+                floatDmg={floatByTarget[c.monster_id] ?? null}
+                floatKey={lastVerdict?.turn}
+              />
+            );
+          })
         )}
       </div>
 
@@ -517,25 +644,58 @@ export function BattleDebateView() {
       {canArgue && !isOver && (
         <div className="px-3 py-2 space-y-2" style={{ borderTop: "2px solid rgba(232,230,216,0.12)" }}>
           {skills.length > 0 && (
-            <div className="flex gap-1.5 flex-wrap">
-              {skills.map((s) => {
-                const active = selectedSkill === s.id;
+            <div className="space-y-1">
+              <div className="flex gap-1.5 flex-wrap">
+                {skills.map((s) => {
+                  const active = selectedSkill === s.id;
+                  const eff = effectivenessInfo(s.type, leadEnemy?.type);
+                  const tip = `${skillTooltip(s)}${
+                    eff.label ? ` vs ${leadEnemy?.type ?? "enemy"}: ${eff.label} (×${eff.multiplier})` : ""
+                  }`;
+                  return (
+                    <button
+                      key={s.id}
+                      title={tip}
+                      onClick={() => setSelectedSkill(active ? null : s.id)}
+                      disabled={running || isOver}
+                      className="pixel-btn text-[10px] py-1 relative"
+                      style={
+                        active
+                          ? { background: typeColor(s.type), color: "#000", borderColor: "#000" }
+                          : { borderColor: typeColor(s.type) }
+                      }
+                    >
+                      {s.name} ×{s.power}
+                      {eff.label && (
+                        <span
+                          className="ml-1 font-hud text-[8px]"
+                          style={{ color: active ? "#000" : eff.color }}
+                        >
+                          {eff.multiplier > 1 ? "▲" : "▼"}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Type-effectiveness callout for the currently selected skill. */}
+              {selectedSkill && leadEnemy && (() => {
+                const sel = skills.find((s) => s.id === selectedSkill);
+                if (!sel) return null;
+                const eff = effectivenessInfo(sel.type, leadEnemy.type);
+                if (!eff.label) {
+                  return (
+                    <div className="font-hud text-[9px] px-1" style={{ color: "var(--muted)" }}>
+                      {sel.type || "—"} vs {leadEnemy.type}: Neutral (×1)
+                    </div>
+                  );
+                }
                 return (
-                  <button
-                    key={s.id}
-                    title={s.description}
-                    onClick={() => setSelectedSkill(active ? null : s.id)}
-                    className="pixel-btn text-[10px] py-1"
-                    style={
-                      active
-                        ? { background: typeColor(s.type), color: "#000", borderColor: "#000" }
-                        : { borderColor: typeColor(s.type) }
-                    }
-                  >
-                    {s.name} ×{s.power}
-                  </button>
+                  <div className="font-hud text-[9px] px-1" style={{ color: eff.color }}>
+                    {sel.type} vs {leadEnemy.type}: {eff.label} (×{eff.multiplier})
+                  </div>
                 );
-              })}
+              })()}
             </div>
           )}
           <div className="flex gap-2 items-end">
@@ -552,7 +712,7 @@ export function BattleDebateView() {
             <div className="flex flex-col gap-1.5">
               <button
                 className="pixel-btn text-[10px]"
-                disabled={!canArgue || coaching || isOver}
+                disabled={!canArgue || coaching || isOver || running}
                 onClick={improveArgument}
                 title="Ask your coach to improve this argument"
               >
@@ -560,10 +720,11 @@ export function BattleDebateView() {
               </button>
               <button
                 className="pixel-btn pixel-btn--party"
-                disabled={!argText.trim() || isOver}
+                disabled={!argText.trim() || isOver || running}
                 onClick={submitArgument}
+                title={running ? "Wait for the current round to finish" : "Submit your argument"}
               >
-                Argue
+                {running ? "Debating…" : "Argue"}
               </button>
             </div>
           </div>
@@ -654,10 +815,20 @@ export function BattleDebateView() {
           {sfxOn ? "🔊" : "🔇"}
         </button>
 
-        <button className="pixel-btn" disabled={isOver} onClick={() => drive(1)}>
-          Next Round
+        <button
+          className="pixel-btn"
+          disabled={isOver || running}
+          onClick={() => drive(1)}
+          title={running ? "A round is already running" : "Run one autonomous round"}
+        >
+          {running ? "Debating…" : "Next Round"}
         </button>
-        <button className="pixel-btn" disabled={isOver} onClick={() => drive(3)}>
+        <button
+          className="pixel-btn"
+          disabled={isOver || running}
+          onClick={() => drive(3)}
+          title={running ? "A round is already running" : "Run three autonomous rounds"}
+        >
           Auto (3)
         </button>
         {isCapturable && (

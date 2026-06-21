@@ -10,6 +10,7 @@ reused by the debate router.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -344,6 +345,15 @@ async def create_encounter(
 
     await seed_redis(eid, req.run_id, topic, combatants)
     await set_meta(eid, phase="debating")
+
+    # Latency fix: warm the local model(s) so the first real round isn't a cold start.
+    try:
+        from app.debate.orchestrator import prewarm_models
+
+        asyncio.create_task(prewarm_models())
+    except Exception:  # noqa: BLE001 — prewarm is best-effort, never block encounter creation
+        pass
+
     return await build_encounter_state(eid)
 
 

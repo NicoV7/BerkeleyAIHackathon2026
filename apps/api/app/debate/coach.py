@@ -90,9 +90,13 @@ async def coach_argument(
     # --- Generate (defensively) ---
     raw = ""
     try:
+        from app.config import settings
         from app.gateway.gateway import gateway
 
-        model = getattr(coach, "model", None) if coach is not None else None
+        # Fast path: prefer the coach's own pinned model, else the fast actor
+        # model, and cap the call at the short per-call timeout so /assist returns
+        # in seconds (with a graceful templated fallback) instead of hanging.
+        model = (getattr(coach, "model", None) if coach is not None else None) or settings.actor_model
         raw = await gateway.complete(
             [
                 {"role": "system", "content": system_text},
@@ -101,6 +105,7 @@ async def coach_argument(
             model=model,
             temperature=_COACH_TEMPERATURE,
             max_tokens=_COACH_MAX_TOKENS,
+            timeout=float(getattr(settings, "llm_call_timeout_s", 20) or 20),
         )
         raw = (raw or "").strip()
     except Exception:  # noqa: BLE001

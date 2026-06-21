@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.config import settings
 from app.debate.damage import compute_damage
 from app.debate.judge import score_round
 from app.gateway.gateway import gateway
@@ -50,6 +51,96 @@ except Exception:  # noqa: BLE001
 
 CAPTURABLE_HP_FRACTION = 0.25
 TRANSCRIPT_WINDOW = 16  # last N utterances injected into actor context
+
+
+# ---- Latency fast-path ------------------------------------------------------
+
+
+def _actor_model(actor: "Combatant") -> str:
+    """Model id for an actor's turn.
+
+    Prefer the combatant's own pinned model (e.g. a trained genome's), else the
+    fast actor model from config. This keeps debater turns on a SMALL, fast model
+    so a round completes in seconds instead of timing out at the old 120s ceiling.
+    """
+    return actor.model or settings.actor_model
+
+
+def _actor_timeout() -> float:
+    """Short per-call budget for a single actor turn (seconds)."""
+    return float(getattr(settings, "llm_call_timeout_s", 20) or 20)
+
+
+# Real, side-taking fallback arguments. When the model fails/stalls we still want
+# the transcript to READ like a debate, not the old "(NAME presses the point on
+# TOPIC.)" filler. Each template makes a concrete claim + reason and takes a
+# stance. We vary the template by the actor's debate TYPE so consecutive
+# fallbacks aren't identical, and rotate within a type by turn count.
+_FALLBACK_TEMPLATES: dict[str, list[str]] = {
+    "LOGOS": [
+        "On {topic}, the logic is one-sided: the evidence points my way, and no "
+        "counterargument has survived scrutiny. Follow the reasoning and my side wins.",
+        "{topic} comes down to consequences, and the data favors my position — the "
+        "costs of the other view are concrete while its benefits are hypothetical.",
+    ],
+    "PATHOS": [
+        "Think about who {topic} actually affects: real people bear the cost of the "
+        "opposing view, and that is exactly why my side is the right one to back.",
+        "On {topic}, I refuse to trade real human stakes for a tidy abstraction — the "
+        "human cost of the other position is the whole reason I stand where I do.",
+    ],
+    "ETHOS": [
+        "On {topic}, credibility matters: the people who actually do this work back my "
+        "position, while the opposing case leans on claims it cannot stand behind.",
+        "I argue {topic} from principle, not convenience — my side is the one that holds "
+        "up under its own standards, and the opposition's does not.",
+    ],
+}
+_FALLBACK_DEFAULT = [
+    "My position on {topic} is the defensible one: it carries the stronger reasons "
+    "and the opposing case collapses the moment you press it for specifics.",
+    "On {topic}, I take the side that survives the hardest question — concede nothing "
+    "without reclaiming it, and the burden stays on my opponent to answer.",
+]
+
+
+async def prewarm_models(models: list[str] | None = None) -> None:
+    """Fire tiny throwaway completions so the first real turn isn't cold.
+
+    Low-risk and best-effort: bounded by the short per-call timeout, every error
+    is swallowed, and it does nothing when ``settings.prewarm_enabled`` is off.
+    Called on encounter creation so the model is loaded before the battle starts.
+    """
+    if not getattr(settings, "prewarm_enabled", False):
+        return
+    targets = models or [settings.actor_model, settings.judge_model_fast]
+    seen: set[str] = set()
+    for m in targets:
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        try:
+            await gateway.complete(
+                [{"role": "user", "content": "ok"}],
+                model=m,
+                max_tokens=1,
+                timeout=_actor_timeout(),
+            )
+        except Exception:  # noqa: BLE001 — prewarm is purely best-effort
+            pass
+
+
+def _fallback_argument(actor: "Combatant", topic: str, turn_seed: int = 0) -> str:
+    """A REAL short argument (1-2 sentences, takes a side) for model failure.
+
+    Varies by actor type + a turn seed so it doesn't read identically every time.
+    This is the graceful-degradation text the live/headless/human paths fall back
+    to — it must look like a debate move, never the old "presses the point" stub.
+    """
+    topic_str = topic or "this question"
+    pool = _FALLBACK_TEMPLATES.get((actor.type or "").upper(), _FALLBACK_DEFAULT)
+    idx = abs(hash((actor.monster_id, turn_seed))) % len(pool)
+    return pool[idx].format(topic=topic_str)
 
 
 # ---- In-memory combatant model (used by both paths) -------------------------
@@ -241,13 +332,17 @@ async def _generate_utterance(
     messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
     try:
         text = await gateway.complete(
-            messages, model=actor.model, temperature=0.8, max_tokens=96
+            messages,
+            model=_actor_model(actor),
+            temperature=0.8,
+            max_tokens=96,
+            timeout=_actor_timeout(),
         )
         text = (text or "").strip()
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — stalled/failed model: fall back to real text
         text = ""
     if not text:
-        text = f"({actor.name} presses the point on {topic}.)"
+        text = _fallback_argument(actor, topic, turn_seed=len(transcript))
     return _sanitize(text)
 
 
@@ -258,10 +353,11 @@ def _sanitize(text: str) -> str:
 
 
 # First-token wall-clock guard for the live streaming path. On a contended CPU
-# gemma3 the dominant demo risk is a stalled model that never emits a first
-# token; we'd rather fail this one utterance (and fall back to a templated line)
-# than hang the whole WS round. Tuned for cold local models.
-STREAM_FIRST_TOKEN_TIMEOUT_S = 18.0
+# the dominant risk is a stalled model that never emits a first token; we'd rather
+# fail this one utterance (and fall back to a REAL templated argument) than hang
+# the whole WS round. Bounded by the configured per-call timeout so it can't sit
+# anywhere near the old 120s ceiling.
+STREAM_FIRST_TOKEN_TIMEOUT_S = float(getattr(settings, "llm_call_timeout_s", 18) or 18)
 
 
 async def _stream_utterance(
@@ -292,7 +388,7 @@ async def _stream_utterance(
     parts: list[str] = []
     try:
         agen = gateway.stream(
-            messages, model=actor.model, temperature=0.8, max_tokens=96
+            messages, model=_actor_model(actor), temperature=0.8, max_tokens=96
         )
         first = True
         while True:
@@ -325,7 +421,7 @@ async def _stream_utterance(
 
     full = "".join(parts).strip()
     if not full:
-        full = f"({actor.name} presses the point on {topic}.)"
+        full = _fallback_argument(actor, topic, turn_seed=len(transcript))
     full = _sanitize(full)
     yield {"kind": "done", "text": full}
 
