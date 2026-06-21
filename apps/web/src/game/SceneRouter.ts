@@ -2,9 +2,9 @@
  * SceneRouter — overworld <-> interior scene transitions (Track B, Wave 2).
  *
  * Step on an enterable POI (town/den) → fetch/generate its interior
- * WorldSpecLite from the server → start an interior scene, remembering the
- * overworld return tile → walk to the interior exit → return to the overworld at
- * the POI tile you entered from.
+ * WorldSpecLite from the server → launch an interior scene over the paused
+ * overworld, remembering the return tile → walk to the interior exit → stop the
+ * interior and resume the cached overworld at the POI tile you entered from.
  *
  * Interior fetch:
  *   GET /api/runs/{runId}/interior/{poiId}  (poiId = `${kind}:${x}:${y}`)
@@ -72,7 +72,7 @@ export interface InteriorSpec {
 
 export interface SceneRouterConfig {
   runId: string;
-  /** The Phaser scene manager (game.scene), used to start/stop scenes. */
+  /** The owning overworld ScenePlugin, used to launch/pause/resume scenes. */
   scenePlugin: Phaser.Scenes.ScenePlugin;
   /**
    * Optional hook invoked with the fetched interior just before the interior
@@ -146,7 +146,7 @@ export class SceneRouter {
   }
 
   /**
-   * Enter a POI's interior: fetch the interior WorldSpecLite, then start the
+   * Enter a POI's interior: fetch the interior WorldSpecLite, then launch the
    * interior scene (if one is registered) seeded with that spec + this router so
    * the interior can call exit(). Remembers the POI tile as the return point.
    *
@@ -168,7 +168,7 @@ export class SceneRouter {
       const interior = await this.fetchInterior(poi);
       if (!interior) return; // fetch failed — stay in the overworld.
       this.cfg.onEnterInterior?.(poi, interior);
-      this.cfg.scenePlugin.start(sceneKey, {
+      this.cfg.scenePlugin.launch(sceneKey, {
         runId: this.cfg.runId,
         interior,
         router: this,
@@ -178,6 +178,7 @@ export class SceneRouter {
         onNpcTalk: this.cfg.onNpcTalk,
         onEncounter: this.cfg.onEncounter,
       });
+      this.cfg.scenePlugin.pause();
     } catch (e) {
       console.error("SceneRouter.enter failed:", e);
       this.returnTile = null;
@@ -208,14 +209,22 @@ export class SceneRouter {
 
   /**
    * Exit the current interior back to the overworld at the tile we entered from,
-   * restarting OverworldScene seeded with the return tile so the player reappears
-   * on the POI. No-ops if we never entered an interior.
+   * stopping the active interior and resuming the paused overworld so its rendered
+   * chunk cache remains intact. No-ops if we never entered an interior.
    */
-  exit(): void {
+  exit(activeScenePlugin?: Phaser.Scenes.ScenePlugin): void {
     if (!this.returnTile) return;
     const tile = this.returnTile;
     this.returnTile = null;
     this.cfg.onExitInterior?.(tile);
+
+    if (activeScenePlugin) {
+      this.cfg.scenePlugin.resume(OVERWORLD_SCENE_KEY, { returnTile: tile });
+      activeScenePlugin.stop();
+      return;
+    }
+
+    // Defensive fallback for any direct caller outside an active interior scene.
     this.cfg.scenePlugin.start(OVERWORLD_SCENE_KEY, {
       ...(this.cfg.overworldSceneData ?? {}),
       runId: this.cfg.runId,

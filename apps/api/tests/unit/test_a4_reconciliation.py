@@ -81,6 +81,18 @@ async def _drain(agen) -> list[orch.Event]:
     return [ev async for ev in agen]
 
 
+def _fake_candidates(text: str = "Counterpoint.", ok: bool = True):
+    """Fake `run_candidates`: the enemy turn now generates its full rebuttal in
+    ONE non-streaming candidate-chain call (no token deltas). Returns `text`
+    with no network so these reconciliation tests stay hermetic."""
+    from app.gateway.candidates import CandidateResult
+
+    async def fake_run_candidates(specs, messages, **k):
+        return CandidateResult(text=text, ok=ok and bool(text), attempts=1)
+
+    return fake_run_candidates
+
+
 # --------------------------------------------------------------------------- #
 # 1. EVENT ORDER — utterance -> estimate -> verdict -> hp
 # --------------------------------------------------------------------------- #
@@ -89,21 +101,13 @@ async def _drain(agen) -> list[orch.Event]:
 async def test_event_order_player_utterance_estimate_verdict_hp(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    async def fake_complete(messages, model=None, **k):
-        return "Counterpoint answers the player. The burden still stands."
-
     async def fake_score(topic, items, fallback_model=None, **k):
         return [JudgeScore(actor_id=it["actor_id"], score=60.0, rationale="ok") for it in items]
 
-    # Round 1 still generates a rebuttal to the player's submitted line. Fake the
-    # opening cache seam so prompt context is deterministic and never touches Redis.
-    import app.debate.materialize as mz
-
-    async def fake_opening(topic, enemy_model=None):
-        return "I argue AGAINST topic: it collapses under one concrete question.", True
-
-    monkeypatch.setattr(mz, "get_or_create_opening", fake_opening)
-    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+    # Round 1 (start_turn=0): the enemy rebuts the player's just-typed argument
+    # via the candidate chain (no canned opening). Fake it so the test never
+    # touches a real gateway/redis; the event-order invariant is what we assert.
+    monkeypatch.setattr("app.gateway.candidates.run_candidates", _fake_candidates())
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     player = _combatant("party", "p1", "Sage")
@@ -147,9 +151,6 @@ async def test_stalled_judge_settles_from_heuristic_within_deadline(
     """A stalled score_round must NOT dangle the round: the human-judge deadline
     fires and HP/verdict settle from the heuristic well inside the stall time."""
 
-    async def fake_complete(messages, model=None, **k):
-        return "Counterpoint answers the player. The burden still stands."
-
     # score_round hangs far longer than the deadline (simulates serial Ollama
     # candidate timeouts on a stalled single slot).
     async def hanging_score(topic, items, fallback_model=None, **k):
@@ -158,7 +159,7 @@ async def test_stalled_judge_settles_from_heuristic_within_deadline(
 
     # Tight deadline so the test is fast and deterministic.
     monkeypatch.setattr(orch, "_human_judge_deadline", lambda: 0.05)
-    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+    monkeypatch.setattr("app.gateway.candidates.run_candidates", _fake_candidates())
     monkeypatch.setattr(orch, "score_round", hanging_score)
 
     player = _combatant("party", "p1", "Sage")
@@ -166,7 +167,7 @@ async def test_stalled_judge_settles_from_heuristic_within_deadline(
     player_text = "Animals deserve rights because they demonstrably feel pain."
 
     started = time.monotonic()
-    # start_turn>0 -> generated rebuttal path, so the judge-deadline is what gates
+    # The enemy rebuts via the candidate chain; the judge-deadline is what gates
     # settlement here.
     events = await _drain(
         orch.run_human_round_stream(
@@ -205,15 +206,12 @@ async def test_estimate_score_matches_committed_score_on_timeout(
     the SAME heuristic score for the player — the estimate is settled, not replaced
     by a different number, so the UI animation reconciles cleanly."""
 
-    async def fake_complete(messages, model=None, **k):
-        return "Nope. The player still has not met the burden."
-
     async def hanging_score(topic, items, fallback_model=None, **k):
         await asyncio.sleep(30)
         return []
 
     monkeypatch.setattr(orch, "_human_judge_deadline", lambda: 0.05)
-    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+    monkeypatch.setattr("app.gateway.candidates.run_candidates", _fake_candidates("Nope."))
     monkeypatch.setattr(orch, "score_round", hanging_score)
 
     player = _combatant("party", "p1", "Sage")

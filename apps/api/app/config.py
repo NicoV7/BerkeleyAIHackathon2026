@@ -91,8 +91,24 @@ class Settings(BaseSettings):
     judge_model_fast: str = "pareto-judge"
     llm_call_timeout_s: int = 28
     first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
-    actor_max_tokens: int = 64
+    actor_max_tokens: int = 96  # ~70 words: room to name the opponent's point AND rebut it
     battle_damage_multiplier: float = 1.0
+
+    # --- Enemy NPC rebuttal model (engagement fix) ---------------------------
+    # The enemy ALWAYS rebuts the player's just-typed argument (no canned
+    # opening). We route that turn to a sharp, fast hosted model so the rebuttal
+    # actually engages the player's specific point, then fall back through free
+    # hosted providers and finally the local model so keyless/offline dev still
+    # works. The chain is tried in order (first non-empty wins) via
+    # app.gateway.candidates.run_candidates; reaching gemma3:1b means no hosted
+    # key was present. The first entry (Claude Haiku 4.5) is the primary:
+    # fastest/cheapest Claude, ideal for a 1-2 sentence real-time turn.
+    enemy_actor_candidates: str = (
+        "anthropic/claude-haiku-4-5,"
+        "groq/llama-3.1-8b-instant,"
+        "cerebras/llama-3.3-70b,"
+        "ollama/gemma3:1b"
+    )
     prewarm_enabled: bool = True
     # WS-4 warm-path latency. Once the actor model is confirmed WARM (a prewarm
     # ping at encounter create succeeded, so the model is resident in Ollama and
@@ -102,15 +118,10 @@ class Settings(BaseSettings):
     # hang: a truly stalled model is still bounded by `first_token_timeout_s` until
     # it's marked warm. Set to first_token_timeout_s to disable the widening.
     first_token_timeout_warm_s: int = 22
-    # Human-round enemy rebuttals need better contextual reasoning than generic
-    # openers, but they still must not stall the battle UI. Route them through the
-    # actor Pareto chain (whose default order favors stronger hosted candidates)
-    # and let that model finish one compact response inside a 3-5s budget before
-    # emitting it. This avoids exposing malformed partial stream chunks while
-    # keeping the turn responsive. The first-token knob is still used by normal
-    # streaming paths and as a fallback guard for action-specific overrides.
-    enemy_rebuttal_model: str = "pareto-actor"
-    enemy_rebuttal_first_token_timeout_s: int = 10
+    # Human-round enemy rebuttals use enemy_actor_candidates above, but with a
+    # tighter completion budget than headless actor turns. Give the candidate
+    # chain enough room for a clean 1-2 sentence answer without drifting beyond
+    # the 3-5s playability target.
     enemy_rebuttal_completion_timeout_s: int = 5
     enemy_rebuttal_max_tokens: int = 96
     # Ollama keep_alive sent on the encounter-create prewarm so the actor model
