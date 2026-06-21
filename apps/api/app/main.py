@@ -36,6 +36,8 @@ OPTIONAL_ROUTERS = [
     "gacha",
     # Economy wave (WS-1): coins, items, inventory, shop.
     "economy",
+    # Onboarding wave (WS-2): empty-start first-agent grant + first quest.
+    "onboarding",
 ]
 
 
