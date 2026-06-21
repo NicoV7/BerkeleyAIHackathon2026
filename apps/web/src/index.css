@@ -86,6 +86,22 @@ select {
 .iris-wipe--opening {
   animation: pixel-fade-out 0.68s steps(8, end) forwards;
 }
+/* Damage numeral flies from judge panel to target HP corner */
+@keyframes dmg-fly-to-corner {
+  0%   { transform: translate(-50%, -50%) scale(1.4); opacity: 1; }
+  65%  { opacity: 0.9; }
+  100% { transform: translate(calc(-50% + var(--fly-dx)), calc(-50% + var(--fly-dy))) scale(0.55); opacity: 0; }
+}
+
+@keyframes overlay-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes overlay-pop {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
 @keyframes pixel-fade-in {
   from {
     opacity: 0;

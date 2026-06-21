@@ -37,9 +37,14 @@ export default function OverworldHud({
 }) {
   return (
     <>
-      <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col gap-2">
-        <Minimap map={map} player={player} />
+      <div
+        className="pointer-events-none absolute top-3 left-3 z-10"
+        style={{ width: "min(33vw, 360px)" }}
+      >
         <StatBars runId={runId} />
+      </div>
+      <div className="pointer-events-none absolute right-3 top-3 z-10">
+        <Minimap map={map} player={player} />
       </div>
       <WasdOverlay />
     </>
@@ -48,7 +53,7 @@ export default function OverworldHud({
 
 /* ----------------------------- Minimap ----------------------------- */
 
-const MINIMAP_PX = 150;
+const MINIMAP_PX = 180;
 
 function Minimap({
   map,
@@ -93,8 +98,8 @@ function Minimap({
   }, [map, player]);
 
   return (
-    <div className="pixel-panel p-1" style={{ width: MINIMAP_PX + 8 }}>
-      <div className="font-hud text-[8px] mb-1 px-1" style={{ color: "var(--muted)" }}>
+    <div className="pixel-panel p-2" style={{ width: MINIMAP_PX + 16 }}>
+      <div className="font-hud text-[8px] mb-1.5 px-1" style={{ color: "var(--muted)" }}>
         MAP
       </div>
       <div
@@ -143,11 +148,7 @@ function StatBars({ runId }: { runId: string }) {
   const xpPct = mon ? Math.min(100, Math.round((mon.xp / xpNeeded) * 100)) : 0;
 
   return (
-    <div className="pixel-panel p-2 space-y-1.5" style={{ width: MINIMAP_PX + 8 }}>
-      <div className="font-hud text-[8px] truncate" style={{ color: "var(--ink)" }}>
-        {mon ? mon.name : "—"}
-        {mon ? <span style={{ color: "var(--muted)" }}> · Lv{mon.level}</span> : null}
-      </div>
+    <div className="flex flex-col gap-2" style={{ filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.8))" }}>
       <Bar
         label="HP"
         pct={100}
@@ -176,17 +177,17 @@ function Bar({
   text: string;
 }) {
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="font-hud text-[8px] w-[14px]" style={{ color: "var(--muted)" }}>
+    <div className="flex items-center gap-3">
+      <span className="font-hud text-[11px] w-[22px] shrink-0" style={{ color: "rgba(232,230,216,0.7)", textShadow: "1px 1px 0 #000" }}>
         {label}
       </span>
       <div
-        className="pixel-inset relative h-3 flex-1 overflow-hidden"
-        style={{ border: "2px solid rgba(0,0,0,0.5)" }}
+        className="pixel-inset relative h-5 flex-1 overflow-hidden"
+        style={{ border: "2px solid rgba(0,0,0,0.6)" }}
       >
         <div className="h-full" style={{ width: `${pct}%`, background: color }} />
         <span
-          className="font-hud text-[7px] absolute inset-0 flex items-center justify-center"
+          className="font-hud text-[10px] absolute inset-0 flex items-center justify-center"
           style={{ color: "var(--ink)", textShadow: "1px 1px 0 #000" }}
         >
           {text}
@@ -232,9 +233,9 @@ function WasdOverlay() {
   }, []);
 
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-col items-center gap-1">
+    <div className="pointer-events-none fixed bottom-4 left-4 z-20 flex flex-col items-center gap-1.5">
       <Key label="W" active={!!held.up} />
-      <div className="flex gap-1">
+      <div className="flex gap-1.5">
         <Key label="A" active={!!held.left} />
         <Key label="S" active={!!held.down} />
         <Key label="D" active={!!held.right} />
@@ -246,7 +247,7 @@ function WasdOverlay() {
 function Key({ label, active }: { label: string; active: boolean }) {
   return (
     <div
-      className="font-hud flex h-7 w-7 items-center justify-center text-[10px]"
+      className="font-hud flex h-8 w-8 items-center justify-center text-[11px]"
       style={{
         border: "2px solid rgba(232,230,216,0.3)",
         background: active ? "var(--accent)" : "rgba(26,29,46,0.85)",
