@@ -197,6 +197,32 @@ class TurnResult(BaseModel):
     capturable_ids: list[str] = []
 
 
+# ---- Argue Copilot (player-first pivot: the monster COACHES the player's argument) ----
+
+
+class AssistRequest(BaseModel):
+    """The player's rough draft; the lead party monster (its trained genome) rewrites
+    it into a stronger argument against the current enemy on the live topic.
+
+    This is the core of the player-first loop: you argue, your monster makes your
+    argument better, and training your monster improves the help you get."""
+    draft: str = ""
+    skill_id: Optional[str] = None
+
+
+class AssistSuggestion(BaseModel):
+    improved: str  # the stronger version of the player's argument, ready to send
+    rationale: str = ""  # one-line "why this is stronger" coaching note
+    skill_id: Optional[str] = None  # suggested skill/rhetorical angle
+    angle: str = ""  # short label for the rhetorical strategy used
+
+
+class AssistResult(BaseModel):
+    encounter_id: str
+    coach_monster_id: Optional[str] = None  # the party monster acting as your coach
+    suggestions: list[AssistSuggestion] = []  # 1+ improved drafts to pick from
+
+
 class CaptureRequest(BaseModel):
     wild_id: str
 

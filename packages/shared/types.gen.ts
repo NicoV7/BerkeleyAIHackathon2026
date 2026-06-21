@@ -213,6 +213,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/encounters/{eid}/assist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assist
+         * @description ARGUE COPILOT (player-first pivot): the lead party monster COACHES the
+         *     player's drafted argument into a stronger one.
+         *
+         *     This does NOT advance the round — it only suggests. The player then sends the
+         *     improved text via the existing POST /{eid}/argue. The coach's quality is driven
+         *     by the monster's TRAINED genome, so training the monster improves the help.
+         *
+         *     404 if the encounter is missing. Wrapped in the same wall-clock guard as
+         *     /argue; on timeout or any failure the coach degrades gracefully rather than
+         *     500-ing.
+         */
+        post: operations["assist_api_encounters__eid__assist_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/encounters/{eid}/flee": {
         parameters: {
             query?: never;
@@ -528,6 +557,52 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AssistRequest
+         * @description The player's rough draft; the lead party monster (its trained genome) rewrites
+         *     it into a stronger argument against the current enemy on the live topic.
+         *
+         *     This is the core of the player-first loop: you argue, your monster makes your
+         *     argument better, and training your monster improves the help you get.
+         */
+        AssistRequest: {
+            /**
+             * Draft
+             * @default
+             */
+            draft: string;
+            /** Skill Id */
+            skill_id?: string | null;
+        };
+        /** AssistResult */
+        AssistResult: {
+            /** Encounter Id */
+            encounter_id: string;
+            /** Coach Monster Id */
+            coach_monster_id?: string | null;
+            /**
+             * Suggestions
+             * @default []
+             */
+            suggestions: components["schemas"]["AssistSuggestion"][];
+        };
+        /** AssistSuggestion */
+        AssistSuggestion: {
+            /** Improved */
+            improved: string;
+            /**
+             * Rationale
+             * @default
+             */
+            rationale: string;
+            /** Skill Id */
+            skill_id?: string | null;
+            /**
+             * Angle
+             * @default
+             */
+            angle: string;
+        };
         /** AutoRequest */
         AutoRequest: {
             /**
@@ -1521,6 +1596,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TurnResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assist_api_encounters__eid__assist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistResult"];
                 };
             };
             /** @description Validation Error */

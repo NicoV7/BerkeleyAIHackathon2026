@@ -29,7 +29,15 @@ from app.routers.encounter import (
     load_momentum,
     set_meta,
 )
-from app.schemas import AutoRequest, JudgeVerdict, PlayerArgueRequest, TurnResult, Utterance
+from app.schemas import (
+    AssistRequest,
+    AssistResult,
+    AutoRequest,
+    JudgeVerdict,
+    PlayerArgueRequest,
+    TurnResult,
+    Utterance,
+)
 
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
@@ -326,6 +334,41 @@ async def argue(
         new_verdicts=new_verdicts,
         capturable_ids=phase_event.get("capturable_ids", []),
     )
+
+
+@router.post("/{eid}/assist", response_model=AssistResult)
+async def assist(
+    eid: str, req: AssistRequest, session: AsyncSession = Depends(get_session)
+) -> AssistResult:
+    """ARGUE COPILOT (player-first pivot): the lead party monster COACHES the
+    player's drafted argument into a stronger one.
+
+    This does NOT advance the round — it only suggests. The player then sends the
+    improved text via the existing POST /{eid}/argue. The coach's quality is driven
+    by the monster's TRAINED genome, so training the monster improves the help.
+
+    404 if the encounter is missing. Wrapped in the same wall-clock guard as
+    /argue; on timeout or any failure the coach degrades gracefully rather than
+    500-ing.
+    """
+    await get_meta(eid)  # 404 if encounter missing
+    from app.debate.coach import coach_argument
+
+    try:
+        return await asyncio.wait_for(
+            coach_argument(session, eid, req.draft, req.skill_id),
+            timeout=ROUND_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        # The coach itself never raises; a timeout here means the model stalled.
+        # Degrade to a graceful fallback so the player is never blocked.
+        from app.debate.coach import _fallback_suggestion
+
+        return AssistResult(
+            encounter_id=eid,
+            coach_monster_id=None,
+            suggestions=[_fallback_suggestion(req.draft, "", req.skill_id)],
+        )
 
 
 @router.post("/{eid}/flee", response_model=TurnResult)
