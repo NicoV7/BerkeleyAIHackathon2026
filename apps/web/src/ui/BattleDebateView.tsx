@@ -34,6 +34,11 @@ import {
   setSfxEnabled,
 } from "../lib/sfx";
 import { ReasoningTrend, type TrendSeries } from "./ReasoningTrend";
+import { BattleLog } from "./battle/BattleLog";
+import { BattleIntroCard } from "./battle/BattleIntroCard";
+import { BattleStage } from "./battle/BattleStage";
+import { HPCorner } from "./battle/HPCorner";
+import { JudgePanel } from "./battle/JudgePanel";
 import { useIrisTransition } from "./fx/IrisWipe";
 import {
   CombatantState,
@@ -516,6 +521,7 @@ export function BattleDebateView() {
     skillEffects,
     statuses,
     intelPreview,
+    liveTokens,
     estimates,
     running,
     runningTurn,
@@ -533,11 +539,19 @@ export function BattleDebateView() {
   const [partyMembers, setPartyMembers] = useState<PartyMember[]>([]);
   const [activePartyId, setActivePartyId] = useState<string | null>(null);
   const [captureFlash, setCaptureFlash] = useState(false);
+  const [introDone, setIntroDone] = useState(false);
+  const [chosenStance, setChosenStance] = useState<DebateSide | null>(null);
 
   // Retro SFX (spec §7 stretch) — mute toggle + edge-detection refs.
   const [sfxOn, setSfxOn] = useState(true);
   const prevVerdictCount = useRef(0);
   const playedEndSfx = useRef(false);
+
+  useEffect(() => {
+    setIntroDone(false);
+    setChosenStance(null);
+    playedEndSfx.current = false;
+  }, [activeEncounterId]);
 
   const combatants: CombatantState[] = useMemo(
     () => encounter?.combatants ?? [],
@@ -661,10 +675,53 @@ export function BattleDebateView() {
   const liveNames: Record<string, string> = { judge: "Judge" };
   for (const c of combatants) liveNames[c.monster_id] = c.name;
 
+  const roleByActor = useMemo(() => {
+    const roles: Record<string, Utterance["actor_role"]> = { judge: "judge" };
+    for (const c of combatants) roles[c.monster_id] = c.role;
+    return roles;
+  }, [combatants]);
+
+  const displayTranscript = useMemo<Utterance[]>(() => {
+    const closedKeys = new Set(transcript.map((u) => `${u.turn}:${u.actor_id}`));
+    const liveLines = Object.values(liveTokens)
+      .filter((u) => u.text.trim() && !closedKeys.has(`${u.turn}:${u.actor_id}`))
+      .map<Utterance>((u) => ({
+        turn: u.turn,
+        actor_id: u.actor_id,
+        actor_role: u.actor_role ?? roleByActor[u.actor_id] ?? "enemy",
+        skill_used: null,
+        text: u.text,
+        ts: u.server_ts ?? 0,
+        server_ts: u.server_ts,
+        elapsed_ms: u.elapsed_ms,
+        reaction_state: u.reaction_state,
+      }));
+
+    return [...transcript, ...liveLines].sort(
+      (a, b) =>
+        a.turn - b.turn ||
+        (a.server_ts ?? a.ts ?? 0) - (b.server_ts ?? b.ts ?? 0)
+    );
+  }, [liveTokens, roleByActor, transcript]);
+
+  const latestPlayerUtterance = useMemo(
+    () => [...displayTranscript].reverse().find((u) => u.actor_role === "party") ?? null,
+    [displayTranscript]
+  );
+  const latestEnemyUtterance = useMemo(
+    () => [...displayTranscript].reverse().find((u) => u.actor_role === "enemy") ?? null,
+    [displayTranscript]
+  );
+  const latestEnemyLine = latestEnemyUtterance?.text ?? null;
+  const newestInTranscript = transcript[transcript.length - 1] ?? null;
+  const playerIsNewest = latestPlayerUtterance === newestInTranscript;
+  const enemyIsNewest = latestEnemyUtterance === newestInTranscript;
+
   const phase = encounter?.phase ?? "intro";
   const isCapturable = phase === "capturable";
   const isOver = phase === "won" || phase === "lost";
-  const canArgue = phase === "debating" || phase === "intro" || phase === "capturable";
+  const canArgue =
+    introDone && (phase === "debating" || phase === "intro" || phase === "capturable");
   const promptMissingForSkill = Boolean(
     selectedSkillObj?.requires_prompt && !argText.trim()
   );
@@ -685,12 +742,12 @@ export function BattleDebateView() {
   }, [activeEncounterId, isOver, setBattleLocked]);
 
   // Player's debate side (active party monster) — drives the "You argue FOR" copy.
-  const playerSide: DebateSide = activeParty ? combatantSide(activeParty) : "for";
+  const playerSide: DebateSide = chosenStance ?? (activeParty ? combatantSide(activeParty) : "for");
 
   // Active-turn indicator. While a round is running, infer who is "speaking"
   // from the newest transcript line; otherwise it's the player's move.
-  const lastActorRole = transcript.length
-    ? transcript[transcript.length - 1].actor_role
+  const lastActorRole = displayTranscript.length
+    ? displayTranscript[displayTranscript.length - 1].actor_role
     : null;
   const turnIndicator: { label: string; color: string } = isOver
     ? { label: phase === "won" ? "Victory" : "Defeat", color: phase === "won" ? "var(--win)" : "var(--danger)" }
@@ -727,7 +784,7 @@ export function BattleDebateView() {
     }
     setActionError(null);
     sfxSubmit();
-    argue(text, selectedSkill, activeParty?.monster_id ?? activePartyId);
+    argue(text, selectedSkill, activeParty?.monster_id ?? activePartyId, chosenStance);
     setArgText("");
   }
 
@@ -786,200 +843,57 @@ export function BattleDebateView() {
   }
 
   const newestTurn = transcript.length ? transcript[transcript.length - 1] : null;
+  const enemyRecap = latestEnemyLine
+    ? latestEnemyLine.length > 140
+      ? `${latestEnemyLine.slice(0, 140)}...`
+      : latestEnemyLine
+    : null;
+  const recentSkillEffects = [
+    ...statuses.slice(-2),
+    ...skillEffects.filter((effect) => effect.duration_turns <= 0).slice(-1),
+  ];
 
-  return (
+  const inputSlot = !isOver ? (
     <div
-      className="flex flex-col h-full max-h-screen overflow-hidden relative"
+      className="pixel-panel"
       style={{
-        ...battleBackdropStyle(encounter?.location_tile),
-        boxShadow: "inset 0 0 120px rgba(0,0,0,0.52)",
+        background: "rgba(14,16,24,0.96)",
+        borderColor: canArgue ? "var(--win)" : "rgba(232,230,216,0.18)",
+        padding: "10px 12px",
+        maxHeight: "62vh",
+        overflowY: "auto",
+        boxShadow: "4px 4px 0 #000",
       }}
     >
-      {/* Gacha Wave D — listens for `{type: "LevelUp"}` WS events from the
-          encounter finalize and plays a 3s "+ATK/+DEF/+MP/+HP" cinematic.
-          Self-handles its own event subscription; mounting it is the wiring.
-          Combatants are passed so the headline can read "{name} LEVEL N". */}
-      <LevelUpOverlay combatants={combatants} />
-
-      {captureFlash && (
-        <div
-          className="capture-flash absolute inset-0 z-50 pointer-events-none"
-          style={{ background: "var(--accent)" }}
-        />
-      )}
-
-      {/* Header — shows the actual BATTLE (encounter) topic, which can differ
-          from the run topic; falls back to the run topic only while loading. */}
-      <div className="flex items-center justify-between px-4 py-2" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
-        <div className="min-w-0">
-          <div className="font-hud text-[8px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-            You argue{" "}
-            <span style={{ color: sideColor(playerSide) }}>{sideLabel(playerSide)}</span>
-          </div>
-          <div className="font-hud text-xs truncate" title={encounter?.topic ?? runTopic}>
-            {encounter?.topic || runTopic || "Loading…"}
-          </div>
-        </div>
-        <div className="flex items-center gap-3 font-hud text-[10px]">
-          {/* Active-turn indicator */}
-          <span
-            className="px-1.5 py-0.5 inline-flex items-center gap-1"
-            style={{ border: `1px solid ${turnIndicator.color}`, color: turnIndicator.color }}
-          >
-            {running && <span className="caret-blink">●</span>}
-            {turnIndicator.label}
-          </span>
-          <span style={{ color: status === "open" ? "var(--win)" : status === "connecting" ? "var(--warn)" : "var(--danger)" }}>
-            ● {status}
-          </span>
-          <span style={{ color: "var(--muted)" }}>T{encounter?.turn_no ?? 0}</span>
-          <span
-            style={{
-              color:
-                phase === "won"
-                  ? "var(--win)"
-                  : phase === "lost"
-                    ? "var(--danger)"
-                    : phase === "capturable"
-                      ? "var(--accent)"
-                      : "var(--muted)",
-            }}
-          >
-            {phase}
-          </span>
-        </div>
-      </div>
-
-      {/* In-progress banner: clear feedback while a round streams so the
-          user is never left staring at nothing for 30-120s. */}
-      {running && !isOver && (
-        <div
-          className="flex items-center gap-2 px-4 py-1.5 font-hud text-[11px]"
-          style={{ background: "rgba(255,255,255,0.04)", color: "var(--accent)", borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <span
+          className="inline-flex items-center gap-1 font-hud text-[11px] px-1.5 py-0.5"
+          style={{ border: `1px solid ${turnIndicator.color}`, color: turnIndicator.color }}
         >
-          <span className="caret-blink">▋</span>
-          Debating…{runningTurn != null ? ` (turn ${runningTurn})` : ""} — the judge and your opponent are thinking, this can take a moment.
-        </div>
+          {running && <span className="caret-blink">●</span>}
+          {turnIndicator.label}
+          {running && runningTurn != null ? ` · T${runningTurn}` : ""}
+        </span>
+        <span className="font-hud text-[11px]" style={{ color: "var(--muted)" }}>
+          You argue{" "}
+          <span style={{ color: sideColor(playerSide) }}>{sideLabel(playerSide)}</span>
+        </span>
+      </div>
+
+      {enemyRecap && (
+        <p
+          className="font-body mb-2 leading-snug"
+          style={{ color: "var(--ink)", fontSize: 15 }}
+        >
+          <span className="font-hud text-[10px]" style={{ color: "var(--enemy)" }}>
+            REBUTTAL{" "}
+          </span>
+          {enemyRecap}
+        </p>
       )}
 
-      {/* Combatant HP */}
-      <div className="flex gap-2 p-3 flex-wrap" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
-        {combatants.length === 0 ? (
-          <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
-            Awaiting combatant data…
-          </div>
-        ) : (
-          combatants.map((c) => {
-            // Active combatant: the selected party agent on the player's turn, the lead
-            // enemy while the opponent is arguing. No highlight once over.
-            const activeId = isOver
-              ? null
-              : turnIndicator.label === "Enemy arguing…"
-                ? leadEnemy?.monster_id
-                : activeParty?.monster_id;
-            return (
-              <CombatantCard
-                key={c.monster_id}
-                c={c}
-                isLead={c.monster_id === activeParty?.monster_id}
-                isActive={activeId != null ? c.monster_id === activeId : undefined}
-                floatDmg={floatByTarget[c.monster_id] ?? null}
-                floatKey={floatKey}
-              />
-            );
-          })
-        )}
-      </div>
-
-      {/* Transcript + side panel */}
-      <div className="flex flex-1 overflow-hidden gap-2 p-2">
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="font-hud text-[10px] mb-1 px-1" style={{ color: "var(--muted)" }}>
-            Transcript ({transcript.length})
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-            {transcript.map((u, i) => (
-              <UtteranceBubble
-                key={`${u.turn}-${u.actor_id}-${i}`}
-                u={u}
-                liveNames={liveNames}
-                isNewest={i === transcript.length - 1 && u === newestTurn}
-              />
-            ))}
-            {transcript.length === 0 && (
-              <div className="font-body text-sm italic px-1" style={{ color: "var(--muted)" }}>
-                Type your opening argument below to begin the debate…
-              </div>
-            )}
-            <div ref={transcriptEndRef} />
-          </div>
-        </div>
-
-        <div className="w-64 shrink-0 flex flex-col overflow-hidden gap-2">
-          <ReasoningTrend series={[youSeries]} title="Your reasoning" />
-          {(statuses.length > 0 || skillEffects.length > 0 || intelPreview) && (
-            <div className="space-y-2">
-              <div className="font-hud text-[10px] px-1" style={{ color: "var(--muted)" }}>
-                Skill Effects
-              </div>
-              {intelPreview && (
-                <div className="pixel-inset p-2" style={{ borderColor: "var(--accent)" }}>
-                  <div className="font-hud text-[9px]" style={{ color: "var(--accent)" }}>
-                    PREVIEW
-                  </div>
-                  <p className="font-body text-[11px] mt-1" style={{ color: "var(--ink)" }}>
-                    {intelPreview.preview}
-                  </p>
-                </div>
-              )}
-              {statuses.slice(-3).map((effect, i) => (
-                <SkillEffectBadge
-                  key={`status-${effect.skill_id}-${effect.turn_no}-${i}`}
-                  effect={effect}
-                />
-              ))}
-              {skillEffects
-                .filter((effect) => effect.duration_turns <= 0)
-                .slice(-2)
-                .map((effect, i) => (
-                  <SkillEffectBadge
-                    key={`effect-${effect.skill_id}-${effect.turn_no}-${i}`}
-                    effect={effect}
-                  />
-                ))}
-            </div>
-          )}
-          <div className="font-hud text-[10px] px-1" style={{ color: "var(--muted)" }}>
-            Judge Verdicts
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-2">
-            {/* A4: optimistic estimates render above the settled verdicts and
-                disappear once the judge's real score lands. */}
-            {pendingEstimates.map((e) => (
-              <EstimateBadge
-                key={`est-${e.turn}-${e.actor_id}`}
-                score={e.score}
-                turn={e.turn}
-              />
-            ))}
-            {verdicts
-              .slice()
-              .reverse()
-              .map((v, i) => (
-                <VerdictBadge key={`${v.turn}-${v.target}-${i}`} v={v} fresh={i === 0} />
-              ))}
-            {verdicts.length === 0 && pendingEstimates.length === 0 && (
-              <div className="font-body text-[11px] italic px-1" style={{ color: "var(--muted)" }}>
-                No verdicts yet
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Player argument bar */}
-      {canArgue && !isOver && (
-        <div className="px-3 py-2 space-y-2" style={{ borderTop: "2px solid rgba(232,230,216,0.12)" }}>
+      {canArgue ? (
+        <div className="space-y-2">
           {partyCombatants.length > 1 && (
             <div className="flex gap-1.5 flex-wrap items-center">
               <span className="font-hud text-[9px] mr-1" style={{ color: "var(--muted)" }}>
@@ -991,7 +905,7 @@ export function BattleDebateView() {
                 return (
                   <button
                     key={agent.monster_id}
-                    className="pixel-btn text-[9px] py-1"
+                    className="pixel-btn text-[9px] py-1 max-w-[150px]"
                     disabled={running || isOver || agent.hp <= 0}
                     onClick={() => {
                       setActivePartyId(agent.monster_id);
@@ -1005,7 +919,7 @@ export function BattleDebateView() {
                         : { borderColor: typeColor(agent.type), opacity: agent.hp <= 0 ? 0.45 : Math.max(0.68, hpPct) }
                     }
                   >
-                    {agent.name}
+                    <span className="block truncate">{agent.name}</span>
                     {typeof agent.mp === "number" && typeof agent.max_mp === "number" && (
                       <span className="ml-1" style={{ color: active ? "#000" : "var(--accent)" }}>
                         {agent.mp}/{agent.max_mp}
@@ -1016,16 +930,13 @@ export function BattleDebateView() {
               })}
             </div>
           )}
+
           {skills.length > 0 && (
             <div className="space-y-1">
               <div className="flex gap-1.5 flex-wrap">
                 {skills.map((s) => {
                   const active = selectedSkill === s.id;
                   const eff = effectivenessInfo(s.type, leadEnemy?.type);
-                  // Gacha Wave B: dim the chip when the active agent's MP can't
-                  // cover this skill. Cost is sourced from the skill object
-                  // (parseSkill falls back to SKILL_MP_COSTS). Free skills
-                  // (cost 0) never dim.
                   const activeMp =
                     typeof activeParty?.mp === "number" ? activeParty.mp : Infinity;
                   const cost = Number(s.mp_cost ?? 0);
@@ -1077,8 +988,7 @@ export function BattleDebateView() {
                   );
                 })}
               </div>
-              {/* One-shot WS rejection banner: the picked skill cost more MP
-                  than the active agent has. The hook clears this on the next attempt. */}
+
               {mpInsufficient && (
                 <div
                   className="font-hud text-[9px] px-1"
@@ -1087,7 +997,7 @@ export function BattleDebateView() {
                   {mpInsufficient.detail}
                 </div>
               )}
-              {/* Type-effectiveness callout for the currently selected skill. */}
+
               {selectedSkillObj && leadEnemy && (() => {
                 const eff = effectivenessInfo(selectedSkillObj.type, leadEnemy.type);
                 if (!eff.label) {
@@ -1105,6 +1015,29 @@ export function BattleDebateView() {
               })()}
             </div>
           )}
+
+          {intelPreview && (
+            <div className="pixel-inset p-2" style={{ borderColor: "var(--accent)" }}>
+              <div className="font-hud text-[9px]" style={{ color: "var(--accent)" }}>
+                PREVIEW
+              </div>
+              <p className="font-body text-[11px] mt-1" style={{ color: "var(--ink)" }}>
+                {intelPreview.preview}
+              </p>
+            </div>
+          )}
+
+          {recentSkillEffects.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {recentSkillEffects.map((effect, i) => (
+                <SkillEffectBadge
+                  key={`stage-effect-${effect.skill_id}-${effect.turn_no}-${i}`}
+                  effect={effect}
+                />
+              ))}
+            </div>
+          )}
+
           <div className="flex gap-2 items-end">
             <textarea
               className="pixel-field flex-1 font-body text-sm resize-none h-16"
@@ -1116,32 +1049,141 @@ export function BattleDebateView() {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitArgument();
               }}
             />
-            <div className="flex flex-col gap-1.5">
-              <button
-                className="pixel-btn pixel-btn--party"
-                disabled={submitDisabled}
-                onClick={submitArgument}
-                title={
-                  running
-                    ? "Wait for the current round to finish"
-                    : promptMissingForSkill
-                      ? `${selectedSkillObj?.name ?? "Skill"} needs your prompt`
+            <button
+              className="pixel-btn pixel-btn--party"
+              disabled={submitDisabled}
+              onClick={submitArgument}
+              title={
+                running
+                  ? "Wait for the current round to finish"
+                  : promptMissingForSkill
+                    ? `${selectedSkillObj?.name ?? "Skill"} needs your prompt`
                     : selectedSkillObj?.effect_kind === "intel_preview"
                       ? `${activeParty?.name ?? "Agent"} previews the opponent`
-                    : selectedSkill && !argText.trim()
-                      ? `${activeParty?.name ?? "Agent"} uses ${selectedSkillObj?.name ?? selectedSkill}`
-                      : "Submit your argument"
-                }
-              >
-                {submitLabel}
-              </button>
-            </div>
+                      : selectedSkill && !argText.trim()
+                        ? `${activeParty?.name ?? "Agent"} uses ${selectedSkillObj?.name ?? selectedSkill}`
+                        : "Submit your argument"
+              }
+            >
+              {submitLabel}
+            </button>
           </div>
         </div>
+      ) : running ? (
+        <div className="font-body text-[13px] flex items-center gap-2" style={{ color: "var(--muted)" }}>
+          <span className="caret-blink">▋</span>
+          The judge and your opponent are thinking...
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
+  return (
+    <div
+      className="flex flex-col h-full max-h-screen overflow-hidden relative"
+      style={{
+        ...battleBackdropStyle(encounter?.location_tile),
+        boxShadow: "inset 0 0 120px rgba(0,0,0,0.52)",
+      }}
+    >
+      {/* Gacha Wave D — listens for `{type: "LevelUp"}` WS events from the
+          encounter finalize and plays a 3s "+ATK/+DEF/+MP/+HP" cinematic.
+          Self-handles its own event subscription; mounting it is the wiring.
+          Combatants are passed so the headline can read "{name} LEVEL N". */}
+      <LevelUpOverlay combatants={combatants} />
+
+      {!introDone && combatants.length > 0 && (
+        <BattleIntroCard
+          topic={encounter?.topic ?? runTopic}
+          onComplete={(stance) => {
+            setChosenStance(stance);
+            setIntroDone(true);
+          }}
+        />
       )}
 
+      {captureFlash && (
+        <div
+          className="capture-flash absolute inset-0 z-50 pointer-events-none"
+          style={{ background: "var(--accent)" }}
+        />
+      )}
+
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        <div
+          className="shrink-0 flex flex-col overflow-hidden"
+          style={{
+            width: "24%",
+            minWidth: 220,
+            borderRight: "2px solid rgba(232,230,216,0.10)",
+            background: "rgba(14,16,24,0.92)",
+          }}
+        >
+          <BattleLog
+            transcript={displayTranscript}
+            liveNames={liveNames}
+            newestTurn={newestTurn}
+          />
+        </div>
+
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <BattleStage
+            playerUtterance={latestPlayerUtterance}
+            enemyUtterance={latestEnemyUtterance}
+            playerIsNewest={playerIsNewest}
+            enemyIsNewest={enemyIsNewest}
+            leadPartyName={activeParty?.name ?? leadParty?.name ?? null}
+            leadEnemyName={leadEnemy?.name ?? null}
+            leadPartyType={activeParty?.type ?? leadParty?.type ?? null}
+            leadEnemyType={leadEnemy?.type ?? null}
+            topic={encounter?.topic ?? runTopic}
+            isOver={isOver}
+            phase={phase}
+            playerHpSlot={
+              <HPCorner
+                side="player"
+                combatant={activeParty ?? leadParty}
+                floatDmg={
+                  activeParty
+                    ? (floatByTarget[activeParty.monster_id] ?? null)
+                    : leadParty
+                      ? (floatByTarget[leadParty.monster_id] ?? null)
+                      : null
+                }
+                floatKey={floatKey}
+              />
+            }
+            enemyHpSlot={
+              <HPCorner
+                side="enemy"
+                combatant={leadEnemy}
+                floatDmg={leadEnemy ? (floatByTarget[leadEnemy.monster_id] ?? null) : null}
+                floatKey={floatKey}
+              />
+            }
+            inputSlot={inputSlot}
+          />
+        </div>
+
+        <div
+          className="shrink-0 flex flex-col overflow-hidden"
+          style={{
+            width: "26%",
+            minWidth: 240,
+            borderLeft: "2px solid rgba(232,230,216,0.10)",
+          }}
+        >
+          <JudgePanel
+            lastVerdict={lastVerdict ?? null}
+            pendingEstimates={pendingEstimates}
+            youSeries={youSeries}
+            recentVerdicts={verdicts}
+          />
+        </div>
+      </div>
+
       {/* Action bar */}
-      <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderTop: "2px solid rgba(232,230,216,0.12)" }}>
+      <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderTop: "2px solid rgba(232,230,216,0.12)", background: "rgba(14,16,24,0.95)" }}>
         {actionError && (
           <span className="font-body text-[11px] flex-1" style={{ color: "var(--danger)" }}>
             {actionError}
@@ -1160,20 +1202,38 @@ export function BattleDebateView() {
         >
           {sfxOn ? "🔊" : "🔇"}
         </button>
+        <span
+          className="font-hud text-[9px] px-1.5 py-0.5"
+          style={{ border: "1px solid rgba(232,230,216,0.18)", color: "var(--muted)" }}
+        >
+          {status} · T{encounter?.turn_no ?? 0} · {phase}
+        </span>
 
         <button
           className="pixel-btn"
-          disabled={isOver || running}
+          disabled={isOver || running || !introDone}
           onClick={() => drive(1)}
-          title={running ? "A round is already running" : "Run one autonomous round"}
+          title={
+            !introDone
+              ? "Wait for the battle intro"
+              : running
+                ? "A round is already running"
+                : "Run one autonomous round"
+          }
         >
           {running ? "Debating…" : "Next Round"}
         </button>
         <button
           className="pixel-btn"
-          disabled={isOver || running}
+          disabled={isOver || running || !introDone}
           onClick={() => drive(3)}
-          title={running ? "A round is already running" : "Run three autonomous rounds"}
+          title={
+            !introDone
+              ? "Wait for the battle intro"
+              : running
+                ? "A round is already running"
+                : "Run three autonomous rounds"
+          }
         >
           Auto (3)
         </button>
