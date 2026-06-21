@@ -51,7 +51,7 @@ const INFO_PANELS: Record<InfoPanel, { title: string; kicker: string; lines: str
     title: "Controls",
     kicker: "How to play",
     lines: [
-      "Enter names your player and Start Game begins the adventure.",
+      "Enter your player name and press Start Game to begin the adventure.",
       "Move through the overworld with arrow keys, then collide with enemies to start debates.",
       "In battle, type your argument, choose a rhetorical skill when available, and use capture when an enemy is weak.",
     ],
