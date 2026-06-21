@@ -213,7 +213,7 @@ async def pull(
         domain=persona.domain or MonsterDomain.GENERAL,
         wiki_url=persona.wiki_url,
         wiki_hydrated=False,
-        model="gemma3:1b",
+        model="llama3.2:3b",
     )
     session.add(monster)
 

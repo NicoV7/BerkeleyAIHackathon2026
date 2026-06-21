@@ -63,7 +63,7 @@ def _fabricate_enemy(run_id: str) -> Monster:
         max_hp=90,
         # Pin to a model that's reliably pulled locally so WS-B is self-sufficient
         # before WS-A's generator lands. WS-A's real monsters carry their own model.
-        model="gemma3:1b",
+        model="llama3.2:3b",
     )
 
 

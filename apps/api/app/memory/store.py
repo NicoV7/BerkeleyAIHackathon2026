@@ -74,7 +74,7 @@ async def write_event(
         content:      Full event content (may be long).
         encounter_id: Optional encounter FK.
         salience:     0-1 importance weight (default 0.5).
-        model:        Override the summarisation model (default "gemma3:1b").
+        model:        Override the summarisation model (default "llama3.2:3b").
 
     Returns:
         The persisted Memory ORM object.
@@ -84,7 +84,7 @@ async def write_event(
         event_type = EventType(event_type.upper())
 
     # 1. Summarise to one sentence
-    summ_model = model or "gemma3:1b"
+    summ_model = model or "llama3.2:3b"
     messages = [
         {
             "role": "system",

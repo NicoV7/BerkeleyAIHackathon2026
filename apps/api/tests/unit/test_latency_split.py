@@ -61,19 +61,21 @@ def _system_text(actor: Combatant, topic: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def test_first_token_timeout_is_small_and_split_from_call_timeout() -> None:
-    # first_token_timeout_s is the SMALL streaming first-token guard.
+def test_first_token_timeout_is_generous_and_split_from_call_timeout() -> None:
+    # Policy: the first-token budget is GENEROUS so the local model always has
+    # room to produce a REAL response before any templated fallback (no more
+    # premature fail-over). Cold and warm first-token budgets are distinct knobs.
     assert isinstance(settings.first_token_timeout_s, int)
-    assert settings.first_token_timeout_s <= 16, "first-token guard must stay small (~15s)"
-    # llm_call_timeout_s is the LARGER non-streaming budget; the two are distinct.
-    assert settings.llm_call_timeout_s > settings.first_token_timeout_s
+    assert settings.first_token_timeout_s >= 30, "first-token budget must be generous"
+    # The warm path waits at least as long as the cold first-token budget.
+    assert settings.first_token_timeout_warm_s >= settings.first_token_timeout_s
     # actor_max_tokens is a small, punchy cap.
     assert isinstance(settings.actor_max_tokens, int)
     assert settings.actor_max_tokens <= 96
 
 
 def test_worst_case_complete_round_under_round_timeout() -> None:
-    """N=4 actor non-streaming completes must stay under ROUND_TIMEOUT_S (120s)."""
+    """N=4 actor non-streaming completes must stay under ROUND_TIMEOUT_S (300s)."""
     from app.routers.debate import ROUND_TIMEOUT_S
 
     assert orch._actor_timeout() * 4 < ROUND_TIMEOUT_S

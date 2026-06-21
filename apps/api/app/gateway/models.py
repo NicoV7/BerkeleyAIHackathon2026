@@ -23,6 +23,7 @@ REGISTRY: dict[str, ModelRef] = {
     "default": ModelRef("ollama", settings.llm_default_model),
     "judge": ModelRef("ollama", settings.llm_judge_model),
     "gemma": ModelRef("ollama", "gemma3:4b"),
+    "llama": ModelRef("ollama", "llama3.2:3b"),
     "qwen": ModelRef("ollama", "qwen3:4b"),
     "claude": ModelRef("anthropic", "claude-sonnet-4-6"),
     "claude-opus": ModelRef("anthropic", "claude-opus-4-8"),

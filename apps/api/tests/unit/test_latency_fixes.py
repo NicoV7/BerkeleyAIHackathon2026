@@ -35,13 +35,14 @@ from app.gateway.gateway import LLMGateway, _resolve_timeout
 # --------------------------------------------------------------------------- #
 
 
-def test_config_exposes_fast_path_knobs_with_short_defaults() -> None:
+def test_config_exposes_fast_path_knobs_with_generous_defaults() -> None:
     s = Settings()
-    # Fast small models, not gemma3:4b.
+    # Fast small models, not the slow gemma3:4b.
     assert s.actor_model and s.actor_model != "gemma3:4b"
     assert s.judge_model_fast
-    # A SHORT per-call timeout — emphatically not the old 120s ceiling.
-    assert 0 < s.llm_call_timeout_s <= 30
+    # A per-call timeout that gives the local model real room to respond, while
+    # still well under the old 120s ceiling so a stuck call fails reasonably fast.
+    assert 0 < s.llm_call_timeout_s <= 90
     assert hasattr(s, "prewarm_enabled")
 
 
@@ -53,10 +54,10 @@ def test_config_exposes_fast_path_knobs_with_short_defaults() -> None:
 def test_resolve_timeout_priority() -> None:
     # explicit kwarg wins
     assert _resolve_timeout(5).read == 5.0
-    # falls back to the configured short timeout (not 120s)
+    # falls back to the configured per-call timeout (not the old 120s ceiling)
     cfg = _resolve_timeout(None)
     assert cfg.read == float(settings.llm_call_timeout_s)
-    assert cfg.read <= 30
+    assert cfg.read <= 90
 
 
 class _FakeResponse:

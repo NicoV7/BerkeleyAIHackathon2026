@@ -155,7 +155,7 @@ async def lifespan(app: FastAPI):
     await _sync_skill_costs()
     await _init_memory_cache()
     # Warm the actor + judge models at startup so the first battle round isn't a cold
-    # start (cold gemma3:1b first-token can exceed the streaming guard → fallback text).
+    # start (cold llama3.2:3b first-token can exceed the streaming guard → fallback text).
     try:
         import asyncio as _asyncio
 

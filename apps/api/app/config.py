@@ -15,8 +15,8 @@ class Settings(BaseSettings):
 
     # Model gateway
     llm_provider: str = "ollama"
-    llm_default_model: str = "gemma3:4b"
-    llm_judge_model: str = "gemma3:4b"
+    llm_default_model: str = "llama3.2:3b"
+    llm_judge_model: str = "llama3.2:3b"
     llm_embed_model: str = "nomic-embed-text"
     gateway_fallback_enabled: bool = True
     gateway_actor_candidates: str = (
@@ -24,17 +24,17 @@ class Settings(BaseSettings):
         "cerebras/llama-3.3-70b,"
         "gemini/gemini-2.5-flash-lite,"
         "openrouter/openrouter/free,"
-        "ollama/gemma3:1b"
+        "ollama/llama3.2:3b"
     )
     gateway_judge_candidates: str = (
         "groq/llama-3.3-70b-versatile,"
         "cerebras/llama-3.3-70b,"
         "gemini/gemini-2.5-flash,"
-        "ollama/gemma3:1b"
+        "ollama/llama3.2:3b"
     )
 
     # --- Latency fast-path (battle playability) ------------------------------
-    # The default debater/judge models (gemma3:4b) are too slow on a contended
+    # The default debater/judge models (llama3.2:3b) are too slow on a contended
     # local CPU: rounds were timing out at the gateway's old 120s ceiling, so
     # every utterance fell back to a useless stub. These additive knobs route
     # actor turns + the judge to a SMALL, fast model and cap every LLM call at a
@@ -67,17 +67,17 @@ class Settings(BaseSettings):
     #   * The non-streaming `complete` (headless self-play: 2 combatants) is capped
     #     at llm_call_timeout_s. We keep it at ~28s so even a hypothetical N=4 actor
     #     round of complete() calls (4 * 28 = 112s) stays under ROUND_TIMEOUT_S.
-    # Installed Ollama models, fastest-first-ish: gemma3:1b, llama3.2:3b,
-    # qwen2.5:3b, phi3:mini, gemma3:4b.
+    # Installed Ollama models, fastest-first-ish: llama3.2:3b, llama3.2:3b,
+    # qwen2.5:3b, phi3:mini, llama3.2:3b.
     # ONE model for actors AND judge so single-slot CPU Ollama never swaps models
-    # mid-round (model-swap thrash was the measured ~75s/round bottleneck). gemma3:1b
+    # mid-round (model-swap thrash was the measured ~75s/round bottleneck). llama3.2:3b
     # is the fastest installed model and its argument quality was validated good. The
-    # fabricated/wild enemies are already pinned to gemma3:1b, so everything aligns →
+    # fabricated/wild enemies are already pinned to llama3.2:3b, so everything aligns →
     # one warm model, no swaps.
-    actor_model: str = "gemma3:1b"
-    judge_model_fast: str = "gemma3:1b"
-    llm_call_timeout_s: int = 28
-    first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
+    actor_model: str = "llama3.2:3b"
+    judge_model_fast: str = "llama3.2:3b"
+    llm_call_timeout_s: int = 60
+    first_token_timeout_s: int = 45  # cold llama3.2:3b first token under contention; give real generation room before any fallback
     actor_max_tokens: int = 64
     prewarm_enabled: bool = True
     # WS-4 warm-path latency. Once the actor model is confirmed WARM (a prewarm
@@ -87,11 +87,11 @@ class Settings(BaseSettings):
     # the fallback rate on a healthy-but-busy model without re-introducing the cold
     # hang: a truly stalled model is still bounded by `first_token_timeout_s` until
     # it's marked warm. Set to first_token_timeout_s to disable the widening.
-    first_token_timeout_warm_s: int = 22
+    first_token_timeout_warm_s: int = 60
     # Ollama keep_alive sent on the encounter-create prewarm so the actor model
     # stays resident across the battle's idle gaps (turn-to-turn thinking + the
     # player typing). A string Ollama accepts ("10m") or seconds. Empty -> omit.
-    ollama_keep_alive: str = "10m"
+    ollama_keep_alive: str = "30m"
     ollama_base_url: str = "http://ollama:11434"
     anthropic_api_key: str = ""
     anthropic_base_url: str = "https://api.anthropic.com"

@@ -24,7 +24,7 @@ from typing import Any, Optional
 from app.gateway.gateway import gateway
 from app.training import genome as genome_mod
 
-DEFAULT_MODEL = "default"  # tests override with "gemma3:1b"
+DEFAULT_MODEL = "default"  # tests override with "llama3.2:3b"
 
 
 async def play(

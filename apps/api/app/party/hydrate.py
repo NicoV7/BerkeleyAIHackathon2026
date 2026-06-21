@@ -6,7 +6,7 @@ Pull flow:
     2. It schedules `asyncio.create_task(hydrate_monster(...))` so the request
        returns instantly.
     3. This module fetches Wikipedia's `/page/summary` endpoint (cheap, clean
-       300-char extract), distills it via a single gemma3:1b call, writes the
+       300-char extract), distills it via a single llama3.2:3b call, writes the
        result to `apps/api/.cache/personas/{key}.json`, then patches the
        Monster row's persona JSONB and flips `wiki_hydrated=True`.
 
@@ -173,7 +173,7 @@ def _distill_user_prompt(wiki_text: str, fallback_tagline: str) -> str:
 
 
 async def _llm_distill(wiki_text: str, fallback_tagline: str) -> dict[str, Any]:
-    """Single gemma3:1b distill call returning the persona blob. Defensive."""
+    """Single llama3.2:3b distill call returning the persona blob. Defensive."""
     if not wiki_text:
         return {}
     try:
@@ -188,7 +188,7 @@ async def _llm_distill(wiki_text: str, fallback_tagline: str) -> dict[str, Any]:
     try:
         raw = await gateway.complete(
             messages,
-            model="gemma3:1b",
+            model="llama3.2:3b",
             temperature=_LLM_DISTILL_TEMPERATURE,
             max_tokens=_LLM_DISTILL_MAX_TOKENS,
             timeout=_LLM_DISTILL_TIMEOUT_S,

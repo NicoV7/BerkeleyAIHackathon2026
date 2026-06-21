@@ -42,7 +42,7 @@ router = APIRouter(prefix="/api", tags=["training"])
 _JOBS = grpo_hitl._JOBS
 
 # Test-friendly model override; production self-play uses the "default" alias.
-_MODEL = "gemma3:1b"
+_MODEL = "llama3.2:3b"
 
 # How many denoised self-play runs back each before/after benchmark. Kept small
 # so train endpoints stay responsive on a CPU stack.

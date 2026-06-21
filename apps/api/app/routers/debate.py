@@ -58,9 +58,12 @@ log = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
 # Wall-clock guards: a single round shouldn't run forever on a slow local model,
-# and /auto shouldn't keep starting rounds past a total budget.
-ROUND_TIMEOUT_S = 120.0
-AUTO_BUDGET_S = 240.0
+# and /auto shouldn't keep starting rounds past a total budget. Raised to match the
+# longer per-call budgets (llm_call_timeout_s=60): worst-case N=4 non-streaming
+# completes (4*60=240) must stay under ROUND_TIMEOUT_S so a legitimately slow round
+# is never killed mid-utterance and forced to a templated fallback.
+ROUND_TIMEOUT_S = 300.0
+AUTO_BUDGET_S = 600.0
 
 
 async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
@@ -723,7 +726,7 @@ MEMORY_RECALL_MP_COST = 60
 MEMORY_RECALL_MP_REFUND = 30  # half-cost refund on graceful fallback
 MEMORY_RECALL_SCORE = 80.0  # fixed baseline through compute_damage
 MEMORY_RECALL_SKILL_MULT = 1.6  # mirrors `power:` in memory_recall.md
-MEMORY_RECALL_MODEL = "gemma3:1b"
+MEMORY_RECALL_MODEL = "llama3.2:3b"
 MEMORY_RECALL_MAX_TOKENS = 150
 MEMORY_RECALL_TEMPERATURE = 0.7
 MEMORY_RECALL_TIMEOUT_S = 20.0

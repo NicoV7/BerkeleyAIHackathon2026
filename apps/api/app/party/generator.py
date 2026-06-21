@@ -221,7 +221,7 @@ def build_wild_monster(
         xp=0,
         max_hp=max_hp,
         evolution_stage=evolution_stage,
-        model="gemma3:1b",
+        model="llama3.2:3b",
         # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
         created_at=datetime.utcnow(),
     )
@@ -254,7 +254,7 @@ async def roll_starter_party(session: AsyncSession, run_id: str, seed: int = 0) 
             xp=0,
             max_hp=100,
             evolution_stage=0,
-            model="gemma3:1b",
+            model="llama3.2:3b",
             # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
             created_at=datetime.utcnow(),
         )

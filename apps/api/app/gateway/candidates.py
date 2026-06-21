@@ -1,7 +1,7 @@
 """candidates.py — config-gated failover routing across a candidate model chain.
 
 WS-0-LAT: turn ``settings.gateway_actor_candidates`` / ``gateway_judge_candidates``
-(comma lists like ``groq/llama-3.1-8b-instant,...,ollama/gemma3:1b``) from inert
+(comma lists like ``groq/llama-3.1-8b-instant,...,ollama/llama3.2:3b``) from inert
 config into a real runner. A spec resolves to the right backend:
 
   * ``ollama/<model>``         -> the local LLMGateway (app.gateway.gateway).
