@@ -35,9 +35,28 @@ export interface RoutablePOI {
   kind: "camp" | "town" | "den" | "landmark" | "start" | "goal";
   x: number; // overworld tile coords — also the return point
   y: number;
+  name?: string;
   /** Wave 2 additive fields: present only on enterable POIs (town/den). */
   interior_seed?: number | null;
   interior_kind?: "town" | "cave" | "dungeon" | null;
+  npc_anchors?: NPCAnchor[];
+  scripted?: boolean;
+}
+
+export interface NPCAnchor {
+  npc_id: string;
+  archetype: "villager" | "merchant" | "quest_giver" | "figure" | "innkeeper";
+  x: number;
+  y: number;
+  name?: string;
+  figure_id?: string | null;
+}
+
+export interface RegionSpec {
+  name: string;
+  biome: string;
+  bounds?: number[] | null;
+  lore?: string | null;
 }
 
 /** Shape returned by GET /api/runs/{id}/interior/{poi_id} (WorldSpecLite). */
@@ -45,6 +64,7 @@ export interface InteriorSpec {
   seed: number;
   width: number;
   height: number;
+  regions: RegionSpec[];
   pois: RoutablePOI[];
   start?: RoutablePOI | null;
   goal?: RoutablePOI | null;
@@ -160,6 +180,10 @@ export class SceneRouter {
       console.error("SceneRouter.fetchInterior error:", e);
       return null;
     }
+  }
+
+  npcAnchorsFromInterior(interior: InteriorSpec): NPCAnchor[] {
+    return interior.pois.flatMap((poi) => poi.npc_anchors ?? []);
   }
 
   /**

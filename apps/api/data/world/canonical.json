@@ -1,0 +1,858 @@
+{
+  "chunk_size": 64,
+  "name": "Aldermere",
+  "version": 3,
+  "world": {
+    "goal": {
+      "interior_kind": null,
+      "interior_seed": null,
+      "kind": "goal",
+      "name": "The Tribunal Gate",
+      "npc_anchors": [],
+      "scripted": true,
+      "x": 940,
+      "y": 96
+    },
+    "height": 1024,
+    "pois": [
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "start",
+        "name": "Greenward Trailhead",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 80,
+        "y": 656
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729208560,
+        "kind": "town",
+        "name": "Aldermere Village",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Marin the Innkeeper",
+            "npc_id": "aldermere_innkeeper",
+            "x": 207,
+            "y": 560
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Talia the Apothecary",
+            "npc_id": "aldermere_merchant",
+            "x": 209,
+            "y": 559
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Captain Veyl",
+            "npc_id": "aldermere_captain",
+            "x": 208,
+            "y": 562
+          },
+          {
+            "archetype": "figure",
+            "figure_id": "socrates",
+            "name": "Socrates",
+            "npc_id": "socrates_anchor",
+            "x": 206,
+            "y": 561
+          },
+          {
+            "archetype": "figure",
+            "figure_id": "curie",
+            "name": "Marie Curie",
+            "npc_id": "curie_anchor",
+            "x": 210,
+            "y": 561
+          }
+        ],
+        "scripted": true,
+        "x": 208,
+        "y": 560
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "King's Road Shrine",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 174,
+        "y": 604
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Old Stone Bridge",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 342,
+        "y": 590
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Willow Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 300,
+        "y": 600
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729464496,
+        "kind": "den",
+        "name": "Glassroot Cave",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 464,
+        "y": 496
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729256288,
+        "kind": "town",
+        "name": "Reedmarket",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Oren of the Lamps",
+            "npc_id": "reedmarket_innkeeper",
+            "x": 255,
+            "y": 288
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Sable the Ferryman",
+            "npc_id": "reedmarket_merchant",
+            "x": 257,
+            "y": 287
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Nessa of the Reeds",
+            "npc_id": "reedmarket_villager",
+            "x": 256,
+            "y": 290
+          }
+        ],
+        "scripted": true,
+        "x": 256,
+        "y": 288
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729608384,
+        "kind": "town",
+        "name": "Quarrycross",
+        "npc_anchors": [
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Berrin the Smith",
+            "npc_id": "quarrycross_smith",
+            "x": 607,
+            "y": 384
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Ser Hale",
+            "npc_id": "quarrycross_guard",
+            "x": 609,
+            "y": 383
+          },
+          {
+            "archetype": "figure",
+            "figure_id": "mlk",
+            "name": "Martin Luther King Jr.",
+            "npc_id": "mlk_anchor",
+            "x": 608,
+            "y": 386
+          }
+        ],
+        "scripted": true,
+        "x": 608,
+        "y": 384
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Moonwell",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 225,
+        "y": 342
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "The Speaking Oak",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 318,
+        "y": 510
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Scholar's Obelisk",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 548,
+        "y": 320
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Windcut Pass",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 850,
+        "y": 210
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Bluebank Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 430,
+        "y": 760
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Switchback Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 520,
+        "y": 420
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Anvil Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 720,
+        "y": 430
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Highroad Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 815,
+        "y": 250
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Lantern Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 128,
+        "y": 320
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Northwatch Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 620,
+        "y": 130
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729384192,
+        "kind": "den",
+        "name": "The Sunless Halls",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 384,
+        "y": 192
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729784320,
+        "kind": "den",
+        "name": "Drystone Keep",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 784,
+        "y": 320
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729848128,
+        "kind": "den",
+        "name": "Frostcap Cave",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 848,
+        "y": 128
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729112160,
+        "kind": "den",
+        "name": "Mirevault",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 112,
+        "y": 160
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729680520,
+        "kind": "den",
+        "name": "Echoing Mine",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 680,
+        "y": 520
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729270430,
+        "kind": "den",
+        "name": "Redleaf Barrow",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 270,
+        "y": 430
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729900620,
+        "kind": "den",
+        "name": "Stormglass Spire",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 900,
+        "y": 620
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729132792,
+        "kind": "town",
+        "name": "Brightmill",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Pella Bright",
+            "npc_id": "brightmill_innkeeper",
+            "x": 131,
+            "y": 792
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Garron Millhand",
+            "npc_id": "brightmill_miller",
+            "x": 133,
+            "y": 791
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Ives the Listener",
+            "npc_id": "brightmill_scholar",
+            "x": 132,
+            "y": 794
+          }
+        ],
+        "scripted": true,
+        "x": 132,
+        "y": 792
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729360740,
+        "kind": "town",
+        "name": "Lakehaven",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Mira of the Blue Porch",
+            "npc_id": "lakehaven_keeper",
+            "x": 359,
+            "y": 740
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Tovin Mapthread",
+            "npc_id": "lakehaven_cartographer",
+            "x": 361,
+            "y": 739
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Warden Sol",
+            "npc_id": "lakehaven_warden",
+            "x": 360,
+            "y": 742
+          }
+        ],
+        "scripted": true,
+        "x": 360,
+        "y": 740
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729656160,
+        "kind": "town",
+        "name": "Northwatch",
+        "npc_anchors": [
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Helka Snowbell",
+            "npc_id": "northwatch_keeper",
+            "x": 655,
+            "y": 160
+          },
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Scout Ren",
+            "npc_id": "northwatch_scout",
+            "x": 657,
+            "y": 159
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Orsik Coldpack",
+            "npc_id": "northwatch_trader",
+            "x": 656,
+            "y": 162
+          }
+        ],
+        "scripted": true,
+        "x": 656,
+        "y": 160
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729824470,
+        "kind": "town",
+        "name": "Ironroot Hold",
+        "npc_anchors": [
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Mael Ironroot",
+            "npc_id": "ironroot_warden",
+            "x": 823,
+            "y": 470
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Vessa Anvil",
+            "npc_id": "ironroot_smith",
+            "x": 825,
+            "y": 469
+          },
+          {
+            "archetype": "villager",
+            "figure_id": null,
+            "name": "Tarn Deepcut",
+            "npc_id": "ironroot_miner",
+            "x": 824,
+            "y": 472
+          }
+        ],
+        "scripted": true,
+        "x": 824,
+        "y": 470
+      },
+      {
+        "interior_kind": "town",
+        "interior_seed": 1729760780,
+        "kind": "town",
+        "name": "Starfall Abbey",
+        "npc_anchors": [
+          {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Prior Ansel",
+            "npc_id": "starfall_prior",
+            "x": 759,
+            "y": 780
+          },
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Lio of the Bells",
+            "npc_id": "starfall_keeper",
+            "x": 761,
+            "y": 779
+          },
+          {
+            "archetype": "merchant",
+            "figure_id": null,
+            "name": "Archivist Fen",
+            "npc_id": "starfall_archivist",
+            "x": 760,
+            "y": 782
+          }
+        ],
+        "scripted": true,
+        "x": 760,
+        "y": 780
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Starfall Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 880,
+        "y": 760
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Redleaf Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 246,
+        "y": 880
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Southwatch Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 540,
+        "y": 900
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Stormroad Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 930,
+        "y": 420
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "camp",
+        "name": "Mire Edge Camp",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 64,
+        "y": 96
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729700076,
+        "kind": "den",
+        "name": "Old Observatory",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 700,
+        "y": 76
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729566620,
+        "kind": "den",
+        "name": "Deep Quarry",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 566,
+        "y": 620
+      },
+      {
+        "interior_kind": "cave",
+        "interior_seed": 1729160480,
+        "kind": "den",
+        "name": "Thornwold Den",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 160,
+        "y": 480
+      },
+      {
+        "interior_kind": "dungeon",
+        "interior_seed": 1729912112,
+        "kind": "den",
+        "name": "Tribunal Catacombs",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 912,
+        "y": 112
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Emberfen Ferry",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 84,
+        "y": 880
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Redleaf Gate",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 198,
+        "y": 724
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Mirror Orchard",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 448,
+        "y": 840
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Stone Choir",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 612,
+        "y": 718
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Abbey Causeway",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 742,
+        "y": 668
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Stormglass Road",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 940,
+        "y": 560
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Frostline Cairn",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 720,
+        "y": 252
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Glassroot Spring",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 492,
+        "y": 548
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Southwatch Beacon",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 570,
+        "y": 910
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Drowned Library Steps",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 332,
+        "y": 220
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Eastern Boundary Marker",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 995,
+        "y": 380
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "landmark",
+        "name": "Old West Gate",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 48,
+        "y": 520
+      },
+      {
+        "interior_kind": null,
+        "interior_seed": null,
+        "kind": "goal",
+        "name": "The Tribunal Gate",
+        "npc_anchors": [],
+        "scripted": true,
+        "x": 940,
+        "y": 96
+      }
+    ],
+    "regions": [
+      {
+        "biome": "plains",
+        "bounds": [
+          0,
+          610,
+          430,
+          1023
+        ],
+        "lore": "Market roads, farms, orchards, and the safest early routes.",
+        "name": "Aldermere Meadows"
+      },
+      {
+        "biome": "forest",
+        "bounds": [
+          0,
+          260,
+          455,
+          650
+        ],
+        "lore": "Old forest paths curl around shrines, barrows, and speaking trees.",
+        "name": "Whispering Wilds"
+      },
+      {
+        "biome": "wetland",
+        "bounds": [
+          0,
+          0,
+          455,
+          259
+        ],
+        "lore": "Reeds, black water, drowned halls, and lantern towns on stilts.",
+        "name": "Sunless Basin"
+      },
+      {
+        "biome": "mountains",
+        "bounds": [
+          456,
+          300,
+          1023,
+          660
+        ],
+        "lore": "Quarries, keeps, switchbacks, mines, and argument-cut stone.",
+        "name": "Drystone Reach"
+      },
+      {
+        "biome": "tundra",
+        "bounds": [
+          560,
+          0,
+          1023,
+          299
+        ],
+        "lore": "Cold ridges, thin air, and the final road to the Tribunal Gate.",
+        "name": "Frostcap Pass"
+      },
+      {
+        "biome": "forest",
+        "bounds": [
+          0,
+          651,
+          355,
+          1023
+        ],
+        "lore": "Autumn woods, mill roads, and quiet camps beside still water.",
+        "name": "Redleaf Lowlands"
+      },
+      {
+        "biome": "plains",
+        "bounds": [
+          356,
+          661,
+          1023,
+          1023
+        ],
+        "lore": "High fields, abbeys, observatories, and exposed roads under bright skies.",
+        "name": "Starfall Uplands"
+      },
+      {
+        "biome": "wetland",
+        "bounds": [
+          0,
+          820,
+          220,
+          1023
+        ],
+        "lore": "Warm marsh pools and old ferry stones at the edge of the known road.",
+        "name": "Emberfen March"
+      }
+    ],
+    "seed": 1729,
+    "start": {
+      "interior_kind": null,
+      "interior_seed": null,
+      "kind": "start",
+      "name": "Greenward Trailhead",
+      "npc_anchors": [],
+      "scripted": true,
+      "x": 80,
+      "y": 656
+    },
+    "width": 1024
+  }
+}

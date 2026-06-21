@@ -114,6 +114,17 @@ class Settings(BaseSettings):
     # LLM generator and falls back to procedural on any failure.
     world_gen_enabled: bool = False
 
+    # Living-layer hosted LLM adapter (Wave 4) — completely-free providers only.
+    # The hosted adapter (app/llm/hosted_adapter.py) round-robins across these in
+    # priority order with retry-on-429 failover, and degrades to a static stub
+    # response when no keys are configured (so offline-dev never hangs).
+    #
+    # IMPORTANT: never commit real values for these. Keep them in .env.local.
+    groq_api_key: str = ""
+    cerebras_api_key: str = ""
+    gemini_api_key: str = ""
+    openrouter_api_key: str = ""
+
     # App
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173"
