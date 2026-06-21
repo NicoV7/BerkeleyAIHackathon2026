@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { TILE_SIZE } from "./constants";
 
 const DEFAULT_INTERACTION_DISTANCE = 20.8;
 
@@ -14,14 +15,19 @@ export interface NPCAnchorView {
 interface NPCActor {
   anchor: NPCAnchorView;
   sprite: Phaser.GameObjects.Sprite;
+  label: Phaser.GameObjects.Text | null;
   baseY: number;
 }
 
 export class NPCBehaviorManager {
   private actors: NPCActor[] = [];
 
-  add(anchor: NPCAnchorView, sprite: Phaser.GameObjects.Sprite): void {
-    this.actors.push({ anchor, sprite, baseY: sprite.y });
+  add(
+    anchor: NPCAnchorView,
+    sprite: Phaser.GameObjects.Sprite,
+    label?: Phaser.GameObjects.Text
+  ): void {
+    this.actors.push({ anchor, sprite, label: label ?? null, baseY: sprite.y });
   }
 
   update(time: number, playerX: number, playerY: number): void {
@@ -29,7 +35,12 @@ export class NPCBehaviorManager {
       const dx = playerX - actor.sprite.x;
       actor.sprite.setFlipX(dx < 0);
       actor.sprite.y = actor.baseY + Math.sin(time / 420 + actor.anchor.x) * 1.5;
-      actor.sprite.setDepth(playerY > actor.sprite.y ? 9 : 7);
+      const depth = playerY > actor.sprite.y ? 9 : 7;
+      actor.sprite.setDepth(depth);
+      if (actor.label) {
+        actor.label.setPosition(actor.sprite.x, actor.sprite.y - TILE_SIZE * 0.65);
+        actor.label.setDepth(depth + 1);
+      }
     }
   }
 
@@ -48,7 +59,10 @@ export class NPCBehaviorManager {
   }
 
   destroy(): void {
-    for (const actor of this.actors) actor.sprite.destroy();
+    for (const actor of this.actors) {
+      actor.sprite.destroy();
+      actor.label?.destroy();
+    }
     this.actors = [];
   }
 }
