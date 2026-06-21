@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -244,6 +245,110 @@ async def move_player(
         player_y=new_y,
         encounter_id=encounter_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Position sync (Track B — client-authoritative movement)
+# ---------------------------------------------------------------------------
+#
+# With client-side WorldSim owning per-frame movement, the per-step POST /move
+# round-trip is gone. The client instead pushes its ABSOLUTE tile position here,
+# debounced (~1-2s) and on every scene transition, so a page refresh resumes
+# where the player actually is. The server validates walkability/bounds and is
+# the persistence authority only — it is no longer the per-step gatekeeper.
+#
+# These request/response models are defined locally (rather than in the frozen
+# schemas.py) to keep this additive endpoint self-contained to the map router.
+
+
+# Last accepted client sync sequence per run. The client attaches a
+# monotonically increasing ``seq`` to each /sync; we drop any sync whose seq is
+# <= the last accepted one so an out-of-order / stale request (refresh +
+# reconnect race, retried debounce) can't roll a newer position back to an older
+# one. Kept in-process (not on the frozen Run model) — sequence ordering is a
+# transient integrity guard, not durable run state, and resets harmlessly on
+# restart (the next sync simply re-establishes the high-water mark).
+_LAST_SYNC_SEQ: dict[str, int] = {}
+
+
+class SyncPositionRequest(BaseModel):
+    """Absolute player tile position pushed by the client WorldSim."""
+
+    x: int
+    y: int
+    # Monotonic client sequence number. Optional for backward-compat; when
+    # omitted, ordering enforcement is skipped (treated as always-newest).
+    seq: int | None = None
+
+
+class SyncPositionResult(BaseModel):
+    """Persisted position (clamped/validated server-side)."""
+
+    player_x: int
+    player_y: int
+    # True when the sync was dropped as stale/out-of-order (seq <= last seen).
+    stale: bool = False
+
+
+@router.post("/runs/{run_id}/sync", response_model=SyncPositionResult)
+async def sync_position(
+    run_id: str,
+    body: SyncPositionRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SyncPositionResult:
+    """Persist an ABSOLUTE player position from the client WorldSim.
+
+    Called debounced (~1-2s) and on scene transitions — NOT per step. The server
+    is the remaining integrity gate now that movement is client-authoritative:
+
+      (a) CLAMP x,y into map bounds,
+      (b) REJECT a blocked landing tile (tiles[y][x] == 1) — snap back to the
+          stored position instead of corrupting it,
+      (c) DROP stale / out-of-order syncs via a monotonic client ``seq`` so a
+          refresh/reconnect race can't overwrite a newer position with an older
+          one (lost-write rollback).
+
+    World-layout determinism is unaffected: tiles stay seed-derived; only the
+    persisted player coordinate changes.
+    """
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # (c) Reject out-of-order / stale syncs. Strictly-increasing seq wins; an
+    # equal or lower seq is a duplicate or a late-arriving older write — drop it
+    # and return the currently-persisted position unchanged.
+    if body.seq is not None:
+        last = _LAST_SYNC_SEQ.get(run_id)
+        if last is not None and body.seq <= last:
+            return SyncPositionResult(
+                player_x=run.player_x, player_y=run.player_y, stale=True
+            )
+
+    # (a) Clamp to map bounds.
+    new_x = max(0, min(MAP_WIDTH - 1, body.x))
+    new_y = max(0, min(MAP_HEIGHT - 1, body.y))
+
+    # (b) Validate walkability — if the client reports a blocked tile (desync /
+    # tampering), keep the last good persisted position instead of corrupting it.
+    # Mirrors the collision check in move_player.
+    tiles = _generate_tiles(run.seed)
+    if tiles[new_y][new_x] == 1:
+        # The seq is still valid/newest — advance the high-water mark so a later
+        # in-order sync to a good tile isn't itself dropped as stale.
+        if body.seq is not None:
+            _LAST_SYNC_SEQ[run_id] = body.seq
+        return SyncPositionResult(player_x=run.player_x, player_y=run.player_y)
+
+    if body.seq is not None:
+        _LAST_SYNC_SEQ[run_id] = body.seq
+
+    run.player_x = new_x
+    run.player_y = new_y
+    session.add(run)
+    await session.commit()
+
+    return SyncPositionResult(player_x=new_x, player_y=new_y)
 
 
 # ---------------------------------------------------------------------------
