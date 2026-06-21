@@ -81,10 +81,11 @@ def _tokens(text: str) -> set[str]:
 
 
 def heuristic_score(topic: str, text: str) -> float:
-    """Deterministic fallback: blend length signal + topic keyword overlap."""
+    """Deterministic fallback: blend relevance, substance, and argument shape."""
     if not text or not text.strip():
         return 20.0
     words = text.split()
+    lower = text.lower()
     # length signal: rewards substance up to ~60 words, saturates.
     length_sig = min(len(words) / 60.0, 1.0)
     topic_tokens = _tokens(topic)
@@ -93,9 +94,58 @@ def heuristic_score(topic: str, text: str) -> float:
         overlap = len(topic_tokens & text_tokens) / len(topic_tokens)
     else:
         overlap = 0.0
-    # 35..85 range so an on-topic, substantial argument lands above 50.
-    raw = 35.0 + 30.0 * length_sig + 25.0 * overlap
-    return round(min(raw, 92.0), 1)
+
+    structure_markers = {
+        "because", "therefore", "however", "although", "while", "unless",
+        "if", "then", "tradeoff", "tradeoffs", "causes", "means",
+    }
+    reasoning_markers = {
+        "logic", "reason", "reasons", "consequence", "consequences",
+        "benefit", "benefits", "harm", "harms", "concrete", "mechanism",
+        "mechanisms", "causal", "burden", "proof",
+    }
+    evidence_markers = {
+        "evidence", "data", "study", "studies", "research", "example",
+        "examples", "cost", "benefit", "harm", "risk", "incentive",
+        "liability", "accountability", "policy", "enforcement",
+    }
+    rhetorical_markers = {
+        "slogan", "hurt", "stake", "stakes", "fear", "feels", "wins",
+    }
+    sentence_count = lower.count(".") + lower.count("?") + lower.count("!")
+    structure_sig = min(
+        (len(text_tokens & structure_markers) + min(sentence_count, 3)) / 4.0,
+        1.0,
+    )
+    reasoning_sig = min(len(text_tokens & reasoning_markers) / 3.0, 1.0)
+    evidence_sig = min(len(text_tokens & evidence_markers) / 3.0, 1.0)
+    rhetorical_sig = min(len(text_tokens & rhetorical_markers) / 3.0, 1.0)
+    number_count = sum(1 for word in words if any(ch.isdigit() for ch in word))
+    long_word_count = sum(1 for word in text_tokens if len(word) >= 8)
+    specificity_sig = min(
+        ((number_count + long_word_count / 12.0) / 2.0),
+        1.0,
+    )
+
+    # Stable content fingerprint: separates similarly long/on-topic local-model
+    # prose without relying on Python's randomized hash seed.
+    fingerprint = sum((idx % 17 + 1) * ord(ch) for idx, ch in enumerate(lower))
+    tie_breaker = (fingerprint % 201) / 10.0 - 10.0
+
+    # 30..90-ish range so an on-topic, substantial argument lands above 50 while
+    # weak/off-topic text can still fall below average.
+    raw = (
+        30.0
+        + 22.0 * length_sig
+        + 25.0 * overlap
+        + 8.0 * structure_sig
+        + 11.0 * reasoning_sig
+        + 7.0 * evidence_sig
+        + 5.0 * specificity_sig
+        - 8.0 * rhetorical_sig
+        + tie_breaker
+    )
+    return round(max(20.0, min(raw, 92.0)), 1)
 
 
 def _coerce_score(val: Any) -> float | None:
