@@ -488,7 +488,7 @@ export class InteriorScene extends Phaser.Scene {
     this.exiting = true;
     this.enemies.destroy();
     this.npcs.destroy();
-    this.sceneData.router.exit();
+    this.sceneData.router.exit(this.scene);
   }
 
   private triggerInteriorEncounter(enemyId: string) {

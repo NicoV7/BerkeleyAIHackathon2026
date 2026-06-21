@@ -756,6 +756,7 @@ export class OverworldScene extends Phaser.Scene {
         onNpcTalk: this.cfg.onNpcTalk,
         onEncounter: this.cfg.onEncounter,
         onEnterInterior: () => this.flushSync(),
+        onExitInterior: (tile) => this.resumeFromInterior(tile),
       });
 
       const win = this.windowOf(data);
@@ -1532,6 +1533,13 @@ export class OverworldScene extends Phaser.Scene {
     const poi = this.worldPois().find((p) => p.x === tx && p.y === ty);
     if (!poi) return;
     void this.sceneRouter.enter(poi);
+  }
+
+  private resumeFromInterior(returnTile: { x: number; y: number }) {
+    this.enterSuppressedTile = returnTile;
+    this.encounterFired = false;
+    this.encounterPending = false;
+    this.emitPlayerTile();
   }
 
   private maybeRefreshChunk(time: number) {
