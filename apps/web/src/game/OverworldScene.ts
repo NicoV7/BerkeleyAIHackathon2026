@@ -163,6 +163,12 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   private async fetchMapAndDraw() {
+    // Phaser auto-starts this scene from `scene: [OverworldScene]` (in
+    // Overworld.tsx) before the React wrapper restarts it with run config, so the
+    // first create() runs with empty init data and no runId. Bail until the
+    // wrapper's game.scene.start re-runs create() with cfg populated — otherwise
+    // we fire GET /api/runs/undefined/map → 404.
+    if (!this.cfg?.runId) return;
     try {
       const res = await fetch(`/api/runs/${this.cfg.runId}/map`);
       if (!res.ok) return;
