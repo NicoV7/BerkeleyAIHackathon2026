@@ -90,6 +90,24 @@ export function windowCoversViewport(
 }
 
 /**
+ * True when two chunk windows overlap or sit close enough to each other that
+ * they should be rendered together. A small halo lets callers keep immediately
+ * adjacent chunks painted before the camera exposes their edge.
+ */
+export function windowsWithinRenderHalo(
+  a: ChunkWindow,
+  b: ChunkWindow,
+  haloTiles = 0
+): boolean {
+  return (
+    b.originX <= a.originX + a.width + haloTiles &&
+    b.originX + b.width >= a.originX - haloTiles &&
+    b.originY <= a.originY + a.height + haloTiles &&
+    b.originY + b.height >= a.originY - haloTiles
+  );
+}
+
+/**
  * The set of neighbour-chunk centre requests to PREFETCH around a player tile.
  * Returns the centres one chunk-stride away in all 8 directions (cardinals +
  * diagonals), so whichever edge the player crosses next, that chunk's data is

@@ -6,6 +6,7 @@ import {
   shouldSwapChunk,
   tileWithinSafeMargin,
   windowCoversViewport,
+  windowsWithinRenderHalo,
   type ChunkWindow,
 } from "./ChunkStream";
 
@@ -59,6 +60,23 @@ describe("windowCoversViewport", () => {
   });
   it("false when the viewport spills past the chunk edge", () => {
     expect(windowCoversViewport(WIN, 180, 120, 30, 30)).toBe(false);
+  });
+});
+
+describe("windowsWithinRenderHalo", () => {
+  it("keeps overlapping chunk windows eligible for neighbor rendering", () => {
+    expect(
+      windowsWithinRenderHalo(WIN, { originX: 148, originY: 100, width: 96, height: 96 })
+    ).toBe(true);
+  });
+
+  it("uses halo tiles to keep just-ahead chunks rendered before the camera exposes them", () => {
+    expect(
+      windowsWithinRenderHalo(WIN, { originX: 198, originY: 100, width: 96, height: 96 }, 4)
+    ).toBe(true);
+    expect(
+      windowsWithinRenderHalo(WIN, { originX: 220, originY: 100, width: 96, height: 96 }, 4)
+    ).toBe(false);
   });
 });
 

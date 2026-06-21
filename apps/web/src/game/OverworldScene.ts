@@ -30,6 +30,7 @@ import {
   neighborPrefetchCentres,
   nearChunkEdge,
   shouldSwapChunk,
+  windowsWithinRenderHalo,
   type ChunkWindow,
 } from "./ChunkStream";
 import {
@@ -58,6 +59,7 @@ const SYNC_DEBOUNCE_MS = 1500;
 const CHUNK_FETCH_RADIUS_TILES = 48;
 const CHUNK_EDGE_MARGIN_TILES = 18;
 const CHUNK_FETCH_THROTTLE_MS = 450;
+const CHUNK_RENDER_HALO_TILES = 4;
 
 const TILE = {
   GRASS: 0,
@@ -531,6 +533,7 @@ export class OverworldScene extends Phaser.Scene {
 
       const win = this.windowOf(data);
       const { originX, originY } = win;
+      this.rememberChunk(data);
 
       if (this.sim) {
         // DOUBLE BUFFER: the live (front) terrain stays visible. Stamp the new
@@ -680,6 +683,33 @@ export class OverworldScene extends Phaser.Scene {
       rt.clear();
     }
 
+    this.drawTerrainWindow(g, data, rt);
+    for (const cached of this.renderableCachedChunks(data)) {
+      this.drawTerrainWindow(g, cached, null);
+    }
+
+    this.drawPois(g);
+  }
+
+  private renderableCachedChunks(anchor: MapState): MapState[] {
+    const anchorWin = this.windowOf(anchor);
+    const anchorKey = chunkKey(anchorWin.originX, anchorWin.originY);
+    return [...this.prefetchedChunks.values()].filter((cached) => {
+      const win = this.windowOf(cached);
+      return (
+        chunkKey(win.originX, win.originY) !== anchorKey &&
+        windowsWithinRenderHalo(anchorWin, win, CHUNK_RENDER_HALO_TILES)
+      );
+    });
+  }
+
+  private drawTerrainWindow(
+    g: Phaser.GameObjects.Graphics,
+    data: MapState,
+    rt: Phaser.GameObjects.RenderTexture | null
+  ) {
+    const originX = data.origin_x ?? 0;
+    const originY = data.origin_y ?? 0;
     const { tiles } = data;
     for (let y = 0; y < data.height; y++) {
       for (let x = 0; x < data.width; x++) {
@@ -697,8 +727,6 @@ export class OverworldScene extends Phaser.Scene {
         }
       }
     }
-
-    this.drawPois(g);
   }
 
   /** Stamp one atlas-backed tile (+ overlay + autotile edges + bridge) into rt.
@@ -1076,13 +1104,8 @@ export class OverworldScene extends Phaser.Scene {
       const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
       if (!res.ok || !this.sys?.isActive()) return;
       const data = (await res.json()) as MapState;
-      const key = chunkKey(data.origin_x ?? 0, data.origin_y ?? 0);
-      // Skip the chunk we're already showing; only cache distinct neighbours.
-      if (this.liveWindow && key === chunkKey(this.liveWindow.originX, this.liveWindow.originY)) {
-        return;
-      }
-      this.prefetchedChunks.set(key, data);
-      this.evictPrefetchOverflow();
+      this.rememberChunk(data);
+      this.paintCachedChunkIntoFront(data);
     } catch {
       // Best-effort warm-up; on-demand fetch covers any miss.
     } finally {
@@ -1090,13 +1113,28 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
+  private rememberChunk(data: MapState) {
+    const key = chunkKey(data.origin_x ?? 0, data.origin_y ?? 0);
+    this.prefetchedChunks.set(key, data);
+    this.evictPrefetchOverflow();
+  }
+
+  private paintCachedChunkIntoFront(data: MapState) {
+    if (!this.liveWindow || !this.sys?.isActive()) return;
+    const win = this.windowOf(data);
+    if (!windowsWithinRenderHalo(this.liveWindow, win, CHUNK_RENDER_HALO_TILES)) return;
+    const g = this.tileGraphics[this.frontBuffer];
+    this.drawTerrainWindow(g, data, null);
+    this.drawPois(g);
+  }
+
   /**
-   * Take a prefetched chunk whose window contains the requested centre, removing
-   * it from the cache. Lets fetchMapAndDraw skip the network entirely (instant
-   * swap) when the player crosses into an already-warmed neighbour.
+   * Reuse a prefetched chunk whose window contains the requested centre. Keeping
+   * it cached lets the same window remain renderable as an adjacent/behind chunk
+   * after the player recentres into a different window.
    */
   private takePrefetched(centerTile: { x: number; y: number }): MapState | null {
-    for (const [key, data] of this.prefetchedChunks) {
+    for (const data of this.prefetchedChunks.values()) {
       const ox = data.origin_x ?? 0;
       const oy = data.origin_y ?? 0;
       if (
@@ -1107,7 +1145,6 @@ export class OverworldScene extends Phaser.Scene {
         // Don't reuse the chunk we already display.
         shouldSwapChunk(this.liveWindow, this.windowOf(data))
       ) {
-        this.prefetchedChunks.delete(key);
         return data;
       }
     }
