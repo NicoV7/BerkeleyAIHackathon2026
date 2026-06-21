@@ -77,16 +77,21 @@ describe("SceneRouter interior transitions", () => {
     await router.enter(enterablePoi());
     router.exit(interiorScene);
 
-    expect(overworldScene.calls.map((call) => call.name)).toEqual(["launch", "pause"]);
+    expect(overworldScene.calls.map((call) => call.name)).toEqual([
+      "launch",
+      "pause",
+      "resume",
+    ]);
     expect(overworldScene.launch).toHaveBeenCalledWith(
       "DungeonInteriorScene",
       expect.objectContaining({ runId: "run-1", router })
     );
+    expect(overworldScene.resume).toHaveBeenCalledWith("OverworldScene", {
+      returnTile: { x: 10, y: 20 },
+    });
     expect(overworldScene.start).not.toHaveBeenCalled();
     expect(onExitInterior).toHaveBeenCalledWith({ x: 10, y: 20 });
-    expect(interiorScene.calls).toEqual([
-      { name: "stop", key: undefined, data: undefined },
-      { name: "resume", key: "OverworldScene", data: { returnTile: { x: 10, y: 20 } } },
-    ]);
+    expect(interiorScene.calls).toEqual([{ name: "stop", key: undefined, data: undefined }]);
+    expect(interiorScene.resume).not.toHaveBeenCalled();
   });
 });
