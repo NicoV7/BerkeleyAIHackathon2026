@@ -48,6 +48,25 @@ ENEMY_SUPPORT_SENTENCE = (
     "That matters because the burden of proof belongs to the side making the claim."
 )
 
+_GLUED_WORDS = frozenset(
+    """
+    a about accuracy accurate across actual actually add added adding against alien aliens all already
+    an anecdotal and answer answered answers any appeal argument arguments are assertion at be because
+    been being better burden but by can cannot case cases causal claim claims clear concrete cost costs
+    could counter counterexample defying demand depends did do does due duties duty earth evidence
+    example examples explain explained explaining explains extraordinary fact facts fail fails failure false
+    from gap gaps had has have however
+    if in into is it lack lacks law laws likely logic made manmade may mechanism mechanisms
+    misidentification more must natural need needs no not objects of on only or phenomena physics
+    point points premise proof prove proves rebut rebuttal rebuttals reason reasons recording recordings
+    sightings side still
+    strong stronger strongest support supports technology than that the their them there therefore these
+    they this those to tradeoff tradeoffs true truth ufo ufos visited visits was weak where which while
+    who why will with without would
+    """.split()
+)
+_GLUED_WORD_MAX_LEN = max(len(part) for part in _GLUED_WORDS)
+
 PERSONA_PROMPT_KEYS = (
     "archetype",
     "voice",
@@ -250,6 +269,7 @@ def sanitize_battle_utterance(
             lines.append(line)
 
     compact = re.sub(r"\s+", " ", " ".join(lines) if lines else text.strip()).strip()
+    compact = _repair_malformed_battle_format(compact)
     if not compact:
         return ""
 
@@ -449,11 +469,60 @@ def _prompt_value(value: Any) -> str:
 
 def _strip_label(text: str) -> str:
     return re.sub(
-        r"^(claim|support|evidence|rebuttal|counter|argument)\s*:\s*",
+        r"^(claim|support|evidence|rebuttal|counter|argument|for|against)\s*:\s*",
         "",
         text,
         flags=re.IGNORECASE,
     ).strip()
+
+
+def _repair_malformed_battle_format(text: str) -> str:
+    text = re.sub(
+        r"\b(claim|support|evidence|rebuttal|counter|argument)\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"([,;:])(?=\S)", r"\1 ", text)
+    text = re.sub(r"([.!?])(?=[A-Z])", r"\1 ", text)
+    text = re.sub(r"([a-z])([A-Z]{2,})", r"\1 \2", text)
+    text = re.sub(r"\b([A-Z]{2,})([a-z]{3,})", r"\1 \2", text)
+    text = re.sub(r"\b[A-Za-z]{16,}\b", _repair_glued_word_match, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _repair_glued_word_match(match: re.Match[str]) -> str:
+    word = match.group(0)
+    parts = _segment_glued_word(word)
+    if parts is None:
+        return word
+    if word[0].isupper():
+        parts[0] = parts[0].capitalize()
+    return " ".join(parts)
+
+
+def _segment_glued_word(word: str) -> list[str] | None:
+    lower = word.lower()
+    if lower in _GLUED_WORDS:
+        return None
+    best: list[list[str] | None] = [None] * (len(lower) + 1)
+    best[0] = []
+    for start in range(len(lower)):
+        current = best[start]
+        if current is None:
+            continue
+        for end in range(start + 1, min(len(lower), start + _GLUED_WORD_MAX_LEN) + 1):
+            piece = lower[start:end]
+            if piece not in _GLUED_WORDS:
+                continue
+            candidate = [*current, piece]
+            existing = best[end]
+            if existing is None or len(candidate) < len(existing):
+                best[end] = candidate
+    parts = best[-1]
+    if parts is None or len(parts) < 2:
+        return None
+    return parts
 
 
 def _split_sentence_parts(text: str) -> tuple[list[str], str]:

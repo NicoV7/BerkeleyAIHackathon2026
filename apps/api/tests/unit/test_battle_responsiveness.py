@@ -289,6 +289,7 @@ async def test_complete_before_emit_sanitizes_before_token(
     done = next(chunk for chunk in chunks if chunk["kind"] == "done")
     assert tokens == [done["text"]]
     assert "**" not in tokens[0]
+    assert "Against:" not in tokens[0]
     assert "Claim:" not in tokens[0]
     assert "Support:" not in tokens[0]
     assert "UFO sightings" in tokens[0]
