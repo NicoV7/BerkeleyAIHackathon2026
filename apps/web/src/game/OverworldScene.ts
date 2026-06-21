@@ -56,9 +56,12 @@ export { TILE_SIZE } from "./constants";
 
 /** How often (ms) to persist the player's absolute position to the server. */
 const SYNC_DEBOUNCE_MS = 1500;
-// Smaller chunks (was 48 → 96-wide window, "too big"): faster fetches + cheaper
-// repaints. Coverage no longer relies on one giant chunk — neighbours render too.
-const CHUNK_FETCH_RADIUS_TILES = 24;
+// Chunk window = radius*2. 96 was "too big"; 48 made the window ~viewport-sized,
+// so re-centre swaps fired constantly (visible "tiles swapping"). 64 lets one
+// chunk cover a typical viewport — infrequent, seamless re-centres — while
+// staying well under the old 96. Cached neighbours still fill big screens at the
+// next re-centre.
+const CHUNK_FETCH_RADIUS_TILES = 32;
 // How far (tiles) a cached chunk may sit from the anchor and still be painted
 // into the live buffer, so the area around the player is gap-free.
 const CHUNK_RENDER_HALO_TILES = 2;
@@ -1434,25 +1437,11 @@ export class OverworldScene extends Phaser.Scene {
       const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
       if (!res.ok || !this.sys?.isActive()) return;
       const data = (await res.json()) as MapState;
+      // Cache only — neighbours are PAINTED at the next re-centre (one atomic
+      // back-buffer swap), never by repainting the live front buffer. Repainting
+      // the front each time a neighbour streamed in caused visible "tiles
+      // swapping / re-rendering"; the warm cache just makes the next swap instant.
       this.rememberChunk(data);
-      // Progressive halo fill: if this neighbour borders the live anchor, repaint
-      // the FRONT buffer now so it appears immediately (no waiting for a
-      // re-centre). This is what keeps the area around the player gap-free.
-      if (this.mapData && this.liveWindow) {
-        const win = this.windowOf(data);
-        const anchorWin = this.windowOf(this.mapData);
-        const inHalo = windowsWithinRenderHalo(anchorWin, win, CHUNK_RENDER_HALO_TILES);
-        const alreadyCovered = windowCoversViewport(
-          this.liveWindow,
-          win.originX,
-          win.originY,
-          win.width,
-          win.height
-        );
-        if (inHalo && !alreadyCovered) {
-          this.liveWindow = this.drawMapInto(this.frontBuffer, this.mapData);
-        }
-      }
     } catch {
       // Best-effort warm-up; on-demand fetch covers any miss.
     } finally {
