@@ -190,3 +190,51 @@ export function bridgeFrameFor(tile: number, nb: Neighbors): number | null {
 export function hasAtlasFrame(tile: number): boolean {
   return baseFrameFor(tile) !== null;
 }
+
+// ---------------------------------------------------------------------------
+// V1 cohesion: client-side terrain blending (pure, tilemap-friendly — full-tile
+// frame choices, no half-tile offsets). All deterministic per-tile via jitter.
+// ---------------------------------------------------------------------------
+
+const _waterAdjacent = (nb: Neighbors) =>
+  nb.n === TILE.WATER || nb.s === TILE.WATER || nb.e === TILE.WATER || nb.w === TILE.WATER;
+
+const _forestAdjacent = (nb: Neighbors) =>
+  nb.n === TILE.FOREST || nb.s === TILE.FOREST || nb.e === TILE.FOREST || nb.w === TILE.FOREST;
+
+/**
+ * Shoreline blend: a walkable land tile directly touching WATER renders a SAND
+ * base, producing a 1-tile beach ring that softens the hard water/land border.
+ * Returns the sand frame to use in place of the normal base, or null to keep it.
+ */
+export function shorelineBaseFrame(tile: number, nb: Neighbors): number | null {
+  if (tile === TILE.WATER || tile === TILE.MOUNTAIN || tile === TILE.BLOCKED) return null;
+  return _waterAdjacent(nb) ? FRAME.SAND : null;
+}
+
+/**
+ * Forest feathering: scatter sparse edge trees onto GRASS tiles that border a
+ * FOREST so the woods thin into the plains instead of beginning at a hard wall
+ * ("grass before the big trees"). Deterministic per-tile (~37% of border grass),
+ * frame varied for texture. Returns an overlay or null. Pure.
+ */
+export function forestFeatherOverlay(
+  tile: number,
+  nb: Neighbors,
+  jitter: number
+): Overlay | null {
+  if (tile !== TILE.GRASS || !_forestAdjacent(nb)) return null;
+  if ((jitter & 0x7) >= 3) return null; // ~3/8 density
+  return { frame: jitter & 0x100 ? FRAME.TREE_DARK : FRAME.TREE, alpha: 1 };
+}
+
+/**
+ * Subtle per-tile tint for GRASS so large fields aren't a flat color. Cycles a
+ * few near-white green shades (multiplied with the grass frame). Returns a tint
+ * or undefined (no tint) for non-grass. Pure.
+ */
+export function grassTint(tile: number, jitter: number): number | undefined {
+  if (tile !== TILE.GRASS && tile !== TILE.CAMP) return undefined;
+  const shades = [0xffffff, 0xeaf2dc, 0xdcecc6, 0xf2f0da];
+  return shades[(jitter >>> 9) & 0x3];
+}

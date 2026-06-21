@@ -44,6 +44,9 @@ import {
   baseFrameFor,
   bridgeFrameFor,
   overlayFor,
+  shorelineBaseFrame,
+  forestFeatherOverlay,
+  grassTint,
   type Neighbors,
 } from "./TileAtlas";
 import { WorldSim, type MoveIntent } from "./WorldSim";
@@ -729,11 +732,21 @@ export class OverworldScene extends Phaser.Scene {
 
         if (base !== null) {
           const nb = this.neighborsOf(tiles, x, y, tile);
+          // V1 cohesion: shoreline beach on water-edge land, else bridge, else base.
           // recalculateFaces=false: collision is handled by WorldSim, not the
           // tilemap, so per-tile face recalc (~9k/layer/swap) is pure waste.
-          buf.base.putTileAt(bridgeFrameFor(tile, nb) ?? base, x, y, false);
+          // Bridge wins over shoreline so a ROAD crossing water stays a bridge,
+          // not a beach; other land touching water gets the sand shoreline.
+          const baseFrame =
+            bridgeFrameFor(tile, nb) ?? shorelineBaseFrame(tile, nb) ?? base;
+          const bt = buf.base.putTileAt(baseFrame, x, y, false);
+          // Unconditional tint (buffer reuse only resets .index, not .tint).
+          if (bt) bt.tint = grassTint(tile, jitter) ?? 0xffffff;
 
-          const overlay = overlayFor(tile, jitter);
+          // Feature overlay (tree/campfire/structure), else feather the forest
+          // edge with sparse scrub trees on bordering grass.
+          const overlay =
+            overlayFor(tile, jitter) ?? forestFeatherOverlay(tile, nb, jitter);
           if (overlay) {
             const t = buf.overlay.putTileAt(overlay.frame, x, y, false);
             // Set alpha/tint UNCONDITIONALLY: putTileAt over an already-occupied
