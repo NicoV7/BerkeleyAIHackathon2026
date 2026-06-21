@@ -117,6 +117,45 @@ def _domain_skills_for(debate_type: DebateType) -> list[dict[str, Any]]:
     return skills
 
 
+def apply_avatar_traits(monster: Monster, avatar_type: str | None) -> bool:
+    """Apply a persisted avatar type to an existing monster.
+
+    Empty-start onboarding grants the first agent via the gacha path, not
+    ``roll_starter_party``. This helper gives that first pulled monster the same
+    avatar behavior as the legacy starter path: chosen type, type signature
+    moves, and permanent lead marker. The gacha persona/name are preserved.
+    """
+    dtype = _parse_avatar_type(avatar_type)
+    if dtype is None:
+        return False
+
+    persona = dict(monster.persona or {})
+    voice = (
+        persona.get("backstory")
+        or persona.get("voice")
+        or persona.get("tagline")
+        or persona.get("bio")
+        or ""
+    )
+    tone = persona.get("tone") or "persuasive"
+    quirk = persona.get("quirks") or persona.get("style") or persona.get("tagline") or ""
+
+    monster.type = dtype
+    monster.skills = _domain_skills_for(dtype)
+    monster.is_avatar = True
+    monster.harness = {
+        **dict(monster.harness or {}),
+        "system_prompt": (
+            f"You are a debater of type {dtype.value}. "
+            f"Background: {voice} "
+            f"Tone: {tone}. "
+            f"Quirk: {quirk}. "
+            "Debate forcefully but fairly. Keep responses under 80 words."
+        ),
+    }
+    return True
+
+
 def _pick_skills(rng: random.Random, debate_type: DebateType, n: int = 2) -> list[dict[str, Any]]:
     """Pick n skills drawn from the monster's TYPE domain first.
 

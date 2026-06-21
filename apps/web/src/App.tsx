@@ -5,16 +5,26 @@ import Overworld from "./ui/Overworld";
 import { BattleDebateView } from "./ui/BattleDebateView";
 import PartyScreen from "./ui/PartyScreen";
 import { GambitEditor } from "./ui/GambitEditor";
-import TrainingScreen from "./ui/TrainingScreen";
 import GachaScreen from "./ui/GachaScreen";
 import StartMenu from "./ui/StartMenu";
+import CampScreen from "./ui/CampScreen";
+import ShopScreen from "./ui/ShopScreen";
+import NPCDialogue from "./game/NPCDialogue";
+import type { NPCAnchorView } from "./game/NPCBehavior";
+import { INTRO_SCRIPT } from "./content/introScript";
 import { IrisTransitionProvider, useIrisTransition } from "./ui/fx/IrisWipe";
+import { AdventureMenu } from "./ui/shell/AdventureMenu";
+import { OverlayHost } from "./ui/shell/OverlayHost";
 
-// Wave 2: real screens wired in.
+// Wave 2 + WS-6 tab restructure: top tabs are now just overworld + party.
 //   overworld -> WS-A (Phaser canvas)
-//   encounter -> WS-B/WS-C (BattleDebateView)
+//   encounter -> WS-B/WS-C (BattleDebateView) — BATTLE-ONLY (no tab; entered via
+//                setEncounter only)
 //   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
-//   training  -> WS-F (TrainingScreen)
+//   training  -> moved into the diegetic Camp screen (CampScreen "Train"); the
+//                old standalone TrainingScreen tab was removed.
+// Camp / Shop are diegetic overlays (store atCamp / shopNpcId), entered via NPC
+// dialogue. Inventory / Quests / Map are Adventure-menu overlays (OverlayHost).
 export default function App() {
   return (
     <IrisTransitionProvider>
@@ -24,7 +34,17 @@ export default function App() {
 }
 
 function AppShell() {
-  const { runId, screen, topic, theme: runTheme, playerName, battleLocked, setScreen } = useGame();
+  const {
+    runId,
+    screen,
+    topic,
+    theme: runTheme,
+    playerName,
+    battleLocked,
+    atCamp,
+    shopNpcId,
+    setScreen,
+  } = useGame();
   const { transition } = useIrisTransition();
   const [health, setHealth] = useState<string>("…");
   // Gacha gate (Wave A): when a run is loaded with an empty party, the player
@@ -63,7 +83,7 @@ function AppShell() {
   }, [runId]);
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen min-h-screen flex flex-col overflow-hidden">
       {runId && (
         <header
           className="flex items-center justify-between px-4 py-2"
@@ -114,10 +134,14 @@ function AppShell() {
             </div>
           ) : (
             <nav
-              className="flex gap-2 px-4 py-2"
+              className="flex items-center gap-2 px-4 py-2"
               style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
             >
-              {(["overworld", "encounter", "party", "training"] as const).map((s) => (
+              {/* WS-6 restructure: the "encounter" tab (battle is now reachable
+                  ONLY via setEncounter) and the "training" tab (training moved
+                  into the diegetic Camp screen) were removed. Only the
+                  free-navigable screens remain. See UI_CONTRACT.md §Tab removal. */}
+              {(["overworld", "party"] as const).map((s) => (
                 <button
                   key={s}
                   className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
@@ -128,25 +152,66 @@ function AppShell() {
                   {s}
                 </button>
               ))}
+              {/* Adventure menu: persistent entry into Inventory/Quests/Map. */}
+              <AdventureMenu className="ml-auto" />
             </nav>
           )}
-          <main className="flex-1 overflow-auto">
+          <main className="flex-1 min-h-0 overflow-auto relative">
             {needsGacha ? (
-              <GachaScreen
-                onReady={() => {
-                  setNeedsGacha(false);
-                  setScreen("overworld");
-                }}
-              />
+              <>
+                <GachaScreen
+                  onReady={() => {
+                    setNeedsGacha(false);
+                    setScreen("overworld");
+                  }}
+                />
+                {/* Onboarding (#5): the scripted intro NPC drives the empty-start
+                    funnel. Its "accept" grants the first quest then triggers the
+                    first pull via onboarding/first-pull — the SAME gacha gate,
+                    not a competing funnel — and clears the gate on success. */}
+                <NPCDialogue
+                  runId={runId}
+                  npc={INTRO_NPC_ANCHOR}
+                  onClose={() => {
+                    /* declining leaves the player on the gacha gate */
+                  }}
+                  onOnboarded={() => {
+                    setNeedsGacha(false);
+                    setScreen("overworld");
+                  }}
+                />
+              </>
             ) : (
               <ScreenPanel screen={screen} />
             )}
           </main>
+          {/* Adventure-menu overlays (Inventory/Quests/Map) + diegetic surfaces
+              (Camp/Shop) float above everything but the iris transition.
+              Suppressed during battle + the gacha gate because
+              setEncounter/needsGacha already clear/guard them. */}
+          {!battleLocked && !needsGacha ? (
+            <>
+              <OverlayHost />
+              {atCamp ? <CampScreen /> : null}
+              {shopNpcId ? <ShopScreen /> : null}
+            </>
+          ) : null}
         </>
       )}
     </div>
   );
 }
+
+// A synthetic anchor for the scripted intro NPC so the onboarding dialogue can
+// render on the gacha gate (where the real overworld NPC isn't mounted). Only
+// npc_id / name / archetype matter to IntroDialogue; the coords are unused.
+const INTRO_NPC_ANCHOR: NPCAnchorView = {
+  npc_id: INTRO_SCRIPT.npcId,
+  name: INTRO_SCRIPT.npcName,
+  archetype: "quest_giver",
+  x: 0,
+  y: 0,
+};
 
 function ScreenPanel({ screen }: { screen: string }) {
   // PartyScreen signals "edit gambits" via window.location.hash = gambits/{id}.
@@ -165,9 +230,9 @@ function ScreenPanel({ screen }: { screen: string }) {
     case "overworld":
       return <Overworld />;
     case "encounter":
+      // Battle-only: reached exclusively via setEncounter (no top tab). The nav
+      // lock keeps the player here until Flee / win / lose.
       return <BattleDebateView />;
-    case "training":
-      return <TrainingScreen />;
     case "party":
       if (gambitMonster) {
         return (

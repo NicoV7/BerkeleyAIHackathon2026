@@ -20,8 +20,13 @@ import { useGame } from "../state/store";
 import OverworldHud, { type HudMap } from "./OverworldHud";
 import { useIrisTransition } from "./fx/IrisWipe";
 
+// Cast helper so we can call public methods on the typed scene.
+function getOverworldScene(game: Phaser.Game | null): OverworldScene | null {
+  return (game?.scene?.getScene?.("OverworldScene") as OverworldScene) ?? null;
+}
+
 export default function Overworld() {
-  const { runId, setEncounter } = useGame();
+  const { runId, activeEncounterId, setEncounter } = useGame();
   const { transition } = useIrisTransition();
   const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -32,10 +37,20 @@ export default function Overworld() {
   const [activeNpc, setActiveNpc] = useState<NPCAnchorView | null>(null);
 
   useLayoutEffect(() => {
-    const measure = () => setSize({ w: window.innerWidth, h: window.innerHeight });
+    const measure = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      const width = rect?.width ?? window.innerWidth;
+      const height = rect?.height ?? window.innerHeight;
+      setSize({ w: Math.floor(width), h: Math.floor(height) });
+    };
     measure();
+    const observer = new ResizeObserver(measure);
+    if (rootRef.current) observer.observe(rootRef.current);
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
   }, []);
 
   useEffect(() => {
@@ -97,9 +112,33 @@ export default function Overworld() {
     }
   }, [size]);
 
+  // Pause the Phaser scene during battle; reset encounter latch flags on return.
+  const wasInEncounterRef = useRef(false);
+  useEffect(() => {
+    const game = gameRef.current;
+    const scene = getOverworldScene(game);
+    if (!scene || !game) return;
+    if (activeEncounterId) {
+      wasInEncounterRef.current = true;
+      scene.scene.pause();
+      // Disable Phaser's GLOBAL KeyboardManager (not the per-scene plugin). The
+      // manager is what calls preventDefault() on the WASD/arrow captures at the
+      // window level; its onKeyDown short-circuits on this `enabled` flag BEFORE
+      // preventDefault, so toggling it here lets WASD/Space reach the battle
+      // textarea. The scene-plugin `enabled` flag does NOT gate that path.
+      if (game.input?.keyboard) game.input.keyboard.enabled = false;
+    } else if (wasInEncounterRef.current) {
+      wasInEncounterRef.current = false;
+      if (game.input?.keyboard) game.input.keyboard.enabled = true;
+      scene.scene.resume();
+      // Reset the encounterFired/encounterPending latches so update() runs again.
+      scene.resetAfterBattle();
+    }
+  }, [activeEncounterId]);
+
   if (!runId) {
     return (
-      <div ref={rootRef} className="flex items-center justify-center h-full">
+      <div ref={rootRef} className="flex items-center justify-center w-full h-full">
         <p className="font-body text-sm" style={{ color: "var(--muted)" }}>
           No active run — start a run first.
         </p>
@@ -110,8 +149,7 @@ export default function Overworld() {
   return (
     <div
       ref={rootRef}
-      className="relative w-full overflow-hidden"
-      style={{ height: size.h || "100vh" }}
+      className="relative w-full h-full overflow-hidden"
     >
       <div ref={containerRef} className="absolute inset-0" />
       <div

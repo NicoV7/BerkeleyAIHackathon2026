@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from app.db.models import DebateType
+from app.db.models import DebateType, Monster, MonsterOwner
 from app.party import archetypes
-from app.party.generator import roll_starter_party
+from app.party.generator import apply_avatar_traits, roll_starter_party
 
 
 class _FakeSession:
@@ -66,3 +66,26 @@ async def test_invalid_avatar_type_keeps_random_starter_behavior_unmarked() -> N
 
     assert len(monsters) in {2, 3}
     assert all(monster.is_avatar is False for monster in monsters)
+
+
+def test_apply_avatar_traits_forces_existing_first_pull_to_avatar_type() -> None:
+    monster = Monster(
+        run_id="run-empty-start",
+        owner=MonsterOwner.player,
+        name="Gacha Persona",
+        type=DebateType.logos,
+        persona={"voice": "A precise scientist.", "tagline": "Evidence first."},
+        skills=[],
+    )
+
+    applied = apply_avatar_traits(monster, "PATHOS")
+
+    assert applied is True
+    assert monster.is_avatar is True
+    assert monster.type == DebateType.pathos
+    assert {skill["name"] for skill in monster.skills} == {
+        "Emotional Appeal",
+        "Anecdote",
+    }
+    assert {skill["type"] for skill in monster.skills} == {"PATHOS"}
+    assert "type PATHOS" in monster.harness["system_prompt"]

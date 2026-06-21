@@ -12,6 +12,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useGame } from "../state/store";
 import { api } from "../api/client";
 import { parseSkills, typeColor } from "../lib/skills";
+import { EMPTY_PARTY_COPY } from "../content/introScript";
 
 // ---- Types (mirrors app/schemas.py MonsterSummary) ----
 
@@ -275,9 +276,9 @@ export default function PartyScreen() {
       {!loading && party.length === 0 && !error && (
         <div className="pixel-panel p-6 text-center">
           <div className="text-4xl mb-3">👾</div>
-          <div className="font-hud text-sm mb-1">No party members yet</div>
+          <div className="font-hud text-sm mb-1">{EMPTY_PARTY_COPY.title}</div>
           <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
-            Pull a persona from the gacha to start your party.
+            {EMPTY_PARTY_COPY.message}
           </div>
         </div>
       )}

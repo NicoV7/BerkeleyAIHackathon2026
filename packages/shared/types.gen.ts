@@ -891,6 +891,118 @@ export interface components {
             consumed: boolean;
         };
         /**
+         * WalletState
+         * @description A run's coin balance (WS-1 economy).
+         */
+        WalletState: {
+            /** Run Id */
+            run_id: string;
+            /** Coins */
+            coins: number;
+        };
+        /**
+         * InventoryItem
+         * @description One owned item line for a run (joined with catalog metadata).
+         */
+        InventoryItem: {
+            /** Item Key */
+            item_key: string;
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Qty */
+            qty: number;
+            /** Effect @default {} */
+            effect?: {
+                [key: string]: unknown;
+            };
+            /** Price @default 0 */
+            price?: number;
+        };
+        /**
+         * UseItemRequest
+         * @description Consume one unit of an owned item, applying its effect.
+         */
+        UseItemRequest: {
+            /** Item Key */
+            item_key: string;
+        };
+        /**
+         * UseItemResult
+         * @description Outcome of consuming an item.
+         */
+        UseItemResult: {
+            /** Run Id */
+            run_id: string;
+            /** Item Key */
+            item_key: string;
+            /** Applied @default {} */
+            applied?: {
+                [key: string]: unknown;
+            };
+            /** Target */
+            target?: string | null;
+            /** Remaining Qty @default 0 */
+            remaining_qty?: number;
+            /** Message @default "" */
+            message?: string;
+        };
+        /**
+         * ShopItem
+         * @description One purchasable line in an NPC's shop.
+         */
+        ShopItem: {
+            /** Item Key */
+            item_key: string;
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Price */
+            price: number;
+            /** Qty */
+            qty: number;
+            /** Effect @default {} */
+            effect?: {
+                [key: string]: unknown;
+            };
+        };
+        /** ShopState */
+        ShopState: {
+            /** Npc Id */
+            npc_id: string;
+            /** Items @default [] */
+            items?: components["schemas"]["ShopItem"][];
+        };
+        /** BuyItemRequest */
+        BuyItemRequest: {
+            /** Item Key */
+            item_key: string;
+            /** Qty @default 1 */
+            qty?: number;
+        };
+        /**
+         * BuyItemResult
+         * @description Outcome of a shop purchase.
+         */
+        BuyItemResult: {
+            /** Run Id */
+            run_id: string;
+            /** Npc Id */
+            npc_id: string;
+            /** Item Key */
+            item_key: string;
+            /** Qty */
+            qty: number;
+            /** Spent */
+            spent: number;
+            /** Coins */
+            coins: number;
+            /** Owned Qty */
+            owned_qty: number;
+        };
+        /**
          * MemoryRecallResult
          * @description Result of `POST /api/encounters/{eid}/memory-recall` (Wave C ability).
          */
@@ -1067,6 +1179,8 @@ export interface components {
             id: string;
             /** Debate Topic */
             debate_topic: string;
+            /** Avatar Type */
+            avatar_type?: string | null;
             /**
              * Player Name
              * @default Player
@@ -1119,6 +1233,8 @@ export interface components {
             id: string;
             /** Debate Topic */
             debate_topic: string;
+            /** Avatar Type */
+            avatar_type?: string | null;
             /** Theme */
             theme?: string | null;
             /** Player X */
@@ -1132,6 +1248,8 @@ export interface components {
              * @default []
              */
             party: components["schemas"]["MonsterSummary"][];
+            /** Coins @default 0 */
+            coins?: number;
         };
         /**
          * Scorecard

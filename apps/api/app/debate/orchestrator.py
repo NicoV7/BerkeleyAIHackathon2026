@@ -35,6 +35,7 @@ from typing import Any, Optional
 from app.config import settings
 from app.debate.damage import compute_damage
 from app.debate.judge import heuristic_score, score_round
+from app.debate.latency_metrics import RoundTimer
 from app.debate.topics import domain_match_mult
 from app.gateway.gateway import gateway
 
@@ -59,6 +60,122 @@ except Exception:  # noqa: BLE001 — never fail if the module isn't present yet
 
 CAPTURABLE_HP_FRACTION = 0.25
 TRANSCRIPT_WINDOW = 16  # last N utterances injected into actor context
+
+# WS-5: the slug of the MP counter-skill. When this skill is active AND paid for,
+# the caster's prompt is primed with the enemy's predicted next line (read from
+# the already-present transcript / cached opening) so the caster pre-empts it —
+# with ZERO extra model calls. Compared via the same slug rule skill_engine uses.
+COUNTER_SKILL_SLUG = "rhetorical_flourish"
+
+
+def _is_counter_skill(skill_name: str | None) -> bool:
+    """True when ``skill_name`` resolves to the Rhetorical Flourish counter-skill.
+
+    Slug-normalizes so "Rhetorical Flourish" / "rhetorical_flourish" both match,
+    mirroring skill_engine.slugify without importing it on the hot path.
+    """
+    if not skill_name:
+        return False
+    try:
+        from app.debate.skill_engine import slugify
+
+        return slugify(skill_name) == COUNTER_SKILL_SLUG
+    except Exception:  # noqa: BLE001 — never fail the round on a slug hiccup
+        import re
+
+        norm = re.sub(r"[^0-9a-zA-Z]+", "_", str(skill_name).strip().lower()).strip("_")
+        return norm == COUNTER_SKILL_SLUG
+
+
+def _last_enemy_line(transcript: list[dict[str, Any]], caster: "Combatant") -> str:
+    """Most recent utterance by the OPPOSING side, read from the shared transcript.
+
+    The transcript is ALREADY fetched once per round by the runners, so this is a
+    pure in-memory scan — no Redis round-trip, no model call. Returns "" when no
+    opposing line exists yet (round 1), in which case the caller falls back to the
+    materialized opening as the predicted line.
+    """
+    if not transcript:
+        return ""
+    caster_role = caster.role
+    for u in reversed(transcript):
+        role = u.get("actor_role")
+        text = (u.get("text") or "").strip()
+        if not text:
+            continue
+        # The "enemy" of a party caster is role=="enemy" and vice-versa. Skip the
+        # caster's own side; the first opposing line walking backwards is the one
+        # they most need to pre-empt.
+        if role and role != caster_role:
+            return text
+    return ""
+
+
+def _counter_skill_instruction(predicted_line: str) -> str:
+    """Build the pre-empt-and-rebut instruction injected for the counter-skill.
+
+    ``predicted_line`` is the opponent's already-existing last line (or, on round
+    1, their materialized opening). This text is appended to the caster's SYSTEM
+    prompt — it does NOT trigger any generation by itself; the caster's single,
+    normal turn is simply primed with the opponent's predicted move.
+    """
+    line = (predicted_line or "").strip()
+    if not line:
+        return (
+            "RHETORICAL FLOURISH (counter): your opponent has not spoken yet. "
+            "Pre-empt their most likely opening objection to your side, dismantle "
+            "it in advance, and land a memorable one-line flourish."
+        )
+    # Keep the injected quote bounded so the counter-skill never grows context
+    # unbounded (a single enemy turn is already short, but clamp defensively).
+    if len(line) > 600:
+        line = line[:600].rstrip() + "…"
+    return (
+        "RHETORICAL FLOURISH (counter): your opponent's most likely next move is "
+        f'this line: "{line}". Pre-empt it — name the rebuttal they will reach '
+        "for, dismantle it BEFORE they can make it, and compress your win into one "
+        "rhythmic, memorable sentence that lands last."
+    )
+
+
+async def _resolve_counter_context(
+    caster: "Combatant",
+    skill_name: str | None,
+    transcript: list[dict[str, Any]],
+    topic: str,
+    combatants: list["Combatant"] | None = None,
+) -> str | None:
+    """Build the WS-5 counter-skill prompt prime, or ``None`` when not active.
+
+    ZERO extra model calls by construction:
+      * If ``skill_name`` is NOT the counter-skill -> ``None`` (normal turn).
+      * Predicted line = the most recent OPPOSING utterance already in
+        ``transcript`` (pure in-memory scan).
+      * Round 1 (no opposing line yet): use the enemy's already-materialized
+        opening via ``get_cached_opening`` — a pure Redis RETRIEVAL that returns
+        ``None`` on a miss and NEVER generates (we deliberately avoid
+        ``get_or_create_opening`` so the counter-skill can't trigger a
+        completion). On a miss we still return a generic pre-empt instruction
+        (no line, still no call).
+
+    The MP gate runs BEFORE this in the round runners, so reaching here means the
+    skill was paid for.
+    """
+    if not _is_counter_skill(skill_name):
+        return None
+    predicted = _last_enemy_line(transcript, caster)
+    if not predicted:
+        # Round 1 with no opposing line yet — predict the enemy's opening. Pure
+        # cache retrieval (no generation): a miss simply yields a line-less prime.
+        try:
+            from app.debate.materialize import get_cached_opening
+
+            cached = await get_cached_opening(topic)
+            if cached:
+                predicted = cached.strip()
+        except Exception:  # noqa: BLE001 — cache lookup is best-effort, never a call
+            predicted = ""
+    return _counter_skill_instruction(predicted)
 
 # Gacha Wave B: end-of-round MP regen. +10 / round, clamped to max_mp. Lives as
 # a module-level constant so tests + helpers in app.debate.mp share one source.
@@ -166,6 +283,59 @@ _FALLBACK_AGAINST_DEFAULT = [
 ]
 
 
+# WS-4 warm-path state. A model is "warm" once a prewarm ping at encounter create
+# has loaded it into Ollama (so it's resident, not paying the cold-load tax). The
+# live streaming path widens its first-token budget ONLY for warm models — a
+# truly cold/stalled model is still bounded by the small cold guard, so we lower
+# the fallback rate on healthy models without re-introducing the cold hang.
+_WARM_MODELS: set[str] = set()
+
+
+def _mark_warm(model: str | None) -> None:
+    if model:
+        _WARM_MODELS.add(model)
+
+
+def is_model_warm(model: str | None) -> bool:
+    """True once ``model`` has been prewarmed this process (WS-4)."""
+    return bool(model) and model in _WARM_MODELS
+
+
+def _reset_warm_state() -> None:
+    """Test/dev helper — forget all warm models so the cold budget applies."""
+    _WARM_MODELS.clear()
+
+
+async def _ollama_keep_alive(model: str) -> bool:
+    """Send a tiny keep-alive ping to Ollama with the ``keep_alive`` option set so
+    the actor model stays RESIDENT across the battle's idle gaps (turn-to-turn
+    thinking, the player typing). Best-effort and isolated from the off-limits
+    gateway: posts directly to ``/api/chat`` with ``stream=False`` and a 1-token
+    cap. Returns True on a clean load. Never raises — any failure (Ollama absent,
+    httpx missing, non-200) is swallowed by the caller.
+
+    This is the WS-4 stand-in for "keep_alive on the actor model": the gateway's
+    payload is owned by another fleet and doesn't forward keep_alive, so we issue
+    the keep_alive ping ourselves at encounter create rather than touching it.
+    """
+    keep = str(getattr(settings, "ollama_keep_alive", "") or "").strip()
+    if not keep:
+        return False
+    import httpx
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ok"}],
+        "stream": False,
+        "keep_alive": keep,
+        "options": {"num_predict": 1},
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_actor_timeout(), connect=5.0)) as client:
+        r = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
+        r.raise_for_status()
+    return True
+
+
 async def prewarm_models(
     models: list[str] | None = None,
     topic: str | None = None,
@@ -183,14 +353,28 @@ async def prewarm_models(
     pure cache retrieval — a no-op on a cache hit. The opening pre-gen runs even when
     prewarm-completions are disabled (it IS the warm-up that matters for Track A) but
     only when a topic is supplied, so existing arg-less callers are unchanged.
+
+    WS-4: each model that prewarms cleanly is recorded WARM (``is_model_warm``) so
+    the live streaming path can widen its first-token budget for it, and the actor
+    model gets a ``keep_alive`` ping so it stays resident across the battle's idle
+    gaps. Both are best-effort — a failed warm-up simply leaves the model "cold"
+    and the small first-token guard keeps applying.
     """
     # A1 — opening materialization. Runs on the encounter-load idle window so the
     # first enemy turn (run_human_round_stream) retrieves instead of generating.
+    # A successful pregen IS a warm-up of the opening model, so mark it warm.
     if topic:
         try:
-            from app.debate.materialize import pregenerate_opening
+            from app.debate.materialize import (
+                _opening_model,
+                pregenerate_both_openings,
+            )
 
-            await pregenerate_opening(topic, enemy_model)
+            # WS-4 #10: warm BOTH the AGAINST (enemy) and FOR (player lead) openings
+            # for this topic, one at a time, so the first turn on either side is a
+            # pure retrieval. A successful pregen also warms the opening model.
+            await pregenerate_both_openings(topic, enemy_model)
+            _mark_warm(_opening_model(enemy_model))
         except Exception:  # noqa: BLE001 — best-effort, never block encounter create
             pass
 
@@ -202,15 +386,27 @@ async def prewarm_models(
         if not m or m in seen:
             continue
         seen.add(m)
+        # Prefer the keep_alive ping for the actor/judge models so they stay
+        # resident; fall back to the gateway throwaway if keep_alive is disabled
+        # or the direct ping fails. Either success marks the model warm.
+        warmed = False
         try:
-            await gateway.complete(
-                [{"role": "user", "content": "ok"}],
-                model=m,
-                max_tokens=1,
-                timeout=_actor_timeout(),
-            )
-        except Exception:  # noqa: BLE001 — prewarm is purely best-effort
-            pass
+            warmed = await _ollama_keep_alive(m)
+        except Exception:  # noqa: BLE001 — keep_alive ping is best-effort
+            warmed = False
+        if not warmed:
+            try:
+                await gateway.complete(
+                    [{"role": "user", "content": "ok"}],
+                    model=m,
+                    max_tokens=1,
+                    timeout=_actor_timeout(),
+                )
+                warmed = True
+            except Exception:  # noqa: BLE001 — prewarm is purely best-effort
+                warmed = False
+        if warmed:
+            _mark_warm(m)
 
 
 def _side_for(actor: "Combatant") -> str:
@@ -426,6 +622,7 @@ def _build_actor_messages(
     action: dict[str, Any],
     memories: list[str],
     name_lookup: dict[str, str],
+    counter_context: str | None = None,
 ) -> list[dict[str, str]]:
     team = "your team" if actor.role == "party" else "the opposing team"
     side = _side_for(actor)
@@ -469,6 +666,11 @@ def _build_actor_messages(
         sys_parts.append(f"Adopt a {action['tone']} tone.")
     if memories:
         sys_parts.append("What you remember: " + " | ".join(memories))
+    # WS-5 counter-skill: pre-built "pre-empt their next move" instruction (with
+    # the opponent's already-existing predicted line embedded). Appended LAST so
+    # it dominates the turn. No model call produced this — it's a prompt prime.
+    if counter_context:
+        sys_parts.append(str(counter_context))
 
     # Recent shared transcript window.
     window = transcript[-TRANSCRIPT_WINDOW:]
@@ -488,15 +690,29 @@ def _build_actor_messages(
     ]
 
 
-async def _generate_utterance(
+async def _generate_utterance_traced(
     actor: Combatant,
     topic: str,
     transcript: list[dict[str, Any]],
     action: dict[str, Any],
     memories: list[str],
     name_lookup: dict[str, str],
-) -> str:
-    messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
+    counter_context: str | None = None,
+) -> tuple[str, bool, str | None]:
+    """Non-streaming generation that also reports the fallback outcome.
+
+    Returns ``(text, used_fallback, fallback_reason)`` where ``fallback_reason`` is
+    "timeout" (the per-call budget fired) or "empty" (model returned nothing /
+    errored). Used by the headless self-play path so the latency metrics + spike
+    can attribute fallbacks. ``_generate_utterance`` wraps this for callers that
+    only want the text. ``counter_context`` (WS-5) is an optional pre-built
+    prompt prime (the counter-skill's pre-empt instruction); it adds NO extra
+    call — it's folded into this turn's single completion.
+    """
+    messages = _build_actor_messages(
+        actor, topic, transcript, action, memories, name_lookup, counter_context
+    )
+    reason: str | None = None
     try:
         text = await gateway.complete(
             messages,
@@ -506,11 +722,33 @@ async def _generate_utterance(
             timeout=_actor_timeout(),
         )
         text = (text or "").strip()
+        if not text:
+            reason = "empty"
+    except asyncio.TimeoutError:  # per-call budget fired — slow/stalled model
+        text = ""
+        reason = "timeout"
     except Exception:  # noqa: BLE001 — stalled/failed model: fall back to real text
         text = ""
-    if not text:
+        reason = "empty"
+    used_fallback = not text
+    if used_fallback:
         text = _fallback_argument(actor, topic, turn_seed=len(transcript))
-    return _sanitize(text)
+    return _sanitize(text), used_fallback, reason
+
+
+async def _generate_utterance(
+    actor: Combatant,
+    topic: str,
+    transcript: list[dict[str, Any]],
+    action: dict[str, Any],
+    memories: list[str],
+    name_lookup: dict[str, str],
+    counter_context: str | None = None,
+) -> str:
+    text, _fb, _reason = await _generate_utterance_traced(
+        actor, topic, transcript, action, memories, name_lookup, counter_context
+    )
+    return text
 
 
 def _sanitize(text: str) -> str:
@@ -522,11 +760,23 @@ def _sanitize(text: str) -> str:
 # First-token wall-clock guard for the live streaming path. On a contended CPU
 # the dominant risk is a stalled model that never emits a first token; we'd rather
 # fail this one utterance (and fall back to a REAL templated argument) than hang
-# the whole WS round. This uses the SMALL `first_token_timeout_s` (~8s) — NOT the
-# larger non-streaming `llm_call_timeout_s` — so "first token <= 6-8s" holds and a
-# slow-to-start model falls back fast. Tokens after the first stream freely.
-def _first_token_timeout() -> float:
-    return float(getattr(settings, "first_token_timeout_s", 8) or 8)
+# the whole WS round. This uses the SMALL `first_token_timeout_s` (~8-15s) — NOT
+# the larger non-streaming `llm_call_timeout_s` — so a cold/slow-to-start model
+# falls back fast. Tokens after the first stream freely.
+#
+# WS-4: once a model is confirmed WARM (prewarmed at encounter create, resident in
+# Ollama via keep_alive), we WIDEN this budget to `first_token_timeout_warm_s`. A
+# warm model that's merely busy (CPU contention) is given more room to emit its
+# first token before we fail over — this LOWERS the fallback rate without the cold
+# hang, because the wider budget applies ONLY to a model proven not-cold. A cold or
+# never-prewarmed model keeps the small guard.
+def _first_token_timeout(model: str | None = None) -> float:
+    cold = float(getattr(settings, "first_token_timeout_s", 8) or 8)
+    if model is not None and is_model_warm(model):
+        warm = float(getattr(settings, "first_token_timeout_warm_s", 0) or 0)
+        if warm > cold:
+            return warm
+    return cold
 
 
 STREAM_FIRST_TOKEN_TIMEOUT_S = _first_token_timeout()
@@ -539,6 +789,7 @@ async def _stream_utterance(
     action: dict[str, Any],
     memories: list[str],
     name_lookup: dict[str, str],
+    counter_context: str | None = None,
 ):
     """Live streaming twin of `_generate_utterance`.
 
@@ -547,21 +798,34 @@ async def _stream_utterance(
     the full text. Each yield is a dict:
 
       * `{"kind": "token", "text": <sanitized chunk>}` per streamed chunk, and
-      * exactly one terminating `{"kind": "done", "text": <full accumulated text>}`
+      * exactly one terminating `{"kind": "done", "text": <full accumulated text>,
+        "fallback": <bool>, "fallback_reason": <"timeout"|"empty"|None>}`
         carrying the canonical assembled utterance (with the same templated
-        fallback as `_generate_utterance` if the stream produced nothing).
+        fallback as `_generate_utterance` if the stream produced nothing). The
+        `fallback`/`fallback_reason` fields let callers (latency metrics) record
+        WHY a turn fell back without re-deriving it.
 
     A first-token timeout (`_first_token_timeout()`, the small
     `settings.first_token_timeout_s`) guards a stalled CPU model: if no token
     arrives in time the utterance fails over to the fallback
     line instead of hanging the round. `_generate_utterance` is intentionally
     left untouched so the headless/REST paths keep their determinism.
+
+    ``counter_context`` (WS-5) is an optional pre-built prompt prime for the
+    Rhetorical Flourish counter-skill — it is folded into THIS turn's prompt and
+    adds NO extra model call (the stream is still one stream).
     """
-    messages = _build_actor_messages(actor, topic, transcript, action, memories, name_lookup)
+    messages = _build_actor_messages(
+        actor, topic, transcript, action, memories, name_lookup, counter_context
+    )
+    model = _actor_model(actor)
+    # WS-4: the first-token budget widens for a warm (prewarmed/resident) model.
+    first_token_budget = _first_token_timeout(model)
     parts: list[str] = []
+    fallback_reason: str | None = None
     try:
         agen = gateway.stream(
-            messages, model=_actor_model(actor), temperature=0.8,
+            messages, model=model, temperature=0.8,
             max_tokens=_actor_max_tokens(),
         )
         first = True
@@ -569,7 +833,7 @@ async def _stream_utterance(
             try:
                 if first:
                     chunk = await asyncio.wait_for(
-                        agen.__anext__(), timeout=_first_token_timeout()
+                        agen.__anext__(), timeout=first_token_budget
                     )
                     first = False
                 else:
@@ -588,16 +852,30 @@ async def _stream_utterance(
                 await aclose()
             except Exception:  # noqa: BLE001
                 pass
-    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-        # Stalled or errored stream: drop whatever partial text we have so the
-        # fallback below produces a clean, complete line.
+    except asyncio.TimeoutError:  # first-token guard fired — slow/stalled model
+        fallback_reason = "timeout"
+        parts = []
+    except Exception:  # noqa: BLE001 — errored stream
+        fallback_reason = "empty"
         parts = []
 
     full = "".join(parts).strip()
+    used_fallback = False
     if not full:
+        # Distinguish a clean-but-empty stream ("empty") from a timed-out one.
+        if fallback_reason is None:
+            fallback_reason = "empty"
+        used_fallback = True
         full = _fallback_argument(actor, topic, turn_seed=len(transcript))
+    else:
+        fallback_reason = None
     full = _sanitize(full)
-    yield {"kind": "done", "text": full}
+    yield {
+        "kind": "done",
+        "text": full,
+        "fallback": used_fallback,
+        "fallback_reason": fallback_reason,
+    }
 
 
 # ---- Core round logic (shared) ----------------------------------------------
@@ -693,14 +971,37 @@ def _skill_cost_safe(skill_name: str | None) -> int:
 
 
 async def _get_mp_safe(eid: str, monster_id: str, max_mp: int) -> int:
-    """Read a single combatant's MP from Redis; fall back to ``max_mp`` if absent."""
+    """Read a single combatant's MP from Redis for the skill-affordability gate.
+
+    FAIL-CLOSED on a genuine cache miss (WS-5 fix). The old behavior returned
+    ``max_mp`` on ANY miss, so the moment the ``enc:{eid}:mp`` hash was evicted
+    (TTL, restart, or a Redis blip) every skill became "free" — a counter-skill
+    like Rhetorical Flourish would always be castable regardless of spend. That
+    silently broke the MP economy post-eviction.
+
+    Resolution, in priority order:
+      * The monster's MP is present in the hash -> return it (clamped to
+        ``[0, max_mp]``).
+      * The hash exists and is NON-empty but this monster isn't in it yet -> a
+        legitimate fresh-combatant state; default to ``max_mp`` (full pool).
+      * The hash is EMPTY (evicted / never seeded) or Redis errors -> a genuine
+        miss: return ``0`` so an MP-costed skill is DENIED rather than freely
+        granted. Free skills (cost 0) still pass their own gate, so this never
+        blocks a normal turn.
+    """
     try:
         from app.redis_state import get_mp_map
 
         m = await get_mp_map(eid)
-        return int(m.get(monster_id, max_mp))
-    except Exception:  # noqa: BLE001 — never fail the round on cache hiccup
-        return max_mp
+        if monster_id in m:
+            return max(0, min(int(m[monster_id]), int(max_mp)))
+        # Populated hash without this monster -> fresh combatant, full pool.
+        if m:
+            return int(max_mp)
+        # Empty hash -> evicted / never seeded: deny MP-costed skills.
+        return 0
+    except Exception:  # noqa: BLE001 — Redis down/blip is a genuine miss: fail closed.
+        return 0
 
 
 async def _set_mp_safe(eid: str, monster_id: str, mp: int) -> None:
@@ -815,6 +1116,11 @@ async def run_round_stream(
     actor_by_id = {c.monster_id: c for c in combatants}
     damage_meta_by_id: dict[str, dict[str, Any]] = {}
 
+    # WS-0-LAT: time the whole round + each utterance generation, and record
+    # whether (and why) a templated fallback was used. Negligible overhead; emits
+    # one structured `battle.latency` log line at the end of the round.
+    rt = RoundTimer.start(eid, round_no=start_turn)
+
     # --- Speaking pass (sequential so each actor sees prior utterances) ---
     for actor in order:
         if not actor.alive:
@@ -853,27 +1159,44 @@ async def run_round_stream(
         memories = await _gather_memories(actor, topic, run_id)
         transcript = await get_transcript_safe(eid)
 
+        # WS-5 counter-skill: when the resolved skill is Rhetorical Flourish (and
+        # was paid for above — skill_name survives the MP gate), prime this turn
+        # with the opponent's predicted next line. ZERO extra model calls: the
+        # line is the most recent opposing utterance ALREADY in `transcript`, or
+        # on round 1 the enemy's already-materialized opening (a cache lookup).
+        counter_context = await _resolve_counter_context(
+            actor, skill_name, transcript, topic, combatants
+        )
+
         # Live token streaming: emit additive `token` events as the model thinks,
         # then the canonical `utterance` event with the full assembled text. The
         # `done` chunk carries the fallback-resolved text, so a stalled/empty
         # stream still produces a complete utterance (whole-utterance fallback).
         text = ""
-        async for chunk in _stream_utterance(
-            actor, topic, transcript, action, memories, name_lookup
-        ):
-            if chunk["kind"] == "token":
-                yield Event(
-                    "token",
-                    {
-                        "turn": turn_no,
-                        "actor_id": actor.monster_id,
-                        "side": actor.side,
-                        "text": chunk["text"],
-                        **_event_timing(actor_started),
-                    },
-                )
-            else:  # "done"
-                text = chunk["text"]
+        used_fallback = False
+        fallback_reason: str | None = None
+        with rt.utterance(actor.monster_id, actor.role, actor.side):
+            async for chunk in _stream_utterance(
+                actor, topic, transcript, action, memories, name_lookup,
+                counter_context=counter_context,
+            ):
+                if chunk["kind"] == "token":
+                    yield Event(
+                        "token",
+                        {
+                            "turn": turn_no,
+                            "actor_id": actor.monster_id,
+                            "side": actor.side,
+                            "text": chunk["text"],
+                            **_event_timing(actor_started),
+                        },
+                    )
+                else:  # "done"
+                    text = chunk["text"]
+                    used_fallback = bool(chunk.get("fallback"))
+                    fallback_reason = chunk.get("fallback_reason")
+            if used_fallback:
+                rt.utterances[-1].mark_fallback(fallback_reason or "empty")
 
         utt = {
             "turn": turn_no,
@@ -943,6 +1266,10 @@ async def run_round_stream(
     # blue MP bar in lockstep with HP without a separate poll.
     async for mp_ev in _regen_mp_and_emit(eid, combatants):
         yield mp_ev
+
+    # WS-0-LAT: emit the structured round-latency line (round_ms, per-actor gen_ms,
+    # fallback count + reasons). Best-effort — never raises into the round.
+    rt.finish()
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
@@ -1049,6 +1376,10 @@ async def run_human_round_stream(
     player.side = "for"
     enemy.side = "against"
 
+    # WS-0-LAT: round latency instrumentation. The player turn is human-typed (no
+    # model fallback), so we only time the ENEMY generation + judge here.
+    rt = RoundTimer.start(eid, round_no=start_turn)
+
     skill_name, attack_type, skill_power = _resolve_skill(player, skill_id)
     player_started = time.monotonic()
 
@@ -1119,6 +1450,13 @@ async def run_human_round_stream(
     memories = await _gather_memories(enemy, topic, run_id)
     transcript = await get_transcript_safe(eid)
 
+    # WS-5 counter-skill: if the enemy's own action resolves to Rhetorical Flourish,
+    # prime its rebuttal with the PLAYER's predicted next move (the just-submitted
+    # player line is already in `transcript`). ZERO extra model calls — pure scan.
+    enemy_counter_context = await _resolve_counter_context(
+        enemy, action.get("skill"), transcript, topic, combatants
+    )
+
     # A1/A2 — MATERIALIZED OPENING. On the FIRST round the enemy's line is its
     # opening (arguing AGAINST the topic), which is player-independent and thus
     # cacheable. Use the cached/pre-generated opening instead of a live stream so
@@ -1127,44 +1465,54 @@ async def run_human_round_stream(
     # the opening path is safe only on the very first round (no prior exchange to
     # rebut). Later rounds fall through to the live streaming rebuttal below.
     enemy_text = ""
+    enemy_fallback = False
+    enemy_fallback_reason: str | None = None
     is_opening = start_turn == 0 and len(transcript) <= 1  # only the player's turn so far
-    if is_opening:
-        from app.debate.materialize import get_or_create_opening
+    with rt.utterance(enemy.monster_id, enemy.role, enemy.side) as enemy_metric:
+        if is_opening:
+            from app.debate.materialize import get_or_create_opening
 
-        enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
-        # Emit the materialized opening as a single token so WS clients still get
-        # the streamed-text event shape (no per-token cadence, but instant).
-        yield Event(
-            "token",
-            {
-                "turn": enemy_turn,
-                "actor_id": enemy.monster_id,
-                "side": enemy.side,
-                "text": enemy_text,
-                **_event_timing(enemy_started),
-            },
-        )
-    else:
-        try:
-            async for chunk in _stream_utterance(
-                enemy, topic, transcript, action, memories, name_lookup
-            ):
-                if chunk["kind"] == "token":
-                    yield Event(
-                        "token",
-                        {
-                            "turn": enemy_turn,
-                            "actor_id": enemy.monster_id,
-                            "side": enemy.side,
-                            "text": chunk["text"],
-                            **_event_timing(enemy_started),
-                        },
-                    )
-                else:  # "done"
-                    enemy_text = chunk["text"]
-        except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
-            if not enemy_text:
-                enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+            enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
+            # Emit the materialized opening as a single token so WS clients still get
+            # the streamed-text event shape (no per-token cadence, but instant).
+            yield Event(
+                "token",
+                {
+                    "turn": enemy_turn,
+                    "actor_id": enemy.monster_id,
+                    "side": enemy.side,
+                    "text": enemy_text,
+                    **_event_timing(enemy_started),
+                },
+            )
+        else:
+            try:
+                async for chunk in _stream_utterance(
+                    enemy, topic, transcript, action, memories, name_lookup,
+                    counter_context=enemy_counter_context,
+                ):
+                    if chunk["kind"] == "token":
+                        yield Event(
+                            "token",
+                            {
+                                "turn": enemy_turn,
+                                "actor_id": enemy.monster_id,
+                                "side": enemy.side,
+                                "text": chunk["text"],
+                                **_event_timing(enemy_started),
+                            },
+                        )
+                    else:  # "done"
+                        enemy_text = chunk["text"]
+                        enemy_fallback = bool(chunk.get("fallback"))
+                        enemy_fallback_reason = chunk.get("fallback_reason")
+            except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
+                if not enemy_text:
+                    enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+                    enemy_fallback = True
+                    enemy_fallback_reason = "empty"
+        if enemy_fallback:
+            enemy_metric.mark_fallback(enemy_fallback_reason or "empty")
 
     turn_no = enemy_turn
     enemy_utt = {
@@ -1198,25 +1546,30 @@ async def run_human_round_stream(
         {"actor_id": player.monster_id, "text": text},
         {"actor_id": enemy.monster_id, "text": enemy_text},
     ]
-    try:
-        scores = await asyncio.wait_for(
-            score_round(topic, judge_items, fallback_model=fallback_model),
-            timeout=_human_judge_deadline(),
-        )
-    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — stalled/failed judge
-        # Settle from the heuristic so HP commits within the deadline. This is the
-        # SAME score already shown to the player by the optimistic `estimate`, so
-        # the displayed feedback is now authoritative rather than dangling.
-        from app.debate.judge import JudgeScore
-
-        scores = [
-            JudgeScore(
-                actor_id=it["actor_id"],
-                score=heuristic_score(topic, it["text"]),
-                rationale="Heuristic score (judge deadline reached).",
+    judge_fallback = False
+    with rt.utterance("__judge__", "judge", None) as judge_metric:
+        try:
+            scores = await asyncio.wait_for(
+                score_round(topic, judge_items, fallback_model=fallback_model),
+                timeout=_human_judge_deadline(),
             )
-            for it in judge_items
-        ]
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — stalled/failed judge
+            # Settle from the heuristic so HP commits within the deadline. This is the
+            # SAME score already shown to the player by the optimistic `estimate`, so
+            # the displayed feedback is now authoritative rather than dangling.
+            from app.debate.judge import JudgeScore
+
+            judge_fallback = True
+            scores = [
+                JudgeScore(
+                    actor_id=it["actor_id"],
+                    score=heuristic_score(topic, it["text"]),
+                    rationale="Heuristic score (judge deadline reached).",
+                )
+                for it in judge_items
+            ]
+        if judge_fallback:
+            judge_metric.mark_fallback("judge_deadline")
     score_by_id = {js.actor_id: js for js in scores}
 
     # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---
@@ -1290,6 +1643,9 @@ async def run_human_round_stream(
     # the human player and the AI use the exact same MP economy.
     async for mp_ev in _regen_mp_and_emit(eid, combatants):
         yield mp_ev
+
+    # WS-0-LAT: emit the structured round-latency line for the human round.
+    rt.finish()
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
@@ -1365,6 +1721,11 @@ async def _run_self_play_async(
         actor_by_id = {c.monster_id: c for c in combatants}
         damage_meta_by_id: dict[str, dict[str, Any]] = {}
 
+        # WS-0-LAT: time each headless round + record per-utterance fallbacks so the
+        # go/no-go spike + WS-F training share the same latency instrumentation as
+        # the live paths. (Headless uses the non-streaming `complete` path.)
+        rt = RoundTimer.start(f"selfplay:{party.monster_id}", round_no=turn_no)
+
         for actor in order:
             if not actor.alive:
                 continue
@@ -1380,9 +1741,19 @@ async def _run_self_play_async(
                 "skill_mult": skill_power,
             }
             memories: list[str] = []  # headless: skip RAG for determinism/speed
-            text = await _generate_utterance(
-                actor, topic, transcript, action, memories, name_lookup
+            # WS-5 counter-skill (headless/training): prime a generated turn with
+            # the opponent's predicted next line from the in-memory transcript —
+            # zero extra completions, same single `complete` call as any turn.
+            counter_context = await _resolve_counter_context(
+                actor, skill_name, transcript, topic, combatants
             )
+            with rt.utterance(actor.monster_id, actor.role, _side_for(actor)) as _m:
+                text, _used_fb, _fb_reason = await _generate_utterance_traced(
+                    actor, topic, transcript, action, memories, name_lookup,
+                    counter_context=counter_context,
+                )
+                if _used_fb:
+                    _m.mark_fallback(_fb_reason or "empty")
             utt = {
                 "turn": turn_no,
                 "actor_id": actor.monster_id,
@@ -1412,6 +1783,9 @@ async def _run_self_play_async(
         round_verdicts = _apply_round_damage(combatants, scored, momentum)
         for v in round_verdicts:
             verdicts.append({**v, "turn": turn_no})
+
+        # WS-0-LAT: emit the structured round-latency line for this self-play round.
+        rt.finish()
 
         phase, _cap = _phase_for(combatants)
         if phase in ("won", "lost"):

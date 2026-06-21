@@ -112,6 +112,22 @@ class SummonItemTier(str, Enum):
     legendary = "legendary"
 
 
+class ItemKind(str, Enum):
+    """Economy item categories (WS-1). Drives `PlayerInventory.use` effects.
+
+    * potion_hp / potion_mp  — consumable, restores the lead party member's HP/MP
+    * camp_token             — consumed by the camp/rest flow (banked, not applied here)
+    * training_atk/def/mp    — permanent stat-up applied to the lead party member
+    """
+
+    potion_hp = "potion_hp"
+    potion_mp = "potion_mp"
+    camp_token = "camp_token"
+    training_atk = "training_atk"
+    training_def = "training_def"
+    training_mp = "training_mp"
+
+
 # ---- Tables ----
 
 
@@ -123,11 +139,19 @@ class Run(SQLModel, table=True):
     # Theme chosen at run start; each battle draws a random topic within it.
     # Nullable/additive alongside debate_topic (which stays populated).
     theme: Optional[str] = Field(default=None)
+    # Avatar debate type selected on the start screen. Stored so empty-start
+    # onboarding can apply the selected type to the first pulled monster.
+    avatar_type: Optional[str] = Field(default=None)
     player_name: str = "Player"
     seed: int = 0
     player_x: int = 0
     player_y: int = 0
     status: RunStatus = Field(default=RunStatus.active)
+    # Economy (WS-1): the run's coin wallet. Coins are awarded on battle
+    # win/capture (see routers/debate.py `_finalize`) and spent in the shop.
+    # The matching idempotent ALTER lives in db/session.init_db() because
+    # create_all never alters the existing `runs` table.
+    coins: int = 0
     created_at: datetime = Field(default_factory=_now)
 
 
@@ -227,6 +251,65 @@ class SummonItem(SQLModel, table=True):
     tier: str = "common"
     consumed: bool = False
     created_at: datetime = Field(default_factory=_now)
+
+
+class Item(SQLModel, table=True):
+    """Economy item catalog (WS-1) — one row per purchasable/usable item.
+
+    Seeded idempotently at startup from ``app.economy.catalog.STARTER_ITEMS``
+    (``upsert_items``). ``key`` is the stable identifier referenced by
+    ``PlayerInventory.item_key`` and ``ShopStock.item_key``. ``effect`` is a
+    free-form JSON blob the ``use`` endpoint interprets (e.g.
+    ``{"hp": 40}`` for an HP potion, ``{"atk": 3}`` for a training item).
+    """
+
+    __tablename__ = "items"
+
+    key: str = Field(primary_key=True)  # stable id: "potion_hp_small", ...
+    name: str
+    kind: ItemKind = Field(default=ItemKind.potion_hp)
+    effect: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
+    price: int = 0
+
+
+class PlayerInventory(SQLModel, table=True):
+    """A run's owned quantity of a given item (WS-1).
+
+    One row per (run_id, item_key). Quantity mutations go through atomic SQL
+    (``UPDATE ... WHERE qty >= :n`` / ``ON CONFLICT`` upsert) so concurrent
+    buy/use never over- or under-counts.
+    """
+
+    __tablename__ = "player_inventory"
+    __table_args__ = (
+        Index("ix_player_inventory_run_item", "run_id", "item_key", unique=True),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    run_id: str = Field(foreign_key="runs.id", index=True)
+    item_key: str = Field(foreign_key="items.key", index=True)
+    qty: int = 0
+
+
+class ShopStock(SQLModel, table=True):
+    """Per-NPC shop inventory (WS-1).
+
+    One row per (npc_id, item_key). ``price`` overrides the catalog price for
+    this vendor; ``qty`` is the remaining stock (atomic-decremented on buy).
+    Seeded idempotently at startup.
+    """
+
+    __tablename__ = "shop_stock"
+    __table_args__ = (
+        Index("ix_shop_stock_npc_item", "npc_id", "item_key", unique=True),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    # NPC/shop identifier (a map NPC key). Indexed for the GET /shop/{npc_id} path.
+    npc_id: str = Field(index=True)
+    item_key: str = Field(foreign_key="items.key", index=True)
+    price: int = 0
+    qty: int = 0
 
 
 class Skill(SQLModel, table=True):

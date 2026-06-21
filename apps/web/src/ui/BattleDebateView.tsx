@@ -12,7 +12,7 @@
  *  - Capture          POST /api/encounters/{id}/capture {wild_id}  (when capturable)
  *  - Flee             POST /api/encounters/{id}/flee  then leave
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { components } from "@debate/shared/types";
 import { useGame } from "../state/store";
@@ -23,6 +23,11 @@ import {
   effectivenessInfo,
   type ParsedSkill,
 } from "../lib/skills";
+import { HPCorner } from "./battle/HPCorner";
+import { JudgePanel } from "./battle/JudgePanel";
+import { BattleLog } from "./battle/BattleLog";
+import { BattleStage } from "./battle/BattleStage";
+import { BattleIntroCard } from "./battle/BattleIntroCard";
 
 // Argue Copilot contract (POST /api/encounters/{eid}/assist). Sourced from the
 // generated OpenAPI schema so the request/response stay in lockstep with the API.
@@ -50,7 +55,7 @@ import {
   sfxLose,
   setSfxEnabled,
 } from "../lib/sfx";
-import { ReasoningTrend, type TrendSeries } from "./ReasoningTrend";
+import { type TrendSeries } from "./ReasoningTrend";
 import SummonOverlay, { type SummonResult } from "../game/SummonOverlay";
 import { useIrisTransition } from "./fx/IrisWipe";
 import {
@@ -590,6 +595,12 @@ export function BattleDebateView() {
   const [leadId, setLeadId] = useState<string | null>(null);
   const [captureFlash, setCaptureFlash] = useState(false);
 
+  // Pre-fight intro card: theme reveal → Pro/Con pick → countdown → "Debate!!".
+  // `introDone` gates all argue/input until the card dismisses; `chosenStance`
+  // is the player's Pro/Con pick, used for local labels and threaded into argue.
+  const [introDone, setIntroDone] = useState(false);
+  const [chosenStance, setChosenStance] = useState<DebateSide | null>(null);
+
   // Argue Copilot — coach the player's draft before they send it.
   const [coaching, setCoaching] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
@@ -607,6 +618,17 @@ export function BattleDebateView() {
   const [sfxOn, setSfxOn] = useState(true);
   const prevVerdictCount = useRef(0);
   const playedEndSfx = useRef(false);
+
+  // DOM refs for damage-fly animation (judge → HP corner).
+  const judgePanelRef = useRef<HTMLDivElement>(null);
+  const playerHpRef = useRef<HTMLDivElement>(null);
+  const enemyHpRef = useRef<HTMLDivElement>(null);
+
+  // Active damage numeral fly: spawned at judge center, flies to HP corner.
+  const [activeDmgFly, setActiveDmgFly] = useState<{
+    fromX: number; fromY: number; dx: number; dy: number; damage: number; key: number;
+  } | null>(null);
+  const prevVerdictForFly = useRef<JudgeVerdict | null>(null);
 
   const combatants: CombatantState[] = useMemo(
     () => encounter?.combatants ?? [],
@@ -728,10 +750,49 @@ export function BattleDebateView() {
   const liveNames: Record<string, string> = { judge: "Judge" };
   for (const c of combatants) liveNames[c.monster_id] = c.name;
 
+  // Damage fly: fire when a new verdict with damage arrives.
+  useEffect(() => {
+    if (!lastVerdict || lastVerdict === prevVerdictForFly.current || !lastVerdict.damage) return;
+    prevVerdictForFly.current = lastVerdict;
+    const judgeEl = judgePanelRef.current;
+    const targetIsParty = partyIds.has(lastVerdict.target);
+    const targetEl = targetIsParty ? playerHpRef.current : enemyHpRef.current;
+    if (!judgeEl || !targetEl) return;
+    const from = judgeEl.getBoundingClientRect();
+    const to = targetEl.getBoundingClientRect();
+    setActiveDmgFly({
+      fromX: from.left + from.width / 2,
+      fromY: from.top + from.height / 2,
+      dx: (to.left + to.width / 2) - (from.left + from.width / 2),
+      dy: (to.top + to.height / 2) - (from.top + from.height / 2),
+      damage: lastVerdict.damage,
+      key: Date.now(),
+    });
+    const id = setTimeout(() => setActiveDmgFly(null), 900);
+    return () => clearTimeout(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastVerdict]);
+
+  // Derived: latest utterance per role for speech bubbles + recap line.
+  const latestPlayerUtterance = useMemo(
+    () => [...transcript].reverse().find((u) => u.actor_role === "party") ?? null,
+    [transcript]
+  );
+  const latestEnemyUtterance = useMemo(
+    () => [...transcript].reverse().find((u) => u.actor_role === "enemy") ?? null,
+    [transcript]
+  );
+  const latestEnemyLine = latestEnemyUtterance?.text ?? null;
+  const newestInTranscript = transcript[transcript.length - 1] ?? null;
+  const playerIsNewest = latestPlayerUtterance === newestInTranscript;
+  const enemyIsNewest = latestEnemyUtterance === newestInTranscript;
+
   const phase = encounter?.phase ?? "intro";
   const isCapturable = phase === "capturable";
   const isOver = phase === "won" || phase === "lost";
-  const canArgue = phase === "debating" || phase === "intro" || phase === "capturable";
+  // Input is gated on the intro card finishing (introDone) AND the phase.
+  const canArgue =
+    introDone && (phase === "debating" || phase === "intro" || phase === "capturable");
 
   // Battle isolation: lock the global nav while the battle is live, release it
   // the moment it resolves (won/lost) so the post-battle "Leave" can navigate.
@@ -739,8 +800,10 @@ export function BattleDebateView() {
     setBattleLocked(!!activeEncounterId && !isOver);
   }, [activeEncounterId, isOver, setBattleLocked]);
 
-  // Player's debate side (lead party monster) — drives the "You argue FOR" copy.
-  const playerSide: DebateSide = leadParty ? combatantSide(leadParty) : "for";
+  // Player's debate side — the intro-card pick (chosenStance) wins for local
+  // labels; falls back to the backend hint / role inference before a pick.
+  const playerSide: DebateSide =
+    chosenStance ?? (leadParty ? combatantSide(leadParty) : "for");
 
   // Active-turn indicator. While a round is running, infer who is "speaking"
   // from the newest transcript line; otherwise it's the player's move.
@@ -769,10 +832,11 @@ export function BattleDebateView() {
 
   function submitArgument() {
     const text = argText.trim();
-    if (!text || busy || isOver || running) return;
+    if (!text || busy || isOver || running || !introDone) return;
     setActionError(null);
     sfxSubmit();
-    argue(text, selectedSkill);
+    // Thread the player's chosen Pro/Con stance additively (frontend-only seam).
+    argue(text, selectedSkill, chosenStance);
     setArgText("");
   }
 
@@ -918,189 +982,66 @@ export function BattleDebateView() {
 
   const newestTurn = transcript.length ? transcript[transcript.length - 1] : null;
 
-  return (
-    <div className="flex flex-col h-full max-h-screen overflow-hidden relative">
-      {/* Gacha Wave D — listens for `{type: "LevelUp"}` WS events from the
-          encounter finalize and plays a 3s "+ATK/+DEF/+MP/+HP" cinematic.
-          Self-handles its own event subscription; mounting it is the wiring.
-          Combatants are passed so the headline can read "{name} LEVEL N". */}
-      <LevelUpOverlay combatants={combatants} />
+  // Recap of the opponent's most recent point (shown above the floating input).
+  const enemyRecap = latestEnemyLine
+    ? latestEnemyLine.length > 140
+      ? latestEnemyLine.slice(0, 140) + "…"
+      : latestEnemyLine
+    : null;
 
-      <SummonOverlay
-        runId={runId}
-        open={summonOpen}
-        topic={encounter?.topic ?? runTopic}
-        onClose={() => setSummonOpen(false)}
-        onSummoned={handleSummoned}
-      />
-      {captureFlash && (
-        <div
-          className="capture-flash absolute inset-0 z-50 pointer-events-none"
-          style={{ background: "var(--accent)" }}
-        />
-      )}
-
-      {/* Memory Recall (Wave C) — full-screen overlay surfaces the actual
-          Redis transcript key + 5 lines + the typed-out counter. Auto-dismisses
-          after MEMORY_RECALL_OVERLAY_MS, or click to close immediately. */}
-      {recallResult && activeEncounterId && (
-        <MemoryRecallOverlay
-          encounterId={activeEncounterId}
-          result={recallResult}
-          onClose={() => setRecallResult(null)}
-        />
-      )}
-
-      {/* Header — shows the actual BATTLE (encounter) topic, which can differ
-          from the run topic; falls back to the run topic only while loading. */}
-      <div className="flex items-center justify-between px-4 py-2" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
-        <div className="min-w-0">
-          <div className="font-hud text-[8px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-            You argue{" "}
-            <span style={{ color: sideColor(playerSide) }}>{sideLabel(playerSide)}</span>
-          </div>
-          <div className="font-hud text-xs truncate" title={encounter?.topic ?? runTopic}>
-            {encounter?.topic || runTopic || "Loading…"}
-          </div>
-        </div>
-        <div className="flex items-center gap-3 font-hud text-[10px]">
-          {/* Active-turn indicator */}
-          <span
-            className="px-1.5 py-0.5 inline-flex items-center gap-1"
-            style={{ border: `1px solid ${turnIndicator.color}`, color: turnIndicator.color }}
-          >
-            {running && <span className="caret-blink">●</span>}
-            {turnIndicator.label}
-          </span>
-          <span style={{ color: status === "open" ? "var(--win)" : status === "connecting" ? "var(--warn)" : "var(--danger)" }}>
-            ● {status}
-          </span>
-          <span style={{ color: "var(--muted)" }}>T{encounter?.turn_no ?? 0}</span>
-          <span
-            style={{
-              color:
-                phase === "won"
-                  ? "var(--win)"
-                  : phase === "lost"
-                    ? "var(--danger)"
-                    : phase === "capturable"
-                      ? "var(--accent)"
-                      : "var(--muted)",
-            }}
-          >
-            {phase}
-          </span>
-        </div>
-      </div>
-
-      {/* In-progress banner: clear feedback while a round/assist streams so the
-          user is never left staring at nothing for 30-120s. */}
-      {running && !isOver && (
-        <div
-          className="flex items-center gap-2 px-4 py-1.5 font-hud text-[11px]"
-          style={{ background: "rgba(255,255,255,0.04)", color: "var(--accent)", borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+  // -------------------------------------------------------------------------
+  // Floating input slot — lives INSIDE the stage (lower-center). Always shows
+  // the live status/recap; the argument controls appear on the player's turn.
+  // ARGUE is the green primary; meta-actions sit in the slim action bar.
+  // -------------------------------------------------------------------------
+  const inputSlot = !isOver ? (
+    <div
+      className="pixel-panel"
+      style={{
+        background: "rgba(14,16,24,0.96)",
+        borderColor: canArgue ? "var(--win)" : "rgba(232,230,216,0.18)",
+        padding: "10px 12px",
+        maxHeight: "62%",
+        overflowY: "auto",
+        boxShadow: "4px 4px 0 #000",
+      }}
+    >
+      {/* Status / recap line (always visible) */}
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <span
+          className="inline-flex items-center gap-1 font-hud text-[11px] px-1.5 py-0.5"
+          style={{ border: `1px solid ${turnIndicator.color}`, color: turnIndicator.color }}
         >
-          <span className="caret-blink">▋</span>
-          Debating…{runningTurn != null ? ` (turn ${runningTurn})` : ""} — the judge and your opponent are thinking, this can take a moment.
-        </div>
+          {running && <span className="caret-blink">●</span>}
+          {turnIndicator.label}
+          {running && runningTurn != null ? ` · T${runningTurn}` : ""}
+        </span>
+        <span className="font-hud text-[11px]" style={{ color: "var(--muted)" }}>
+          You argue{" "}
+          <span style={{ color: sideColor(playerSide) }}>{sideLabel(playerSide)}</span>
+        </span>
+      </div>
+      {enemyRecap && (
+        <p
+          className="font-body mb-2 leading-snug"
+          style={{ color: "var(--ink)", fontSize: 15 }}
+        >
+          <span className="font-hud text-[10px]" style={{ color: "var(--enemy)" }}>
+            REBUTTAL{" "}
+          </span>
+          {enemyRecap}
+        </p>
       )}
 
-      {/* Combatant HP */}
-      <div className="flex gap-2 p-3 flex-wrap" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
-        {combatants.length === 0 ? (
-          <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
-            Awaiting combatant data…
-          </div>
-        ) : (
-          displayedCombatants.map((c) => {
-            // Active combatant: the lead party on the player's turn, the lead
-            // enemy while the opponent is arguing. No highlight once over.
-            const activeId = isOver
-              ? null
-              : turnIndicator.label === "Enemy arguing…"
-                ? leadEnemy?.monster_id
-                : leadParty?.monster_id;
-            return (
-              <CombatantCard
-                key={c.monster_id}
-                c={c}
-                isLead={c.monster_id === leadParty?.monster_id}
-                isActive={activeId != null ? c.monster_id === activeId : undefined}
-                floatDmg={floatByTarget[c.monster_id] ?? null}
-                floatKey={floatKey}
-              />
-            );
-          })
-        )}
-      </div>
-
-      {/* Transcript + side panel */}
-      <div className="flex flex-1 overflow-hidden gap-2 p-2">
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="font-hud text-[10px] mb-1 px-1" style={{ color: "var(--muted)" }}>
-            Transcript ({transcript.length})
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-            {transcript.map((u, i) => (
-              <UtteranceBubble
-                key={`${u.turn}-${u.actor_id}-${i}`}
-                u={u}
-                liveNames={liveNames}
-                isNewest={i === transcript.length - 1 && u === newestTurn}
-              />
-            ))}
-            {transcript.length === 0 && (
-              <div className="font-body text-sm italic px-1" style={{ color: "var(--muted)" }}>
-                Type your opening argument below to begin the debate…
-              </div>
-            )}
-            <div ref={transcriptEndRef} />
-          </div>
-        </div>
-
-        <div className="w-64 shrink-0 flex flex-col overflow-hidden gap-2">
-          <ReasoningTrend series={[youSeries]} title="Your reasoning" />
-          <div className="font-hud text-[10px] px-1" style={{ color: "var(--muted)" }}>
-            Judge Verdicts
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-2">
-            {/* A4: optimistic estimates render above the settled verdicts and
-                disappear once the judge's real score lands. */}
-            {pendingEstimates.map((e) => (
-              <EstimateBadge
-                key={`est-${e.turn}-${e.actor_id}`}
-                score={e.score}
-                turn={e.turn}
-              />
-            ))}
-            {verdicts
-              .slice()
-              .reverse()
-              .map((v, i) => (
-                <VerdictBadge key={`${v.turn}-${v.target}-${i}`} v={v} fresh={i === 0} />
-              ))}
-            {verdicts.length === 0 && pendingEstimates.length === 0 && (
-              <div className="font-body text-[11px] italic px-1" style={{ color: "var(--muted)" }}>
-                No verdicts yet
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Player argument bar */}
-      {canArgue && !isOver && (
-        <div className="px-3 py-2 space-y-2" style={{ borderTop: "2px solid rgba(232,230,216,0.12)" }}>
+      {canArgue ? (
+        <>
+          {/* Skill chips */}
           {skills.length > 0 && (
-            <div className="space-y-1">
+            <div className="space-y-1 mb-2">
               <div className="flex gap-1.5 flex-wrap">
                 {skills.map((s) => {
                   const active = selectedSkill === s.id;
                   const eff = effectivenessInfo(s.type, leadEnemy?.type);
-                  // Gacha Wave B: dim the chip when the lead party MP can't
-                  // cover this skill. Cost is sourced from the skill object
-                  // (parseSkill falls back to SKILL_MP_COSTS). Free skills
-                  // (cost 0) never dim.
                   const leadMp =
                     typeof leadParty?.mp === "number" ? leadParty.mp : Infinity;
                   const cost = Number(s.mp_cost ?? 0);
@@ -1132,8 +1073,6 @@ export function BattleDebateView() {
                           {eff.multiplier > 1 ? "▲" : "▼"}
                         </span>
                       )}
-                      {/* MP-cost chip on each skill button. Tiny, blue, sits
-                          flush in the top-right so the price is always visible. */}
                       {cost > 0 && (
                         <span
                           className="ml-1 font-hud text-[8px] px-1"
@@ -1150,17 +1089,11 @@ export function BattleDebateView() {
                   );
                 })}
               </div>
-              {/* One-shot WS rejection banner: the picked skill cost more MP
-                  than the lead has. The hook clears this on the next attempt. */}
               {mpInsufficient && (
-                <div
-                  className="font-hud text-[9px] px-1"
-                  style={{ color: "var(--danger)" }}
-                >
+                <div className="font-hud text-[9px] px-1" style={{ color: "var(--danger)" }}>
                   {mpInsufficient.detail}
                 </div>
               )}
-              {/* Type-effectiveness callout for the currently selected skill. */}
               {selectedSkill && leadEnemy && (() => {
                 const sel = skills.find((s) => s.id === selectedSkill);
                 if (!sel) return null;
@@ -1180,9 +1113,12 @@ export function BattleDebateView() {
               })()}
             </div>
           )}
+
+          {/* Textarea + primary ARGUE */}
           <div className="flex gap-2 items-end">
             <textarea
-              className="pixel-field flex-1 font-body text-sm resize-none h-16"
+              className="pixel-field flex-1 font-body resize-none h-16"
+              style={{ fontSize: 16 }}
               placeholder="Make your argument…"
               value={argText}
               onChange={(e) => setArgText(e.target.value)}
@@ -1198,23 +1134,24 @@ export function BattleDebateView() {
                 onClick={improveArgument}
                 title="Ask your coach to improve this argument"
               >
-                {coaching ? "Coach thinking…" : "✨ Improve"}
+                {coaching ? "Coach…" : "✨ Improve"}
               </button>
               <button
-                className="pixel-btn pixel-btn--party"
+                className="pixel-btn font-display"
+                style={{ background: "var(--win)", color: "#000", borderColor: "#000" }}
                 disabled={!argText.trim() || isOver || running}
                 onClick={submitArgument}
                 title={running ? "Wait for the current round to finish" : "Submit your argument"}
               >
-                {running ? "Debating…" : "Argue"}
+                {running ? "Debating…" : "ARGUE"}
               </button>
             </div>
           </div>
 
-          {/* Coach loading / error / suggestions */}
+          {/* Coach feedback */}
           {coaching && (
             <div
-              className="pixel-inset p-2 font-body text-[11px] flex items-center gap-2"
+              className="pixel-inset p-2 font-body text-[11px] flex items-center gap-2 mt-2"
               style={{ borderColor: "var(--party)", color: "var(--muted)" }}
             >
               <span className="caret-blink">▋</span>
@@ -1223,7 +1160,7 @@ export function BattleDebateView() {
           )}
           {!coaching && coachError && (
             <div
-              className="pixel-inset p-2 font-body text-[11px]"
+              className="pixel-inset p-2 font-body text-[11px] mt-2"
               style={{ borderColor: "var(--warn)", color: "var(--warn)" }}
             >
               {coachError}
@@ -1233,7 +1170,7 @@ export function BattleDebateView() {
             suggestions.map((s, i) => (
               <div
                 key={`sugg-${i}`}
-                className="pixel-inset p-2 space-y-1.5"
+                className="pixel-inset p-2 space-y-1.5 mt-2"
                 style={{ borderColor: "var(--party)" }}
               >
                 <div className="flex items-center gap-2">
@@ -1243,7 +1180,10 @@ export function BattleDebateView() {
                   {s.skill_id && (
                     <span
                       className="font-hud text-[9px] px-1"
-                      style={{ background: typeColor(skills.find((sk) => sk.id === s.skill_id)?.type), color: "#000" }}
+                      style={{
+                        background: typeColor(skills.find((sk) => sk.id === s.skill_id)?.type),
+                        color: "#000",
+                      }}
                     >
                       {s.skill_id}
                     </span>
@@ -1261,7 +1201,7 @@ export function BattleDebateView() {
                   </button>
                 </div>
                 <p
-                  className="font-body text-[12px] leading-relaxed whitespace-pre-wrap"
+                  className="font-body text-[13px] leading-relaxed whitespace-pre-wrap"
                   style={{ color: "var(--ink)" }}
                 >
                   {s.improved}
@@ -1273,11 +1213,154 @@ export function BattleDebateView() {
                 )}
               </div>
             ))}
+        </>
+      ) : running ? (
+        <div className="font-body text-[13px] flex items-center gap-2" style={{ color: "var(--muted)" }}>
+          <span className="caret-blink">▋</span>
+          The judge and your opponent are thinking…
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden relative" style={{ background: "var(--bg)" }}>
+      <LevelUpOverlay combatants={combatants} />
+      <SummonOverlay
+        runId={runId}
+        open={summonOpen}
+        topic={encounter?.topic ?? runTopic}
+        onClose={() => setSummonOpen(false)}
+        onSummoned={handleSummoned}
+      />
+      {captureFlash && (
+        <div
+          className="capture-flash absolute inset-0 z-50 pointer-events-none"
+          style={{ background: "var(--accent)" }}
+        />
+      )}
+      {recallResult && activeEncounterId && (
+        <MemoryRecallOverlay
+          encounterId={activeEncounterId}
+          result={recallResult}
+          onClose={() => setRecallResult(null)}
+        />
+      )}
+
+      {/* Pre-fight intro card: theme → Pro/Con pick → countdown → Debate!!.
+          Mounted once combatants exist; blocks input via `introDone` until it
+          dismisses. The chosen stance is stored for local labels + argue(). */}
+      {!introDone && combatants.length > 0 && (
+        <BattleIntroCard
+          topic={encounter?.topic ?? runTopic}
+          onComplete={(s) => {
+            setChosenStance(s);
+            setIntroDone(true);
+          }}
+        />
+      )}
+
+      {/* Damage numeral flies from the judge panel to the target HP corner. */}
+      {activeDmgFly && (
+        <div
+          style={{
+            position: "fixed",
+            left: activeDmgFly.fromX,
+            top: activeDmgFly.fromY,
+            "--fly-dx": `${activeDmgFly.dx}px`,
+            "--fly-dy": `${activeDmgFly.dy}px`,
+            animation: "dmg-fly-to-corner 0.82s ease-in-out forwards",
+            zIndex: 30,
+            color: "var(--danger)",
+            fontSize: 22,
+            fontFamily: "var(--font-display)",
+            textShadow: "2px 2px 0 #000",
+            pointerEvents: "none",
+          } as React.CSSProperties}
+        >
+          -{activeDmgFly.damage}
         </div>
       )}
 
-      {/* Action bar */}
-      <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderTop: "2px solid rgba(232,230,216,0.12)" }}>
+      {/* THREE FULL-HEIGHT COLUMNS: Log | Stage | Judge */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        {/* LEFT — full-height debate log (to the very top) */}
+        <div
+          className="shrink-0 flex flex-col overflow-hidden"
+          style={{
+            width: "24%",
+            minWidth: 220,
+            borderRight: "2px solid rgba(232,230,216,0.10)",
+            background: "rgba(14,16,24,0.92)",
+          }}
+        >
+          <BattleLog transcript={transcript} liveNames={liveNames} newestTurn={newestTurn} />
+        </div>
+
+        {/* CENTER — stage hosts HP clusters + floating input as children */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <BattleStage
+            playerUtterance={latestPlayerUtterance}
+            enemyUtterance={latestEnemyUtterance}
+            playerIsNewest={playerIsNewest}
+            enemyIsNewest={enemyIsNewest}
+            leadPartyName={leadParty?.name ?? null}
+            leadEnemyName={leadEnemy?.name ?? null}
+            leadPartyType={leadParty?.type ?? null}
+            leadEnemyType={leadEnemy?.type ?? null}
+            topic={encounter?.topic ?? runTopic}
+            isOver={isOver}
+            phase={phase}
+            playerHpSlot={
+              <HPCorner
+                ref={playerHpRef}
+                side="player"
+                combatant={leadParty}
+                floatDmg={leadParty ? (floatByTarget[leadParty.monster_id] ?? null) : null}
+                floatKey={floatKey}
+              />
+            }
+            enemyHpSlot={
+              <HPCorner
+                ref={enemyHpRef}
+                side="enemy"
+                combatant={leadEnemy}
+                floatDmg={leadEnemy ? (floatByTarget[leadEnemy.monster_id] ?? null) : null}
+                floatKey={floatKey}
+              />
+            }
+            inputSlot={inputSlot}
+          />
+        </div>
+
+        {/* RIGHT — big focal judge panel, full height */}
+        <div
+          className="shrink-0 flex flex-col overflow-hidden"
+          style={{
+            width: "26%",
+            minWidth: 240,
+            borderLeft: "2px solid rgba(232,230,216,0.10)",
+          }}
+        >
+          <JudgePanel
+            ref={judgePanelRef}
+            lastVerdict={lastVerdict ?? null}
+            pendingEstimates={pendingEstimates}
+            youSeries={youSeries}
+            recentVerdicts={verdicts}
+          />
+        </div>
+      </div>
+
+      {/* SLIM ACTION BAR — meta actions (secondary/ghost); ARGUE lives in stage */}
+      <div
+        className="px-3 flex items-center gap-2 flex-wrap shrink-0"
+        style={{
+          height: 56,
+          borderTop: "2px solid rgba(232,230,216,0.12)",
+          background: "rgba(14,16,24,0.95)",
+        }}
+      >
         {actionError && (
           <span className="font-body text-[11px] flex-1" style={{ color: "var(--danger)" }}>
             {actionError}
@@ -1288,11 +1371,6 @@ export function BattleDebateView() {
             {summonNotice}
           </span>
         )}
-        {isOver && (
-          <span className="font-display text-sm" style={{ color: phase === "won" ? "var(--win)" : "var(--danger)" }}>
-            {phase === "won" ? "VICTORY" : "DEFEAT"}
-          </span>
-        )}
 
         <button
           className="pixel-btn text-[10px]"
@@ -1301,7 +1379,6 @@ export function BattleDebateView() {
         >
           {sfxOn ? "🔊" : "🔇"}
         </button>
-
         <button
           className="pixel-btn"
           disabled={isOver || running}
@@ -1318,12 +1395,8 @@ export function BattleDebateView() {
         >
           Auto (3)
         </button>
-        {/* Memory Recall (Wave C: the headline). Greyed when unaffordable or
-            while another action is in flight. The local MP fallback assumes
-            max_mp until Wave B's MP map streams in — the backend re-enforces
-            the real gate, so an over-cast just surfaces as `recallError`. */}
         <button
-          className="pixel-btn pixel-btn--accent"
+          className="pixel-btn"
           disabled={!canRecall}
           onClick={castMemoryRecall}
           title={
