@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from app.config import settings
 from app.debate.damage import compute_damage
-from app.debate.judge import score_round
+from app.debate.judge import heuristic_score, score_round
 from app.debate.topics import domain_match_mult
 from app.gateway.gateway import gateway
 
@@ -91,6 +91,20 @@ def _actor_timeout() -> float:
 def _actor_max_tokens() -> int:
     """Token cap for an actor turn — small for punchy 1-2 sentence arguments."""
     return int(getattr(settings, "actor_max_tokens", 64) or 64)
+
+
+def _human_judge_deadline() -> float:
+    """A4 reconciliation deadline (seconds) for the human-round judge call.
+
+    Autoplan finding (A4): the optimistic `estimate` shows the heuristic score
+    instantly, but HP still waits on `await score_round(...)`, which on a stalled
+    single-slot Ollama serially times out each candidate in judge.py (~28-56s) —
+    leaving the round visually dangling after the estimate. We cap the LLM judge
+    at this deadline; on timeout we COMMIT the already-displayed heuristic score
+    as authoritative (compute damage from it, emit the normal verdict+hp) so the
+    round always settles within the budget. Configurable via
+    `human_judge_deadline_s` (default 10s)."""
+    return float(getattr(settings, "human_judge_deadline_s", 10) or 10)
 
 
 # Real, side-taking fallback arguments. When the model fails/stalls we still want
@@ -152,13 +166,34 @@ _FALLBACK_AGAINST_DEFAULT = [
 ]
 
 
-async def prewarm_models(models: list[str] | None = None) -> None:
-    """Fire tiny throwaway completions so the first real turn isn't cold.
+async def prewarm_models(
+    models: list[str] | None = None,
+    topic: str | None = None,
+    enemy_model: str | None = None,
+) -> None:
+    """Fire tiny throwaway completions so the first real turn isn't cold, and
+    (A1) materialize the enemy OPENING for ``topic`` during the encounter-load
+    idle window.
 
     Low-risk and best-effort: bounded by the short per-call timeout, every error
-    is swallowed, and it does nothing when ``settings.prewarm_enabled`` is off.
-    Called on encounter creation so the model is loaded before the battle starts.
+    is swallowed, and prewarm-completions do nothing when ``settings.prewarm_enabled``
+    is off. Called on encounter creation so the model is loaded before the battle
+    starts. Pass ``topic`` (and optionally the lead enemy's ``enemy_model``) to also
+    pre-generate + cache the opening on the idle window so the first enemy turn is a
+    pure cache retrieval — a no-op on a cache hit. The opening pre-gen runs even when
+    prewarm-completions are disabled (it IS the warm-up that matters for Track A) but
+    only when a topic is supplied, so existing arg-less callers are unchanged.
     """
+    # A1 — opening materialization. Runs on the encounter-load idle window so the
+    # first enemy turn (run_human_round_stream) retrieves instead of generating.
+    if topic:
+        try:
+            from app.debate.materialize import pregenerate_opening
+
+            await pregenerate_opening(topic, enemy_model)
+        except Exception:  # noqa: BLE001 — best-effort, never block encounter create
+            pass
+
     if not getattr(settings, "prewarm_enabled", False):
         return
     targets = models or [settings.actor_model, settings.judge_model_fast]
@@ -976,34 +1011,74 @@ async def run_human_round_stream(
     await append_utterance(eid, player_utt)
     yield Event("utterance", player_utt)
 
+    # A4 — OPTIMISTIC JUDGE. Emit an INSTANT heuristic display score for the
+    # player's argument so the UI shows feedback <200ms after submit, well before
+    # the slot-bound LLM judge returns. This is a DISPLAY-ONLY estimate: it does
+    # NOT drive HP damage (damage is computed from the LLM score below and applied
+    # only once, in a single animation). The front-end settles this estimate to
+    # the authoritative `verdict` score when it arrives (matched by turn+actor_id).
+    yield Event(
+        "estimate",
+        {
+            "turn": turn_no,
+            "actor_id": player.monster_id,
+            "side": player.side,
+            "score": heuristic_score(topic, text),
+        },
+    )
+
     enemy_turn = turn_no + 1
 
-    # --- Enemy rebuttal (autonomous, STREAMED) ---
+    # --- Enemy rebuttal (autonomous) ---
     battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
     action = _decide_action(enemy, battle_state)
     memories = await _gather_memories(enemy, topic, run_id)
     transcript = await get_transcript_safe(eid)
 
+    # A1/A2 — MATERIALIZED OPENING. On the FIRST round the enemy's line is its
+    # opening (arguing AGAINST the topic), which is player-independent and thus
+    # cacheable. Use the cached/pre-generated opening instead of a live stream so
+    # the first enemy turn is a pure retrieval (hit) or a single store-on-miss.
+    # Only the lead enemy uses a skill action; the opening ignores transcript, so
+    # the opening path is safe only on the very first round (no prior exchange to
+    # rebut). Later rounds fall through to the live streaming rebuttal below.
     enemy_text = ""
-    try:
-        async for chunk in _stream_utterance(
-            enemy, topic, transcript, action, memories, name_lookup
-        ):
-            if chunk["kind"] == "token":
-                yield Event(
-                    "token",
-                    {
-                        "turn": enemy_turn,
-                        "actor_id": enemy.monster_id,
-                        "side": enemy.side,
-                        "text": chunk["text"],
-                    },
-                )
-            else:  # "done"
-                enemy_text = chunk["text"]
-    except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
-        if not enemy_text:
-            enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+    is_opening = start_turn == 0 and len(transcript) <= 1  # only the player's turn so far
+    if is_opening:
+        from app.debate.materialize import get_or_create_opening
+
+        enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
+        # Emit the materialized opening as a single token so WS clients still get
+        # the streamed-text event shape (no per-token cadence, but instant).
+        yield Event(
+            "token",
+            {
+                "turn": enemy_turn,
+                "actor_id": enemy.monster_id,
+                "side": enemy.side,
+                "text": enemy_text,
+            },
+        )
+    else:
+        try:
+            async for chunk in _stream_utterance(
+                enemy, topic, transcript, action, memories, name_lookup
+            ):
+                if chunk["kind"] == "token":
+                    yield Event(
+                        "token",
+                        {
+                            "turn": enemy_turn,
+                            "actor_id": enemy.monster_id,
+                            "side": enemy.side,
+                            "text": chunk["text"],
+                        },
+                    )
+                else:  # "done"
+                    enemy_text = chunk["text"]
+        except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
+            if not enemy_text:
+                enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
 
     turn_no = enemy_turn
     enemy_utt = {
@@ -1024,14 +1099,37 @@ async def run_human_round_stream(
     # the SECOND judge call doubled local judge latency, the measured bottleneck. One
     # combined call halves it. score_round maps results back by actor_id, so per-actor
     # damage attribution is preserved.) ---
-    scores = await score_round(
-        topic,
-        [
-            {"actor_id": player.monster_id, "text": text},
-            {"actor_id": enemy.monster_id, "text": enemy_text},
-        ],
-        fallback_model=fallback_model,
-    )
+    #
+    # A4 — RECONCILIATION DEADLINE. Autoplan finding: on a stalled single-slot
+    # Ollama, score_round serially times out each candidate (~28-56s), so HP would
+    # dangle long after the optimistic `estimate` already rendered. Cap the LLM
+    # judge at `_human_judge_deadline()`; on timeout, COMMIT the already-displayed
+    # heuristic score as authoritative (same heuristic the estimate used) so damage
+    # is computed from it and the normal verdict+hp still emit — the round never
+    # dangles. The non-human auto-round path (run_round_stream) is unchanged.
+    judge_items = [
+        {"actor_id": player.monster_id, "text": text},
+        {"actor_id": enemy.monster_id, "text": enemy_text},
+    ]
+    try:
+        scores = await asyncio.wait_for(
+            score_round(topic, judge_items, fallback_model=fallback_model),
+            timeout=_human_judge_deadline(),
+        )
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — stalled/failed judge
+        # Settle from the heuristic so HP commits within the deadline. This is the
+        # SAME score already shown to the player by the optimistic `estimate`, so
+        # the displayed feedback is now authoritative rather than dangling.
+        from app.debate.judge import JudgeScore
+
+        scores = [
+            JudgeScore(
+                actor_id=it["actor_id"],
+                score=heuristic_score(topic, it["text"]),
+                rationale="Heuristic score (judge deadline reached).",
+            )
+            for it in judge_items
+        ]
     score_by_id = {js.actor_id: js for js in scores}
 
     # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---

@@ -29,8 +29,13 @@ from app.config import settings
 from app.db.models import Run
 from app.db.session import get_session
 from app.schemas import POI, Region, WorldSpecLite
+from app.world.algorithms import INTERIOR_KINDS, get_generator
+from app.world.algorithms.biomes import BiomeGenerator
 
 router = APIRouter(prefix="/api", tags=["world"])
+
+# Shared overworld biome generator (stateless; all state is seed-derived).
+_BIOME_GEN = BiomeGenerator()
 
 # ---------------------------------------------------------------------------
 # Procedural placement — the ONE shared source of truth for map + world.
@@ -38,8 +43,8 @@ router = APIRouter(prefix="/api", tags=["world"])
 
 # RNG masks: keep POI placement independent of tile/wild-enemy RNG streams so a
 # change to one does not perturb the other, while staying fully seed-derived.
+# (Region/biome RNG now lives in BiomeGenerator; see build_regions.)
 _POI_MASK = 0x5EED  # POI placement stream
-_REGION_MASK = 0xBEEF  # region/biome stream
 
 # How many of each "extra" POI kind to scatter (besides start/goal).
 _CAMP_COUNT = 2
@@ -49,8 +54,6 @@ _LANDMARK_COUNT = 2
 
 # Tile value for a campsite (camp POI). 0=walkable, 1=blocked, 2=campsite.
 CAMP_TILE = 2
-
-_BIOMES = ("plains", "forest", "mountains", "wetland")
 
 _KIND_NAMES = {
     "start": "Trailhead",
@@ -71,8 +74,9 @@ def place_pois(
     """Deterministically place POIs on walkable tiles for ``seed``.
 
     Pure + deterministic: identical (seed, tiles, width, height) -> identical
-    POI list (same order, coords, names). Both the map router and the world
-    router call this so their POIs never diverge.
+    POI list (same order, coords, names, interior fields). Both the map router
+    and the world router call this so their POIs never diverge — including the
+    additive ``interior_seed``/``interior_kind`` decoration on enterable POIs.
 
     Placement rules:
       * ``start`` is pinned to the spawn zone (1, 1) — matches create_run's
@@ -124,7 +128,13 @@ def place_pois(
         suffix = f" {counters[kind]}" if plan.count(kind) > 1 else ""
         pois.append(POI(kind=kind, x=xy[0], y=xy[1], name=f"{_KIND_NAMES[kind]}{suffix}"))
 
-    return pois
+    # Decorate enterable POIs (town/den) with their deterministic interior fields
+    # HERE, in the single shared placement helper, so /map and /world return
+    # byte-for-byte identical POIs (interior fields included). Additive only:
+    # non-enterable POIs are returned unchanged (interior_* stay None). Forward
+    # refs to helpers defined later in the module are safe — place_pois is only
+    # ever called at runtime, never at import.
+    return [_attach_interior(seed, p) for p in pois]
 
 
 def _scatter_one(
@@ -184,22 +194,69 @@ def apply_camp_tiles(tiles: list[list[int]], pois: list[POI]) -> list[list[int]]
 
 
 def build_regions(seed: int, width: int, height: int) -> list[Region]:
-    """Deterministically split the map into 4 quadrant regions with biomes."""
-    rng = random.Random(seed ^ _REGION_MASK)
-    half_w = width // 2
-    half_h = height // 2
-    quadrants = [
-        ("Northwest", [0, 0, half_w - 1, half_h - 1]),
-        ("Northeast", [half_w, 0, width - 1, half_h - 1]),
-        ("Southwest", [0, half_h, half_w - 1, height - 1]),
-        ("Southeast", [half_w, half_h, width - 1, height - 1]),
-    ]
-    biomes = list(_BIOMES)
-    rng.shuffle(biomes)
-    regions: list[Region] = []
-    for i, (name, bounds) in enumerate(quadrants):
-        regions.append(Region(name=name, biome=biomes[i % len(biomes)], bounds=bounds))
-    return regions
+    """Deterministically derive biome regions from the noise field (Wave 2).
+
+    Replaces the old 4-quadrant random split with biome-aware regions summarized
+    from ``BiomeGenerator``'s value-noise biome map, so regions reflect smooth,
+    organic biome bands instead of hard quadrant borders. Still pure +
+    deterministic in (seed, width, height) — the determinism contract holds.
+    """
+    return _BIOME_GEN.regions(seed, width, height)
+
+
+# ---------------------------------------------------------------------------
+# Interiors (Wave 2 additive) — enterable POIs + on-demand interior worlds.
+# ---------------------------------------------------------------------------
+
+# Map an overworld POI.kind to the interior generator it opens into. Only these
+# kinds are enterable; others (start/goal/camp/landmark) have no interior.
+_INTERIOR_KIND_FOR_POI = {
+    "town": "town",
+    "den": "cave",
+}
+
+# Interior grids are small, fixed-size scenes (not the overworld dims).
+INTERIOR_WIDTH = 16
+INTERIOR_HEIGHT = 12
+
+_INTERIOR_SEED_MASK = 0x1A7E  # "INTERIOR" stream, derived from run seed + coords
+
+
+def poi_id(poi: POI) -> str:
+    """Stable, positional identity for a POI: ``kind:x:y``.
+
+    POIs have no id field in the frozen schema, but the FE needs a handle to
+    request a specific interior. Coords are unique per placement (place_pois
+    never reuses a tile), so ``kind:x:y`` is a stable key for a given run seed.
+    """
+    return f"{poi.kind}:{poi.x}:{poi.y}"
+
+
+def interior_seed_for(run_seed: int, poi: POI) -> int:
+    """Deterministic interior seed from the run seed + POI position.
+
+    Stable across reloads (no wall-clock), and distinct per POI so two towns in
+    one run get different interiors. Masked to keep it independent of the
+    overworld POI/region RNG streams.
+    """
+    return (run_seed * 1000003 + poi.x * 31 + poi.y) ^ _INTERIOR_SEED_MASK
+
+
+def _attach_interior(run_seed: int, poi: POI) -> POI:
+    """Return a copy of ``poi`` with interior_seed/interior_kind set if enterable.
+
+    Additive only: non-enterable POIs are returned unchanged (fields stay None).
+    Uses model_copy so we never mutate the placed POI in-place.
+    """
+    kind = _INTERIOR_KIND_FOR_POI.get(poi.kind)
+    if kind is None:
+        return poi
+    return poi.model_copy(
+        update={
+            "interior_seed": interior_seed_for(run_seed, poi),
+            "interior_kind": kind,
+        }
+    )
 
 
 def build_world(
@@ -208,7 +265,15 @@ def build_world(
     width: int,
     height: int,
 ) -> WorldSpecLite:
-    """Assemble the full WorldSpecLite for a seed — pure + deterministic."""
+    """Assemble the full WorldSpecLite for a seed — pure + deterministic.
+
+    Enterable POIs (town/den) are decorated with their deterministic
+    ``interior_seed`` + ``interior_kind`` so the FE knows which POIs open into an
+    interior (via GET /api/runs/{id}/interior/{poi_id}). Purely additive.
+
+    Interior decoration happens inside ``place_pois`` (the single shared source
+    of truth), so the POIs here are identical to what the map router returns.
+    """
     pois = place_pois(seed, tiles, width, height)
     regions = build_regions(seed, width, height)
     start = next((p for p in pois if p.kind == "start"), None)
@@ -222,6 +287,52 @@ def build_world(
         start=start,
         goal=goal,
     )
+
+
+# In-process interior cache keyed by (interior_seed, kind) per the design doc —
+# same POI re-entered returns the identical interior without regenerating.
+_INTERIOR_CACHE: dict[tuple[int, str], WorldSpecLite] = {}
+
+
+def _clamp_interior_kind(kind: str | None, fallback: str = "cave") -> str:
+    """Clamp an interior_kind HINT to a known generator (never trust it blindly)."""
+    return kind if kind in INTERIOR_KINDS else fallback
+
+
+def build_interior(interior_seed: int, kind: str) -> WorldSpecLite:
+    """Generate (or retrieve from cache) an interior WorldSpecLite.
+
+    Pure + deterministic in (interior_seed, kind): the chosen generator derives
+    all randomness from the seed, so re-entry yields the identical interior.
+    Cached by (interior_seed, kind) per the design doc.
+    """
+    kind = _clamp_interior_kind(kind)
+    cache_key = (interior_seed, kind)
+    cached = _INTERIOR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = get_generator(kind).generate(
+        interior_seed, INTERIOR_WIDTH, INTERIOR_HEIGHT
+    )
+    start = next((p for p in result.pois if p.kind == "start"), None)
+    goal = next((p for p in result.pois if p.kind == "goal"), None)
+    spec = WorldSpecLite(
+        seed=interior_seed,
+        width=result.width,
+        height=result.height,
+        regions=result.regions,
+        pois=result.pois,
+        start=start,
+        goal=goal,
+    )
+    _INTERIOR_CACHE[cache_key] = spec
+    return spec
+
+
+def _clear_interior_cache() -> None:
+    """Test/maintenance hook: drop all cached interiors."""
+    _INTERIOR_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -263,3 +374,58 @@ async def get_world(
 
     # Default / fallback path: the Wave-2 seed-deterministic procedural world.
     return build_world(run.seed, tiles, MAP_WIDTH, MAP_HEIGHT)
+
+
+def _stable_str_hash(s: str) -> int:
+    """Deterministic 16-bit hash of a string (builtin hash() is salted per run).
+
+    Used only to seed the FALLBACK interior for an unknown poi key, so it stays
+    stable across processes/restarts.
+    """
+    h = 0
+    for ch in s:
+        h = (h * 131 + ord(ch)) & 0xFFFF
+    return h
+
+
+@router.get("/runs/{run_id}/interior/{poi_key}", response_model=WorldSpecLite)
+async def get_interior(
+    run_id: str,
+    poi_key: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> WorldSpecLite:
+    """Return an interior WorldSpecLite for an enterable POI, generated on demand.
+
+    ``poi_key`` is the positional ``kind:x:y`` identity from ``poi_id(poi)``. The
+    interior is generated by the algorithm for the POI's ``interior_kind`` and
+    cached by ``(interior_seed, kind)`` — re-entry returns the identical interior.
+
+    Falls back GRACEFULLY like the gated overworld generator: it never raises for
+    a bad/unknown poi_key. The only error is 404 for an unknown RUN (same contract
+    as the other run-scoped routes). If the POI cannot be resolved or is not
+    enterable, we still return a valid (deterministic) cave interior derived from
+    a coord-stable seed, so the FE always gets a renderable scene.
+    """
+    from app.routers.map import MAP_HEIGHT, MAP_WIDTH, _generate_tiles
+
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Resolve the POI from the deterministic world so we use the SAME
+    # interior_seed/kind the FE saw on /world (no drift).
+    tiles = _generate_tiles(run.seed)
+    world = build_world(run.seed, tiles, MAP_WIDTH, MAP_HEIGHT)
+    match = next((p for p in world.pois if poi_id(p) == poi_key), None)
+
+    if match is not None and match.interior_seed is not None:
+        return build_interior(
+            match.interior_seed, _clamp_interior_kind(match.interior_kind)
+        )
+
+    # Graceful fallback: unknown/non-enterable POI. Derive a stable seed from the
+    # run + the requested key so the fallback interior is still deterministic.
+    fallback_seed = (
+        run.seed * 1000003 + _stable_str_hash(poi_key)
+    ) ^ _INTERIOR_SEED_MASK
+    return build_interior(fallback_seed, "cave")

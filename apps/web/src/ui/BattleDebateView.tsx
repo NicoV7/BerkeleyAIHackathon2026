@@ -525,6 +525,36 @@ function MemoryRecallOverlay({
 }
 
 // ---------------------------------------------------------------------------
+// Estimate badge (A4 optimistic judge) — instant heuristic score, "estimating…"
+// state. NO damage shown: HP only changes when the real verdict settles this.
+// ---------------------------------------------------------------------------
+
+function EstimateBadge({ score, turn }: { score: number; turn: number }) {
+  return (
+    <div
+      className="pixel-inset p-2 caret-blink"
+      style={{ borderColor: "var(--accent)", borderStyle: "dashed" }}
+      title="Instant estimate — the judge is still scoring this argument"
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="font-display text-lg" style={{ color: "var(--accent)" }}>
+          ~{Math.round(score)}
+        </span>
+        <span className="font-hud text-[9px]" style={{ color: "var(--muted)" }}>
+          T{turn}
+        </span>
+        <span className="font-hud text-[9px] ml-auto" style={{ color: "var(--muted)" }}>
+          estimating…
+        </span>
+      </div>
+      <p className="font-body text-[11px] mt-1 italic" style={{ color: "var(--muted)" }}>
+        Optimistic score — settling to the judge's verdict, HP unchanged until then.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main view
 // ---------------------------------------------------------------------------
 
@@ -538,6 +568,7 @@ export function BattleDebateView() {
     verdicts,
     capturableIds,
     mpInsufficient,
+    estimates,
     running,
     runningTurn,
     drive,
@@ -623,6 +654,19 @@ export function BattleDebateView() {
   useEffect(() => {
     if (youSeries.points.length) setYouScores(youSeries.points);
   }, [youSeries, setYouScores]);
+
+  // A4: pending optimistic estimates that have NOT yet been settled by a
+  // verdict. The hook already retires an estimate when its verdict lands, but we
+  // also guard here against any (turn, actor) already represented in `verdicts`
+  // so the "estimating…" badge never lingers next to its real score.
+  const pendingEstimates = useMemo(() => {
+    return Object.values(estimates)
+      .filter(
+        (e) =>
+          !verdicts.some((v) => v.turn === e.turn && v.actor_id === e.actor_id)
+      )
+      .sort((a, b) => b.turn - a.turn);
+  }, [estimates, verdicts]);
 
   // Per-card floating damage: latest verdict's damage keyed by target id. A
   // freshly-cast Memory Recall transiently overrides the verdict damage on the
@@ -983,13 +1027,22 @@ export function BattleDebateView() {
             Judge Verdicts
           </div>
           <div className="flex-1 overflow-y-auto space-y-2">
+            {/* A4: optimistic estimates render above the settled verdicts and
+                disappear once the judge's real score lands. */}
+            {pendingEstimates.map((e) => (
+              <EstimateBadge
+                key={`est-${e.turn}-${e.actor_id}`}
+                score={e.score}
+                turn={e.turn}
+              />
+            ))}
             {verdicts
               .slice()
               .reverse()
               .map((v, i) => (
                 <VerdictBadge key={`${v.turn}-${v.target}-${i}`} v={v} fresh={i === 0} />
               ))}
-            {verdicts.length === 0 && (
+            {verdicts.length === 0 && pendingEstimates.length === 0 && (
               <div className="font-body text-[11px] italic px-1" style={{ color: "var(--muted)" }}>
                 No verdicts yet
               </div>

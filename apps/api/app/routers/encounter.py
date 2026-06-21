@@ -338,6 +338,33 @@ async def build_encounter_state(eid: str) -> EncounterState:
     )
 
 
+# ---- Idempotency ------------------------------------------------------------
+
+
+async def _find_active_encounter(
+    session: AsyncSession, run_id: str, wild_id: str
+) -> Encounter | None:
+    """Return the most recent ONGOING encounter for (run_id, wild_id), or None.
+
+    Used to make create_encounter idempotent: a roaming enemy can re-collide with
+    the player while the first create POST is still in flight, so a second POST for
+    the same wild must return the existing battle rather than spawn a duplicate.
+    Matches on run_id (indexed) and membership of wild_id in the JSONB enemy_ids.
+    """
+    res = await session.execute(
+        select(Encounter)
+        .where(
+            Encounter.run_id == run_id,
+            Encounter.result == EncounterResult.ongoing,
+        )
+        .order_by(Encounter.created_at.desc())
+    )
+    for enc in res.scalars().all():
+        if wild_id in (enc.enemy_ids or []):
+            return enc
+    return None
+
+
 # ---- Endpoints --------------------------------------------------------------
 
 
@@ -349,6 +376,24 @@ async def create_encounter(
     run = await session.get(Run, req.run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run not found")
+
+    # Validate that an explicitly-requested wild_id actually belongs to THIS run
+    # before doing anything else (don't let a stray id pull a monster from another
+    # run / fabricate around it). Unknown wild for the run -> 404.
+    if req.wild_id:
+        wild = await session.get(Monster, req.wild_id)
+        if wild is None or wild.run_id != req.run_id:
+            raise HTTPException(status_code=404, detail="wild not found for run")
+
+    # IDEMPOTENCY: roaming enemies can re-collide while a create POST is still in
+    # flight, producing duplicate ongoing encounters for the same (run_id, wild).
+    # If an active (ongoing) encounter already exists for this run+wild, return it
+    # instead of creating a second one. Only meaningful when a wild_id is given
+    # (otherwise each call is an intentional fresh random encounter).
+    if req.wild_id:
+        existing = await _find_active_encounter(session, req.run_id, req.wild_id)
+        if existing is not None:
+            return await build_encounter_state(existing.id)
 
     party_monsters = await _resolve_party(session, req.run_id)
     enemy_monsters = await _resolve_enemies(session, req.run_id, req)
@@ -381,11 +426,35 @@ async def create_encounter(
     await seed_redis(eid, req.run_id, topic, combatants)
     await set_meta(eid, phase="debating")
 
-    # Latency fix: warm the local model(s) so the first real round isn't a cold start.
+    # Latency fix + A1/A2 opening pre-gen, all on ONE background task so the single
+    # Ollama slot is never double-hit.
+    #   A1 — prewarm_models(topic, enemy_model) folds the opening pre-gen for THIS
+    #        battle's drawn topic INTO the prewarm task (it runs the pregen first,
+    #        then the throwaway warm-ups), so the first enemy turn is a pure cache
+    #        retrieval during the encounter-load idle window.
+    #   A2 — pregenerate_theme_openings warms EVERY topic in the run's theme so the
+    #        NEXT battle (which draws a different random topic within the same theme,
+    #        see topic_seed above) also hits the cache. The per-battle topic is
+    #        seeded off the encounter UUID, so warming only the single drawn topic
+    #        would almost never hit again — pre-baking the whole theme is what makes
+    #        the cache actually pay off across a run.
+    # Both are awaited SEQUENTIALLY inside one task: never two concurrent calls to
+    # the single Ollama slot.
     try:
+        from app.debate.materialize import pregenerate_theme_openings
         from app.debate.orchestrator import prewarm_models
 
-        asyncio.create_task(prewarm_models())
+        enemy_model = next((m.model for m in enemy_monsters if m.model), None)
+        theme = getattr(run, "theme", None)
+
+        async def _warm() -> None:
+            # This-battle opening first (lowest-latency win), folded into prewarm.
+            await prewarm_models(topic=topic, enemy_model=enemy_model)
+            # Then warm the rest of the theme for subsequent battles (one topic at
+            # a time, so still no concurrent slot pressure).
+            await pregenerate_theme_openings(theme, enemy_model)
+
+        asyncio.create_task(_warm())
     except Exception:  # noqa: BLE001 — prewarm is best-effort, never block encounter creation
         pass
 
