@@ -2,10 +2,10 @@
 
 Two live-play P0s these tests lock in WITHOUT a real Ollama/Redis:
 
-  1. RESPONSIVENESS — the human-argue round must STREAM the enemy rebuttal token
-     by token (same mechanism as the auto round) so perceived latency is the
-     first token, not full generation; and the player-judge + enemy-generation
-     LLM calls must OVERLAP (asyncio), not run strictly back-to-back.
+  1. RESPONSIVENESS — the human-argue round gives the enemy rebuttal one bounded
+     completion window, then emits one cleaned token plus the canonical utterance.
+     This prevents malformed partial chunks while keeping latency inside the
+     human-play budget.
 
   2. CLEAR STANCES — the player's lead argues FOR the topic and the enemy lead
      argues AGAINST it (deterministic); the stance is threaded into the prompt
@@ -82,19 +82,30 @@ async def _drain(agen) -> list[orch.Event]:
 
 
 # --------------------------------------------------------------------------- #
-# 1. STREAMING — the human round emits token events, not just one utterance
+# 1. RESPONSIVENESS — the human round emits a clean completed rebuttal
 # --------------------------------------------------------------------------- #
 
 
-async def test_human_round_streams_enemy_tokens(
+async def test_human_round_emits_completed_enemy_rebuttal(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    # Enemy rebuttal arrives as several streamed chunks.
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Animals ", "don't ", "deserve ", "human ", "rights."]:
-            yield tok
+    captured: dict[str, Any] = {}
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    async def fake_complete(messages, model=None, timeout=None, max_tokens=None, **k):
+        captured["model"] = model
+        captured["timeout"] = timeout
+        captured["max_tokens"] = max_tokens
+        return (
+            "Animals do not deserve human rights because duties matter. "
+            "Pain alone does not settle the category."
+        )
+
+    async def unexpected_stream(*a, **k):
+        raise AssertionError("human enemy rebuttals should complete before emit")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+    monkeypatch.setattr(orch.gateway, "stream", unexpected_stream)
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
@@ -107,8 +118,6 @@ async def test_human_round_streams_enemy_tokens(
         _combatant("party", "p1", "Sage"),
         _combatant("enemy", "e1", "Brute"),
     ]
-    # start_turn>0 = a later round -> live STREAMING rebuttal (round 1 emits the
-    # materialized opening as a single token; that is a separate A1/A2 concern).
     events = await _drain(
         orch.run_human_round_stream(
             "enc1", "animals deserve rights", combatants, None, 2,
@@ -117,13 +126,14 @@ async def test_human_round_streams_enemy_tokens(
     )
 
     token_events = [e for e in events if e.kind == "token"]
-    # The enemy rebuttal streamed: more than one token event (not a single final blob).
-    assert len(token_events) >= 2
-    # Tokens reconstruct the enemy text and all carry the enemy's side.
+    assert len(token_events) == 1
     streamed = "".join(e.data["text"] for e in token_events)
     assert "rights" in streamed
     assert all(e.data["side"] == "against" for e in token_events)
     assert all("server_ts" in e.data and "elapsed_ms" in e.data for e in token_events)
+    assert captured["model"] == orch.settings.enemy_rebuttal_model
+    assert captured["timeout"] == orch.settings.enemy_rebuttal_completion_timeout_s
+    assert captured["max_tokens"] == orch.settings.enemy_rebuttal_max_tokens
 
     # The canonical enemy utterance still emits with the full assembled text.
     enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
@@ -146,9 +156,8 @@ async def test_human_round_judges_both_in_one_combined_call(
     """
     calls: list[list[str]] = []
 
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Rights ", "demand ", "duties."]:
-            yield tok
+    async def fake_complete(messages, model=None, **k):
+        return "Rights demand duties. The player's claim skips that burden."
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
@@ -160,7 +169,7 @@ async def test_human_round_judges_both_in_one_combined_call(
             for it in items
         ]
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [
@@ -186,34 +195,29 @@ async def test_human_round_judges_both_in_one_combined_call(
     assert by_actor["e1"]["damage"] == 0
 
 
-async def test_human_round_streams_enemy_tokens_carry_actor_id(
+async def test_human_round_enemy_token_carries_actor_id(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    """The enemy rebuttal must STREAM token events (perceived latency = first token)
-    and every token must carry the enemy's actor_id."""
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Coun", "ter", "point."]:
-            yield tok
+    """The completed enemy rebuttal token must carry the enemy's actor_id."""
+    async def fake_complete(messages, model=None, **k):
+        return "Counterpoint answers the player. The burden still remains."
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
         return [JudgeScore(actor_id=it["actor_id"], score=50.0, rationale="ok") for it in items]
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
-    # start_turn>0 = a LATER round, so the enemy rebuts via the live STREAMING path
-    # (the first round emits the cached/materialized opening as a single token, which
-    # is a separate A1/A2 concern; this test guards the streaming rebuttal).
     events = await _drain(
         orch.run_human_round_stream(
             "enc3", "topic", combatants, None, 2, {"party": 1.0, "enemy": 1.0}, "x"
         )
     )
     token_events = [e for e in events if e.kind == "token"]
-    assert len(token_events) >= 2, "enemy rebuttal must stream multiple token events"
+    assert len(token_events) == 1
     assert all(t.data.get("actor_id") == "e1" for t in token_events)
 
 
@@ -248,6 +252,49 @@ async def test_stream_assembly_preserves_chunk_whitespace(
     assert "Confucius' argument relies on standards." in done["text"]
 
 
+async def test_complete_before_emit_sanitizes_before_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Human rebuttals should emit one already-sanitized token, not raw partial text."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_complete(messages, model=None, timeout=None, max_tokens=None, **k):
+        captured["timeout"] = timeout
+        captured["max_tokens"] = max_tokens
+        return "**Against:** Multiple UFO sightings do not prove alien visits.\nSupport: Misidentification is more likely."
+
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
+
+    enemy = _combatant("enemy", "e1", "Truism18")
+    enemy.side = "against"
+    chunks = [
+        chunk
+        async for chunk in orch._stream_utterance(
+            enemy,
+            "Aliens visited Earth.",
+            [{"actor_id": "p1", "actor_role": "party", "text": "UFO sightings defy physics."}],
+            {
+                "complete_before_emit": True,
+                "completion_timeout_s": 5,
+                "max_tokens": 96,
+                "allow_max_tokens_over_base": True,
+            },
+            [],
+            {"p1": "Peter Singer", "e1": "Truism18"},
+        )
+    ]
+
+    tokens = [chunk["text"] for chunk in chunks if chunk["kind"] == "token"]
+    done = next(chunk for chunk in chunks if chunk["kind"] == "done")
+    assert tokens == [done["text"]]
+    assert "**" not in tokens[0]
+    assert "Claim:" not in tokens[0]
+    assert "Support:" not in tokens[0]
+    assert "UFO sightings" in tokens[0]
+    assert captured == {"timeout": 5.0, "max_tokens": orch.settings.enemy_rebuttal_max_tokens}
+
+
 async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
     monkeypatch: pytest.MonkeyPatch,
     fake_redis: _FakeRedis,
@@ -272,15 +319,15 @@ async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
             return "I argue FOR four-day weeks because rest improves focus."
         return None
 
-    async def fake_stream(messages, model=None, **k):
+    async def fake_complete(messages, model=None, timeout=None, max_tokens=None, **k):
         captured["model"] = model
+        captured["timeout"] = timeout
+        captured["max_tokens"] = max_tokens
         captured["messages"] = messages
-        for tok in [
-            "Your rest claim ",
-            "skips coordination debt. ",
-            "Shorter weeks still need handoffs people can trust.",
-        ]:
-            yield tok
+        return (
+            "Your rest claim skips coordination debt. "
+            "Shorter weeks still need handoffs people can trust."
+        )
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
@@ -290,7 +337,7 @@ async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
     monkeypatch.setattr(rs, "append_utterance", append_utterance)
     monkeypatch.setattr(rs, "get_transcript", get_transcript)
     monkeypatch.setattr(mz, "get_cached_opening", fake_cached_opening)
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     events = await _drain(
@@ -308,6 +355,8 @@ async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
     prompt_text = "\n".join(message["content"] for message in captured["messages"])
     enemy_utt = next(e.data for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy")
     assert captured["model"] == orch.settings.enemy_rebuttal_model
+    assert captured["timeout"] == orch.settings.enemy_rebuttal_completion_timeout_s
+    assert captured["max_tokens"] == orch.settings.enemy_rebuttal_max_tokens
     assert "Four days should be the standard to improve rest." in prompt_text
     assert "Latest opposing claim you must answer" in prompt_text
     assert "own cached opening angle" in prompt_text
@@ -324,15 +373,15 @@ async def test_first_human_enemy_turn_rebuts_player_and_uses_cached_context(
 async def test_sides_assigned_for_player_against_enemy(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    async def fake_stream(messages, model=None, **k):
-        yield "Counterpoint."
+    async def fake_complete(messages, model=None, **k):
+        return "Counterpoint answers the player. The side stays against."
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
         return [JudgeScore(actor_id=it["actor_id"], score=50.0, rationale="ok") for it in items]
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     player = _combatant("party", "p1", "Sage")
@@ -509,21 +558,20 @@ def test_fallback_varies_by_side_and_type() -> None:
     assert "AGAINST" in t1 and "FOR" in t3
 
 
-async def test_stream_failure_falls_back_to_concrete_side(
+async def test_enemy_completion_failure_falls_back_to_concrete_side(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    """If the enemy stream stalls/errors, the enemy utterance is a real AGAINST line."""
+    """If the enemy completion stalls/errors, the utterance is a real AGAINST line."""
 
-    async def boom_stream(messages, model=None, **k):
+    async def boom_complete(messages, model=None, **k):
         raise RuntimeError("model stalled")
-        yield  # pragma: no cover — generator marker
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
         return [JudgeScore(actor_id=it["actor_id"], score=50.0, rationale="ok") for it in items]
 
-    monkeypatch.setattr(orch.gateway, "stream", boom_stream)
+    monkeypatch.setattr(orch.gateway, "complete", boom_complete)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
@@ -738,5 +786,5 @@ async def test_generated_actor_turn_gets_second_sentence_floor(
     assert used_fallback is False
     assert reason is None
     assert "4.8%" in text
-    assert text.endswith("team throughput.")
-    assert "team throughput" in text
+    assert text.endswith("clear evidence.")
+    assert "clear evidence" in text

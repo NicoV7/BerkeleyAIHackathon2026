@@ -202,6 +202,6 @@ def test_sentence_floor_adds_role_specific_support_sentence() -> None:
     )
 
     assert party.count(".") == 2
-    assert "team throughput" in party
+    assert "clear evidence" in party
     assert enemy.count(".") == 2
-    assert "coordination, trust" in enemy
+    assert "burden of proof" in enemy

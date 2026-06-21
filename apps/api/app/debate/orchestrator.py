@@ -248,6 +248,16 @@ def _enemy_rebuttal_first_token_timeout() -> float:
     return float(getattr(settings, "enemy_rebuttal_first_token_timeout_s", 10) or 10)
 
 
+def _enemy_rebuttal_completion_timeout() -> float:
+    """Full-response budget for human-round enemy rebuttals."""
+    return float(getattr(settings, "enemy_rebuttal_completion_timeout_s", 5) or 5)
+
+
+def _enemy_rebuttal_max_tokens() -> int:
+    """Token cap for the stronger human-round rebuttal model."""
+    return int(getattr(settings, "enemy_rebuttal_max_tokens", _actor_max_tokens()) or _actor_max_tokens())
+
+
 def _battle_damage_multiplier() -> float:
     """Applied-damage pacing multiplier for shortening encounters."""
     return max(0.1, float(getattr(settings, "battle_damage_multiplier", 1.0) or 1.0))
@@ -1007,7 +1017,21 @@ def _action_max_tokens(action: dict[str, Any]) -> int:
         requested = int(action.get("max_tokens") or base)
     except (TypeError, ValueError):
         requested = base
-    return max(32, min(base, requested))
+    hard_cap = base
+    if action.get("allow_max_tokens_over_base"):
+        hard_cap = max(base, _enemy_rebuttal_max_tokens())
+    return max(32, min(hard_cap, requested))
+
+
+def _action_completion_timeout(action: dict[str, Any]) -> float:
+    """Return the full-completion wall-clock budget for a non-streamed action."""
+    try:
+        requested = float(action.get("completion_timeout_s") or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested > 0:
+        return requested
+    return _actor_timeout()
 
 
 def _action_first_token_timeout(action: dict[str, Any], model: str) -> float:
@@ -1072,9 +1096,11 @@ async def _stream_utterance(
 ):
     """Live streaming twin of `_generate_utterance`.
 
-    Async generator that REUSES `_build_actor_messages` for the prompt, iterates
-    `gateway.stream(...)`, lightly cleans each chunk while preserving whitespace,
-    and sanitizes the completed text once. Each yield is a dict:
+    Async generator that REUSES `_build_actor_messages` for the prompt. Most turns
+    iterate `gateway.stream(...)`, lightly clean each chunk while preserving
+    whitespace, and sanitize the completed text once. Actions may opt into
+    `complete_before_emit` when a whole compact response is more important than
+    showing partial chunks.
 
       * `{"kind": "token", "text": <stream chunk>}` per streamed chunk, and
       * exactly one terminating `{"kind": "done", "text": <full accumulated text>,
@@ -1098,6 +1124,45 @@ async def _stream_utterance(
         actor, topic, transcript, action, memories, name_lookup, counter_context
     )
     model = _action_model(actor, action)
+    if action.get("complete_before_emit"):
+        full = ""
+        fallback_reason: str | None = None
+        used_fallback = False
+        try:
+            full = await gateway.complete(
+                messages,
+                model=model,
+                temperature=0.8,
+                max_tokens=_action_max_tokens(action),
+                timeout=_action_completion_timeout(action),
+            )
+            full = (full or "").strip()
+            if not full:
+                fallback_reason = "empty"
+        except asyncio.TimeoutError:
+            fallback_reason = "timeout"
+        except Exception:  # noqa: BLE001
+            fallback_reason = "empty"
+
+        if not full:
+            used_fallback = True
+            full = _fallback_argument(actor, topic, turn_seed=len(transcript))
+        full = _sanitize(full)
+        if not full:
+            used_fallback = True
+            fallback_reason = fallback_reason or "empty"
+            full = _sanitize(_fallback_argument(actor, topic, turn_seed=len(transcript)))
+        full = _finalize_actor_text(full, actor)
+        if full:
+            yield {"kind": "token", "text": full}
+        yield {
+            "kind": "done",
+            "text": full,
+            "fallback": used_fallback,
+            "fallback_reason": fallback_reason if used_fallback else None,
+        }
+        return
+
     # WS-4: the first-token budget widens for a warm (prewarmed/resident) model,
     # unless this specific action provides a tighter live-play ceiling.
     first_token_budget = _action_first_token_timeout(action, model)
@@ -1805,9 +1870,9 @@ async def run_human_round_stream(
     The player's typed argument is the lead party monster's turn; the lead enemy
     rebuts autonomously. RESPONSIVENESS + CLARITY fixes:
 
-      * STREAMED enemy rebuttal — the enemy uses `_stream_utterance` (same token
-        mechanism as the auto round), so the WS emits `token` events as they arrive
-        and perceived latency is first-token, not full generation.
+      * BOUNDED enemy rebuttal — the enemy gets one short full-completion window,
+        then the WS emits one cleaned `token` plus the canonical utterance. This
+        avoids malformed partial chunks while staying inside the playability budget.
       * COMBINED judging — both completed turns are scored in one judge call, and
         only the cycle winner's side inflicts HP damage. The losing verdict still
         emits with damage=0 so the UI can show both scores without a second hit.
@@ -2010,6 +2075,10 @@ async def run_human_round_stream(
     action = {
         **_decide_action(enemy, battle_state),
         "model": _enemy_rebuttal_model(),
+        "complete_before_emit": True,
+        "completion_timeout_s": _enemy_rebuttal_completion_timeout(),
+        "max_tokens": _enemy_rebuttal_max_tokens(),
+        "allow_max_tokens_over_base": True,
         "first_token_timeout_s": _enemy_rebuttal_first_token_timeout(),
     }
     if enemy_status_contract:

@@ -148,7 +148,7 @@ async def test_generate_utterance_uses_fast_model_and_short_timeout(
     )
 
     assert text.startswith("A crisp real argument.")
-    assert "team throughput" in text
+    assert "clear evidence" in text
     assert captured["model"] == settings.actor_model
     assert captured["timeout"] == settings.llm_call_timeout_s
     assert captured["max_tokens"] <= 128
@@ -204,7 +204,7 @@ async def test_enemy_rebuttal_path_uses_fast_model(monkeypatch: pytest.MonkeyPat
     out = await orch._generate_utterance(enemy, "ai safety", [], {}, [], {"e1": "Foe"})
 
     assert out.startswith("Enemy rebuts sharply.")
-    assert "coordination, trust" in out
+    assert "burden of proof" in out
     assert captured["model"] == settings.actor_model
     assert captured["timeout"] == settings.llm_call_timeout_s
 

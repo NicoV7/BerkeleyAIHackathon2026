@@ -26,16 +26,25 @@ def _combatant(monster_id: str, role: str, dtype: str) -> Combatant:
 def test_status_token_budget_reduces_generation_budget(monkeypatch) -> None:
     # Arrange
     monkeypatch.setattr(orchestrator, "_actor_max_tokens", lambda: 120)
+    monkeypatch.setattr(orchestrator, "_enemy_rebuttal_max_tokens", lambda: 160)
 
     # Act
     reduced = _action_max_tokens({"max_tokens": 60})
     tiny = _action_max_tokens({"max_tokens": 10})
     excessive = _action_max_tokens({"max_tokens": 999})
+    rebuttal = _action_max_tokens(
+        {"max_tokens": 160, "allow_max_tokens_over_base": True}
+    )
+    disrupted_rebuttal = _action_max_tokens(
+        {"max_tokens": 60, "allow_max_tokens_over_base": True}
+    )
 
     # Assert
     assert reduced == 60
     assert tiny == 32
     assert excessive == 120
+    assert rebuttal == 160
+    assert disrupted_rebuttal == 60
 
 
 def test_defense_effect_reduces_incoming_damage(monkeypatch) -> None:

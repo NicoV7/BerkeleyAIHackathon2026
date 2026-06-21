@@ -70,6 +70,8 @@ def test_first_token_timeout_is_small_and_split_from_call_timeout() -> None:
     # actor_max_tokens is a small, punchy cap.
     assert isinstance(settings.actor_max_tokens, int)
     assert settings.actor_max_tokens <= 96
+    assert settings.enemy_rebuttal_completion_timeout_s <= 5
+    assert settings.enemy_rebuttal_max_tokens <= 96
 
 
 def test_worst_case_complete_round_under_round_timeout() -> None:

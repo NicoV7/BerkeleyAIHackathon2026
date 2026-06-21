@@ -105,9 +105,14 @@ class Settings(BaseSettings):
     # Human-round enemy rebuttals need better contextual reasoning than generic
     # openers, but they still must not stall the battle UI. Route them through the
     # actor Pareto chain (whose default order favors stronger hosted candidates)
-    # and cap time-to-first-token at 10s for this action.
+    # and let that model finish one compact response inside a 3-5s budget before
+    # emitting it. This avoids exposing malformed partial stream chunks while
+    # keeping the turn responsive. The first-token knob is still used by normal
+    # streaming paths and as a fallback guard for action-specific overrides.
     enemy_rebuttal_model: str = "pareto-actor"
     enemy_rebuttal_first_token_timeout_s: int = 10
+    enemy_rebuttal_completion_timeout_s: int = 5
+    enemy_rebuttal_max_tokens: int = 96
     # Ollama keep_alive sent on the encounter-create prewarm so the actor model
     # stays resident across the battle's idle gaps (turn-to-turn thinking + the
     # player typing). A string Ollama accepts ("10m") or seconds. Empty -> omit.

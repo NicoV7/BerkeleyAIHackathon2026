@@ -89,23 +89,21 @@ async def _drain(agen) -> list[orch.Event]:
 async def test_event_order_player_utterance_estimate_verdict_hp(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Coun", "ter", "point."]:
-            yield tok
+    async def fake_complete(messages, model=None, **k):
+        return "Counterpoint answers the player. The burden still stands."
 
     async def fake_score(topic, items, fallback_model=None, **k):
         return [JudgeScore(actor_id=it["actor_id"], score=60.0, rationale="ok") for it in items]
 
-    # Round 1 (start_turn=0) emits the materialized opening; fake it so the test
-    # never touches a real gateway/redis. (The event-order invariant is what we
-    # assert, and it holds on both the opening and streaming enemy paths.)
+    # Round 1 still generates a rebuttal to the player's submitted line. Fake the
+    # opening cache seam so prompt context is deterministic and never touches Redis.
     import app.debate.materialize as mz
 
     async def fake_opening(topic, enemy_model=None):
         return "I argue AGAINST topic: it collapses under one concrete question.", True
 
     monkeypatch.setattr(mz, "get_or_create_opening", fake_opening)
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     player = _combatant("party", "p1", "Sage")
@@ -149,8 +147,8 @@ async def test_stalled_judge_settles_from_heuristic_within_deadline(
     """A stalled score_round must NOT dangle the round: the human-judge deadline
     fires and HP/verdict settle from the heuristic well inside the stall time."""
 
-    async def fake_stream(messages, model=None, **k):
-        yield "Counterpoint."
+    async def fake_complete(messages, model=None, **k):
+        return "Counterpoint answers the player. The burden still stands."
 
     # score_round hangs far longer than the deadline (simulates serial Ollama
     # candidate timeouts on a stalled single slot).
@@ -160,7 +158,7 @@ async def test_stalled_judge_settles_from_heuristic_within_deadline(
 
     # Tight deadline so the test is fast and deterministic.
     monkeypatch.setattr(orch, "_human_judge_deadline", lambda: 0.05)
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", hanging_score)
 
     player = _combatant("party", "p1", "Sage")
@@ -168,8 +166,8 @@ async def test_stalled_judge_settles_from_heuristic_within_deadline(
     player_text = "Animals deserve rights because they demonstrably feel pain."
 
     started = time.monotonic()
-    # start_turn>0 -> live streaming rebuttal path (not the round-1 materialized
-    # opening), so the judge-deadline is what gates settlement here.
+    # start_turn>0 -> generated rebuttal path, so the judge-deadline is what gates
+    # settlement here.
     events = await _drain(
         orch.run_human_round_stream(
             "encA4b", "animals deserve rights", [player, enemy], None, 2,
@@ -207,15 +205,15 @@ async def test_estimate_score_matches_committed_score_on_timeout(
     the SAME heuristic score for the player — the estimate is settled, not replaced
     by a different number, so the UI animation reconciles cleanly."""
 
-    async def fake_stream(messages, model=None, **k):
-        yield "Nope."
+    async def fake_complete(messages, model=None, **k):
+        return "Nope. The player still has not met the burden."
 
     async def hanging_score(topic, items, fallback_model=None, **k):
         await asyncio.sleep(30)
         return []
 
     monkeypatch.setattr(orch, "_human_judge_deadline", lambda: 0.05)
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(orch.gateway, "complete", fake_complete)
     monkeypatch.setattr(orch, "score_round", hanging_score)
 
     player = _combatant("party", "p1", "Sage")
