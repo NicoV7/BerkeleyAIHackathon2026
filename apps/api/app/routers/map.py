@@ -1,9 +1,12 @@
 """WS-A — Map / Run / Move router.
 
 Endpoints:
-    POST /api/runs          (CreateRunRequest -> RunState)
-    GET  /api/runs/{id}/map (-> MapState)
+    POST /api/runs           (CreateRunRequest -> RunState)
+    GET  /api/runs/{id}/map  (-> MapState)
     POST /api/runs/{id}/move (MoveRequest -> MoveResult)
+    POST /api/runs/{id}/rest (-> RestResult)   # campsite rest hub
+
+Tile legend: 0 = walkable, 1 = blocked, 2 = campsite (a ``camp`` POI tile).
 """
 from __future__ import annotations
 
@@ -18,12 +21,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Monster, MonsterOwner, Run, RunStatus
 from app.db.session import get_session
 from app.party.generator import generate_wild, roll_starter_party
+# Procedural POI placement is owned by the world router — import the SINGLE
+# shared helper so /map and /world never disagree about POIs / camp tiles.
+from app.routers.world import apply_camp_tiles, place_pois
 from app.schemas import (
     CreateRunRequest,
     MapState,
     MonsterSummary,
     MoveRequest,
     MoveResult,
+    RestResult,
     RunState,
     TileEnemy,
 )
@@ -151,8 +158,13 @@ async def get_map(
     )
     wilds = list(result.scalars().all())
 
-    tiles = _generate_tiles(run.seed)
+    base_tiles = _generate_tiles(run.seed)
     enemies = _place_wild_on_map(wilds, run.seed)
+
+    # Structured POIs (start/goal/camp/town/den/landmark) + campsite tiles (2).
+    # Same helper the /world router uses, so the two endpoints always agree.
+    pois = place_pois(run.seed, base_tiles, MAP_WIDTH, MAP_HEIGHT)
+    tiles = apply_camp_tiles(base_tiles, pois)
 
     return MapState(
         width=MAP_WIDTH,
@@ -161,6 +173,7 @@ async def get_map(
         player_x=run.player_x,
         player_y=run.player_y,
         enemies=enemies,
+        pois=pois,
     )
 
 
@@ -221,4 +234,91 @@ async def move_player(
         player_x=new_x,
         player_y=new_y,
         encounter_id=encounter_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Campsite — rest hub
+# ---------------------------------------------------------------------------
+
+
+async def _read_rest_counters(session: AsyncSession, run_id: str) -> tuple[int, int]:
+    """Best-effort read of (day, encounters_since_rest) from optional columns.
+
+    These columns are NOT in the frozen ``Run`` ORM model and may not exist (we
+    are not allowed to add the idempotent ALTER to db/session.py). So we read via
+    raw SQL guarded in try/except: if the columns are missing the DB raises and
+    we fall back to (0, 0). Fully backward-compatible.
+    """
+    from sqlalchemy import text
+
+    try:
+        result = await session.execute(
+            text("SELECT day, encounters_since_rest FROM runs WHERE id = :id"),
+            {"id": run_id},
+        )
+        row = result.first()
+    except Exception:  # noqa: BLE001 — columns absent / unsupported backend
+        return (0, 0)
+    if row is None:
+        return (0, 0)
+    return (int(row[0] or 0), int(row[1] or 0))
+
+
+async def _write_rest_counters(session: AsyncSession, run_id: str, day: int) -> None:
+    """Best-effort write: advance the day and zero encounters_since_rest.
+
+    Silently no-ops if the optional columns don't exist (see _read_rest_counters).
+    """
+    from sqlalchemy import text
+
+    try:
+        await session.execute(
+            text(
+                "UPDATE runs SET day = :day, encounters_since_rest = 0 "
+                "WHERE id = :id"
+            ),
+            {"day": day, "id": run_id},
+        )
+    except Exception:  # noqa: BLE001 — columns absent; counters stay best-effort
+        pass
+
+
+@router.post("/runs/{run_id}/rest", response_model=RestResult)
+async def rest(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RestResult:
+    """Campsite rest: fully heal the party, advance the day, reset encounters.
+
+    Healing sets every player-owned monster's effective HP to ``max_hp``. Live HP
+    is not a column on the frozen ``Monster`` model (battles track HP elsewhere),
+    so "healed to full" is reflected by returning each party member at ``max_hp``
+    via MonsterSummary. The day / encounters_since_rest counters are persisted
+    best-effort (optional columns) and otherwise computed.
+    """
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    result = await session.execute(
+        select(Monster).where(
+            Monster.run_id == run_id,
+            Monster.owner == MonsterOwner.player,
+        )
+    )
+    party = list(result.scalars().all())
+
+    day, _encounters = await _read_rest_counters(session, run_id)
+    new_day = day + 1
+    await _write_rest_counters(session, run_id, new_day)
+    await session.commit()
+
+    healed = [_monster_to_summary(m) for m in party]
+    return RestResult(
+        run_id=run_id,
+        healed=healed,
+        day=new_day,
+        encounters_since_rest=0,
+        message=f"Rested at camp. {len(healed)} party member(s) healed to full.",
     )

@@ -22,7 +22,7 @@ from app.routers import health
 log = logging.getLogger("uvicorn.error")
 
 # Wave 1 workstreams add their router module name here (or it's tried anyway).
-OPTIONAL_ROUTERS = ["map", "encounter", "debate", "party", "memory", "capture", "training", "runs"]
+OPTIONAL_ROUTERS = ["map", "encounter", "debate", "party", "memory", "capture", "training", "runs", "world"]
 
 
 async def _init_memory_cache() -> None:

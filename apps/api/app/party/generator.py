@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DebateType, Monster, MonsterOwner
+from app.party import archetypes as _archetypes
+from app.party import balance as _balance
 
 # ---------------------------------------------------------------------------
 # Inline skill catalog (tiny seed list — global catalog seeded in Wave 2)
@@ -103,6 +105,94 @@ def _build_harness(persona: dict[str, Any], debate_type: DebateType) -> dict[str
     return {"system_prompt": system_prompt}
 
 
+# ---------------------------------------------------------------------------
+# Difficulty curve (depth/progress -> stronger wild enemies)
+# ---------------------------------------------------------------------------
+#
+# "depth"/"progress" = how far the player has come (encounters cleared / distance
+# from start). At depth 0 we reproduce the original behaviour exactly. Deeper
+# encounters spawn higher-level, higher-HP foes. All HP/level math defers to
+# ``app.party.balance`` so the curve stays single-sourced and rebalanceable.
+
+#: Base wild level band at depth 0 — matches the original ``randint(1, 5)``.
+_WILD_BASE_LEVEL_MIN = 1
+_WILD_BASE_LEVEL_MAX = 5
+
+#: Extra levels added per unit of depth (every ~2 encounters cleared = +1 level).
+_LEVELS_PER_DEPTH = 0.5
+
+
+def _wild_level_for_depth(rng: random.Random, depth: int) -> int:
+    """Pick a wild enemy level scaled by ``depth``.
+
+    At ``depth == 0`` this draws from ``[1, 5]`` exactly like the original
+    generator (and consumes the rng identically). Deeper encounters shift the
+    whole band upward, so average level rises monotonically with depth.
+    """
+    base = rng.randint(_WILD_BASE_LEVEL_MIN, _WILD_BASE_LEVEL_MAX)
+    bonus = int(max(0, depth) * _LEVELS_PER_DEPTH)
+    return base + bonus
+
+
+def _scale_skill_power(skills: list[dict[str, Any]], power_bias: float) -> list[dict[str, Any]]:
+    """Return copies of ``skills`` with their ``power`` nudged by ``power_bias``.
+
+    Leaves the shared catalog dicts untouched (defensive copy) and rounds to keep
+    the values tidy. A bias of 1.0 is a no-op except for the copy.
+    """
+    scaled: list[dict[str, Any]] = []
+    for s in skills:
+        s2 = dict(s)
+        if "power" in s2 and isinstance(s2["power"], (int, float)):
+            s2["power"] = round(float(s2["power"]) * power_bias, 3)
+        scaled.append(s2)
+    return scaled
+
+
+def build_wild_monster(
+    rng: random.Random,
+    run_id: str,
+    *,
+    depth: int = 0,
+) -> Monster:
+    """Construct (but do NOT persist) a single wild enemy ``Monster``.
+
+    Pure factory: deterministic for a given ``rng`` state + ``depth``, with no
+    DB/Redis/network. ``generate_wild`` wraps this to add session persistence.
+
+    * Picks an :mod:`app.party.archetypes` archetype for persona + type bias.
+    * Levels/HP scale with ``depth`` via :func:`_wild_level_for_depth` and
+      :func:`app.party.balance.hp_for_level` (single-sourced curve).
+    * At ``depth == 0`` the level band and HP match the original generator.
+    """
+    archetype = _archetypes.pick_archetype(rng)
+    # Primary element comes from the archetype's bias (first preference).
+    dtype = archetype["type_bias"][0]
+    name = rng.choice(_WILD_NAMES) + str(rng.randint(1, 99))
+    persona = _archetypes.persona_for(archetype)
+    skills = _pick_skills(rng, dtype, n=2)
+    skills = _scale_skill_power(skills, archetype["power_bias"])
+    level = _wild_level_for_depth(rng, depth)
+    evolution_stage = _balance.evolution_stage_for_level(level)
+    max_hp = _balance.hp_for_level(level, evolution_stage=evolution_stage)
+    return Monster(
+        run_id=run_id,
+        owner=MonsterOwner.wild,
+        name=name,
+        type=dtype,
+        persona=persona,
+        harness=_build_harness(persona, dtype),
+        skills=skills,
+        level=level,
+        xp=0,
+        max_hp=max_hp,
+        evolution_stage=evolution_stage,
+        model="gemma3:1b",
+        # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
+        created_at=datetime.utcnow(),
+    )
+
+
 async def roll_starter_party(session: AsyncSession, run_id: str, seed: int = 0) -> list[Monster]:
     """Create 2–3 starter party monsters and persist them to the DB.
 
@@ -143,36 +233,35 @@ async def roll_starter_party(session: AsyncSession, run_id: str, seed: int = 0) 
 
 
 async def generate_wild(
-    session: AsyncSession, run_id: str, n: int = 4, seed: int = 0
+    session: AsyncSession,
+    run_id: str,
+    n: int = 4,
+    seed: int = 0,
+    *,
+    depth: int = 0,
+    progress: int = 0,
 ) -> list[Monster]:
     """Create n wild enemy monsters and persist them to the DB.
 
     Exposed interface consumed by WS-B and WS-E.
+
+    Difficulty curve (additive, backward-compatible):
+      * ``depth`` / ``progress`` express how far the player has come (encounters
+        cleared / distance from start). They are interchangeable; the larger of
+        the two is used. Higher values spawn higher-level, higher-HP foes, with
+        the level/HP curve sourced from :mod:`app.party.balance`.
+      * Each enemy draws a flavour archetype from :mod:`app.party.archetypes`,
+        which also biases its debate type and skill power.
+
+    Determinism is preserved via the existing seed/run_id derived rng. At
+    ``depth == 0`` (and ``progress == 0``) the level band matches the original
+    generator; HP is now taken from the canonical ``balance.hp_for_level`` curve.
     """
+    effective_depth = max(0, int(depth), int(progress))
     rng = random.Random(seed ^ hash(run_id) & 0xFFFFFFFF ^ 0xDEAD)
     monsters: list[Monster] = []
-    for i in range(n):
-        dtype = rng.choice(_DEBATE_TYPES)
-        name = rng.choice(_WILD_NAMES) + str(rng.randint(1, 99))
-        persona = _build_persona(rng)
-        skills = _pick_skills(rng, dtype, n=2)
-        level = rng.randint(1, 5)
-        m = Monster(
-            run_id=run_id,
-            owner=MonsterOwner.wild,
-            name=name,
-            type=dtype,
-            persona=persona,
-            harness=_build_harness(persona, dtype),
-            skills=skills,
-            level=level,
-            xp=0,
-            max_hp=80 + level * 10,
-            evolution_stage=0,
-            model="gemma3:1b",
-            # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
-            created_at=datetime.utcnow(),
-        )
+    for _ in range(n):
+        m = build_wild_monster(rng, run_id, depth=effective_depth)
         session.add(m)
         monsters.append(m)
     await session.commit()

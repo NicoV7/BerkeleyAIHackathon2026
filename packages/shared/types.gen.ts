@@ -81,6 +81,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/rest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rest
+         * @description Campsite rest: fully heal the party, advance the day, reset encounters.
+         *
+         *     Healing sets every player-owned monster's effective HP to ``max_hp``. Live HP
+         *     is not a column on the frozen ``Monster`` model (battles track HP elsewhere),
+         *     so "healed to full" is reflected by returning each party member at ``max_hp``
+         *     via MonsterSummary. The day / encounters_since_rest counters are persisted
+         *     best-effort (optional columns) and otherwise computed.
+         */
+        post: operations["rest_api_runs__run_id__rest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/encounters/": {
         parameters: {
             query?: never;
@@ -458,6 +484,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/world": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get World
+         * @description Return the seed-deterministic WorldSpecLite for a run.
+         *
+         *     POIs are produced by the same ``place_pois`` helper the map router uses, so
+         *     ``/world`` and ``/map`` always agree for a given seed.
+         */
+        get: operations["get_world_api_runs__run_id__world_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -676,6 +725,11 @@ export interface components {
              * @default []
              */
             enemies: components["schemas"]["TileEnemy"][];
+            /**
+             * Pois
+             * @default []
+             */
+            pois: components["schemas"]["POI"][];
         };
         /** MemoryItem */
         MemoryItem: {
@@ -749,6 +803,26 @@ export interface components {
             encounter_id?: string | null;
         };
         /**
+         * POI
+         * @description A point of interest on the map. `kind` is the structural role.
+         */
+        POI: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "camp" | "town" | "den" | "landmark" | "start" | "goal";
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+        };
+        /**
          * PlayerArgueRequest
          * @description WS-G: a human-typed argument for the player's lead party monster.
          *
@@ -793,6 +867,43 @@ export interface components {
              * @default 0
              */
             judge_score: number;
+        };
+        /** Region */
+        Region: {
+            /** Name */
+            name: string;
+            /**
+             * Biome
+             * @default plains
+             */
+            biome: string;
+            /** Bounds */
+            bounds?: number[] | null;
+        };
+        /** RestResult */
+        RestResult: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Healed
+             * @default []
+             */
+            healed: components["schemas"]["MonsterSummary"][];
+            /**
+             * Day
+             * @default 0
+             */
+            day: number;
+            /**
+             * Encounters Since Rest
+             * @default 0
+             */
+            encounters_since_rest: number;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
         };
         /**
          * RunResumeState
@@ -1038,6 +1149,34 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * WorldSpecLite
+         * @description Structured world the FE can render now; the Wave-C generator must emit a
+         *     superset of these fields so the frontend contract survives unchanged.
+         */
+        WorldSpecLite: {
+            /**
+             * Seed
+             * @default 0
+             */
+            seed: number;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /**
+             * Regions
+             * @default []
+             */
+            regions: components["schemas"]["Region"][];
+            /**
+             * Pois
+             * @default []
+             */
+            pois: components["schemas"]["POI"][];
+            start?: components["schemas"]["POI"] | null;
+            goal?: components["schemas"]["POI"] | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -1153,6 +1292,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MoveResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rest_api_runs__run_id__rest_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestResult"];
                 };
             };
             /** @description Validation Error */
@@ -1805,6 +1975,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunResumeState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_world_api_runs__run_id__world_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldSpecLite"];
                 };
             };
             /** @description Validation Error */
