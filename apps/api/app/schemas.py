@@ -483,6 +483,29 @@ class TrainRequest(BaseModel):
     rounds: int = 4
 
 
+class QuickTrainRequest(BaseModel):
+    """Consume a training item to instantly boost a specific monster (WS-2/#16).
+
+    No self-play, no LLM — the item's catalog effect is applied DIRECTLY to the
+    monster's stat columns. ``item_key`` must be a training item
+    (training_atk / training_def / training_mp).
+    """
+
+    monster_id: str
+    item_key: str
+
+
+class QuickTrainResult(BaseModel):
+    """Outcome of a quick-train: which stats moved and the new values."""
+
+    monster_id: str
+    item_key: str
+    applied: dict[str, int] = {}     # e.g. {"atk": 3}
+    stats: dict[str, int] = {}       # post-train {"atk","def","mp","max_mp"}
+    remaining_qty: int = 0
+    message: str = ""
+
+
 class Scorecard(BaseModel):
     """Wave A: measurable before/after training delta against a fixed benchmark.
 

@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     # LLM generator and falls back to procedural on any failure.
     world_gen_enabled: bool = False
 
+    # Onboarding (WS-2): a NEW run starts with NO party agents so the scripted
+    # intro NPC grants the first agent via the gacha pull / onboarding endpoint.
+    # ON by default (the onboarding flow is the intended new-game experience);
+    # flip to False to restore the legacy auto-rolled 2-3 monster starter party.
+    empty_start_enabled: bool = True
+
     # Living-layer hosted LLM adapter (Wave 4) — completely-free providers only.
     # The hosted adapter (app/llm/hosted_adapter.py) round-robins across these in
     # priority order with retry-on-429 failover, and degrades to a static stub

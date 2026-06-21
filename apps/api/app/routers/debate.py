@@ -182,9 +182,69 @@ async def _finalize(eid: str, result: EncounterResult) -> list[dict]:
         except Exception:  # noqa: BLE001
             level_up_events = []
 
+    # WS-2 living layer: on a win, emit an ``enemy_killed`` world event for each
+    # defeated enemy so ``hunt_enemy`` quests complete (and pay out). Best-effort:
+    # the quest/event log is decoupled from the battle, so a failure here never
+    # affects the finalize result. Done OUTSIDE the DB session block above — the
+    # event log is Redis-backed and quest rewards open their own session.
+    if result == EncounterResult.win:
+        try:
+            await _emit_enemy_killed(enc.run_id, roster)
+        except Exception:  # noqa: BLE001 — world-event emit must never break finalize
+            pass
+
     # Conversation is durably stored — free the cache.
     await clear_conversation(eid)
     return level_up_events
+
+
+async def _emit_enemy_killed(run_id: str, roster: list[dict]) -> None:
+    """Emit ``enemy_killed`` for every enemy combatant, completing hunt quests.
+
+    Each enemy combatant fires one event carrying both ``enemy_kind`` (the
+    monster name, so a quest can target a kind) and ``monster_id`` (so a quest
+    can target a specific spawned enemy). Quest completion + reward payout reuse
+    the SAME helpers the world router uses, so there is no duplicated logic.
+    """
+    from app.world import event_log, quests
+
+    enemies = [c for c in roster if c.get("role") == "enemy"]
+    if not enemies:
+        return
+    for enemy in enemies:
+        name = str(enemy.get("name") or enemy.get("monster_id") or "")
+        monster_id = str(enemy.get("monster_id") or "")
+        await event_log.append(
+            run_id, "enemy_killed", enemy_kind=name, monster_id=monster_id
+        )
+        completed = await quests.maybe_complete_quests(
+            run_id, "enemy_killed", enemy_kind=name, monster_id=monster_id
+        )
+        if completed:
+            await _payout_quest_rewards(run_id, completed)
+
+
+async def _payout_quest_rewards(run_id: str, completed: list[str]) -> None:
+    """Pay coins/items for newly-completed quests via the economy award helper.
+
+    Opens its own short-lived session (the finalize session is already closed by
+    the time we emit world events) and commits once. Best-effort.
+    """
+    if not completed:
+        return
+    try:
+        from app.economy.award import award as award_reward
+        from app.world import quests
+
+        specs = await quests.completed_reward_specs(run_id, completed)
+        async with SessionLocal() as session:
+            for qid in completed:
+                spec = specs.get(qid) or {}
+                if spec:
+                    await award_reward(session, run_id, spec)
+            await session.commit()
+    except Exception as e:  # noqa: BLE001
+        log.info("quest reward payout skipped (%s)", e)
 
 
 async def _award_party_xp(
