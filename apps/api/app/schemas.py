@@ -62,6 +62,50 @@ class MapState(BaseModel):
     player_x: int
     player_y: int
     enemies: list[TileEnemy] = []
+    # Wave 2: structured POIs overlaid on the grid (camp/town/den/landmark/goal).
+    # Additive/Optional so the existing MapState consumers keep working.
+    pois: list["POI"] = []
+
+
+# ---- World structure (Wave 2 WorldSpec-lite; strict subset of the Wave-C WorldSpec) ----
+
+
+class POI(BaseModel):
+    """A point of interest on the map. `kind` is the structural role."""
+    kind: Literal["camp", "town", "den", "landmark", "start", "goal"]
+    x: int
+    y: int
+    name: str = ""
+
+
+class Region(BaseModel):
+    name: str
+    biome: str = "plains"
+    # Inclusive tile bounds [x0,y0,x1,y1]; optional so a flat map can omit them.
+    bounds: Optional[list[int]] = None
+
+
+class WorldSpecLite(BaseModel):
+    """Structured world the FE can render now; the Wave-C generator must emit a
+    superset of these fields so the frontend contract survives unchanged."""
+    seed: int = 0
+    width: int
+    height: int
+    regions: list[Region] = []
+    pois: list[POI] = []
+    start: Optional[POI] = None
+    goal: Optional[POI] = None
+
+
+# ---- Campsite (Wave 2: rest hub) ----
+
+
+class RestResult(BaseModel):
+    run_id: str
+    healed: list[MonsterSummary] = []
+    day: int = 0
+    encounters_since_rest: int = 0
+    message: str = ""
 
 
 class MoveRequest(BaseModel):
