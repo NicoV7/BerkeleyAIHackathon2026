@@ -9,6 +9,8 @@ import TrainingScreen from "./ui/TrainingScreen";
 import GachaScreen from "./ui/GachaScreen";
 import StartMenu from "./ui/StartMenu";
 import { IrisTransitionProvider, useIrisTransition } from "./ui/fx/IrisWipe";
+import { AdventureMenu } from "./ui/shell/AdventureMenu";
+import { OverlayHost } from "./ui/shell/OverlayHost";
 
 // Wave 2: real screens wired in.
 //   overworld -> WS-A (Phaser canvas)
@@ -114,9 +116,13 @@ function AppShell() {
             </div>
           ) : (
             <nav
-              className="flex gap-2 px-4 py-2"
+              className="flex items-center gap-2 px-4 py-2"
               style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
             >
+              {/* TODO(WS-6): this tab strip is the screen-restructure surface.
+                  WS-6 owns removing the "encounter"/"training" tabs (encounter
+                  becomes battle-only; training moves elsewhere). See
+                  UI_CONTRACT.md §Planned tab removal for the setScreen audit. */}
               {(["overworld", "encounter", "party", "training"] as const).map((s) => (
                 <button
                   key={s}
@@ -128,6 +134,8 @@ function AppShell() {
                   {s}
                 </button>
               ))}
+              {/* Adventure menu: persistent entry into Inventory/Quests/Map. */}
+              <AdventureMenu className="ml-auto" />
             </nav>
           )}
           <main className="flex-1 overflow-auto">
@@ -142,6 +150,10 @@ function AppShell() {
               <ScreenPanel screen={screen} />
             )}
           </main>
+          {/* Overlay surfaces (Inventory/Quests/Map) float above everything but
+              the iris transition. Suppressed during battle + gacha gate because
+              setEncounter/needsGacha already clear/guard the overlay. */}
+          {!battleLocked && !needsGacha ? <OverlayHost /> : null}
         </>
       )}
     </div>

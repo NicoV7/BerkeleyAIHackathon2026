@@ -30,6 +30,20 @@ function rememberPlayerName(name: string) {
 // shell stable (runId, screen routing, active encounter).
 export type Screen = "menu" | "overworld" | "encounter" | "party" | "training" | "demo";
 
+/**
+ * Overlay surfaces opened from the Adventure menu (HUD button) ON TOP of the
+ * current screen, without changing `screen`. `null` = no overlay.
+ *
+ * WS-0-UI owns this contract; Wave-2 owners implement the bodies:
+ *   - "inventory" → WS-2 inventory screen
+ *   - "quests"    → WS-2 quest log
+ *   - "map"       → WS-2 / world map (full map view; HUD minimap is separate)
+ *
+ * Diegetic surfaces (Camp, Shop) are entered via world POIs, NOT this menu, so
+ * they are intentionally NOT in this union. See UI_CONTRACT.md §Nav model.
+ */
+export type Overlay = "inventory" | "quests" | "map" | null;
+
 interface GameState {
   runId: string | null;
   topic: string;
@@ -45,6 +59,9 @@ interface GameState {
    *  set, the global nav is locked so the only way out is Flee / win / lose.
    *  BattleDebateView owns this flag (sets on mount, clears on over/flee). */
   battleLocked: boolean;
+  /** Adventure-menu overlay surface drawn on top of the current screen, or null.
+   *  Owned by the HUD Adventure menu; surface bodies are Wave-2. */
+  overlay: Overlay;
   setRun: (
     runId: string,
     topic: string,
@@ -55,6 +72,10 @@ interface GameState {
   setEncounter: (id: string | null) => void;
   setYouScores: (scores: number[]) => void;
   setBattleLocked: (locked: boolean) => void;
+  /** Open an Adventure-menu overlay surface (inventory/quests/map). */
+  openOverlay: (overlay: NonNullable<Overlay>) => void;
+  /** Close any open overlay surface (universal back/close). */
+  closeOverlay: () => void;
 }
 
 export const useGame = create<GameState>((set) => ({
@@ -66,10 +87,11 @@ export const useGame = create<GameState>((set) => ({
   activeEncounterId: null,
   lastYouScores: [],
   battleLocked: false,
+  overlay: null,
   setRun: (runId, topic, playerName, theme = "") => {
     const name = normalizePlayerName(playerName ?? readStoredPlayerName());
     rememberPlayerName(name);
-    set({ runId, topic, playerName: name, theme: theme ?? "", screen: "overworld" });
+    set({ runId, topic, playerName: name, theme: theme ?? "", screen: "overworld", overlay: null });
   },
   setScreen: (screen) => set({ screen }),
   setEncounter: (activeEncounterId) =>
@@ -78,7 +100,11 @@ export const useGame = create<GameState>((set) => ({
       screen: activeEncounterId ? "encounter" : "overworld",
       // Leaving a battle (flee / clear) always releases the nav lock.
       battleLocked: Boolean(activeEncounterId),
+      // A battle takes over the screen — never leave an overlay floating into it.
+      overlay: null,
     }),
   setYouScores: (lastYouScores) => set({ lastYouScores }),
   setBattleLocked: (battleLocked) => set({ battleLocked }),
+  openOverlay: (overlay) => set({ overlay }),
+  closeOverlay: () => set({ overlay: null }),
 }));
