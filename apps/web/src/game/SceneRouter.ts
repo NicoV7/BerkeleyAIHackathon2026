@@ -90,6 +90,8 @@ export interface SceneRouterConfig {
   onNpcTalk?: (npc: NPCAnchor) => void;
   /** Optional battle handoff forwarded to dungeon interiors. */
   onEncounter?: (wildId?: string | null) => void;
+  /** Original OverworldScene init payload, preserved when restarting on exit. */
+  overworldSceneData?: object;
 }
 
 /**
@@ -215,6 +217,7 @@ export class SceneRouter {
     this.returnTile = null;
     this.cfg.onExitInterior?.(tile);
     this.cfg.scenePlugin.start(OVERWORLD_SCENE_KEY, {
+      ...(this.cfg.overworldSceneData ?? {}),
       runId: this.cfg.runId,
       returnTile: tile,
     });

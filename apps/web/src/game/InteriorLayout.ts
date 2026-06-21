@@ -39,6 +39,11 @@ export interface InteriorEnemySpawn {
   tileY: number;
 }
 
+export interface InteriorTileCoord {
+  x: number;
+  y: number;
+}
+
 /** Minimum sane interior dims so a degenerate spec still renders a room. */
 const MIN_W = 8;
 const MIN_H = 6;
@@ -262,6 +267,26 @@ export function buildInteriorGrid(
     entrance: door,
     exits: [door],
   };
+}
+
+/** True once the player has actually moved off the tile they entered on. */
+export function hasMovedOffInteriorEntrance(
+  current: InteriorTileCoord,
+  entrance: InteriorTileCoord
+): boolean {
+  return current.x !== entrance.x || current.y !== entrance.y;
+}
+
+/** Entrance exits are armed only after the player leaves, then returns to, them. */
+export function shouldExitInteriorFromTile(
+  current: InteriorTileCoord,
+  exits: InteriorTileCoord[],
+  hasLeftEntranceTile: boolean
+): boolean {
+  return (
+    hasLeftEntranceTile &&
+    exits.some((exit) => exit.x === current.x && exit.y === current.y)
+  );
 }
 
 /** Return deterministic hostile spawns for non-town interiors. */
