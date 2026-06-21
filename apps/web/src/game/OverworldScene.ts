@@ -760,6 +760,16 @@ export class OverworldScene extends Phaser.Scene {
     this.scene.restart(this.cfg);
   }
 
+  /**
+   * Reset encounter latch flags so the player can move again after returning
+   * from battle. Called by Overworld.tsx when activeEncounterId goes null.
+   * Without this, encounterFired stays true and update() exits early forever.
+   */
+  resetAfterBattle() {
+    this.encounterFired = false;
+    this.encounterPending = false;
+  }
+
   destroy() {
     this.enemies.destroy();
     this.npcs.destroy();
