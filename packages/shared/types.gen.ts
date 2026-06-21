@@ -337,29 +337,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/encounters/{encounter_id}/capture": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Attempt to capture a weakened wild monster
-         * @description Roll a capture attempt against the wild monster identified by wild_id.
-         *
-         *     The monster must be in a capturable HP window (< 25% of max_hp) or the
-         *     attempt is rejected with success=False and an explanatory message.
-         */
-        post: operations["post_capture_api_encounters__encounter_id__capture_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/runs/{run_id}/party": {
         parameters: {
             query?: never;
@@ -616,22 +593,6 @@ export interface components {
              */
             rounds: number;
         };
-        /** CaptureRequest */
-        CaptureRequest: {
-            /** Wild Id */
-            wild_id: string;
-        };
-        /** CaptureResult */
-        CaptureResult: {
-            /** Success */
-            success: boolean;
-            monster?: components["schemas"]["MonsterSummary"] | null;
-            /**
-             * Message
-             * @default
-             */
-            message: string;
-        };
         /** CombatantState */
         CombatantState: {
             /** Monster Id */
@@ -866,6 +827,88 @@ export interface components {
              * @default []
              */
             skills: unknown[];
+            // ---- Gacha-wave additive fields (defaults match the seed catalog) ----
+            /** Atk @default 10 */
+            atk?: number;
+            /** Def @default 10 */
+            def?: number;
+            /** Mp @default 50 */
+            mp?: number;
+            /** Max Mp @default 50 */
+            max_mp?: number;
+            /** Domain @default "GENERAL" */
+            domain?: string;
+            /** Wiki Url */
+            wiki_url?: string | null;
+            /** Wiki Hydrated @default false */
+            wiki_hydrated?: boolean;
+        };
+        /**
+         * GachaPullRequest
+         * @description Pull a persona into the run's party.
+         */
+        GachaPullRequest: {
+            /** Summon Item Id */
+            summon_item_id?: string | null;
+        };
+        /** GachaPullResult */
+        GachaPullResult: {
+            monster: components["schemas"]["MonsterSummary"];
+            /** Persona Key */
+            persona_key: string;
+            /** Persona Tier */
+            persona_tier: string;
+        };
+        /** SummonItemSummary */
+        SummonItemSummary: {
+            /** Id */
+            id: string;
+            /** Run Id */
+            run_id: string;
+            /** Tier */
+            tier: string;
+            /** Consumed */
+            consumed: boolean;
+        };
+        /**
+         * MemoryRecallResult
+         * @description Result of `POST /api/encounters/{eid}/memory-recall` (Wave C ability).
+         */
+        MemoryRecallResult: {
+            /** Encounter Id */
+            encounter_id: string;
+            /** Coach Monster Id */
+            coach_monster_id: string;
+            /**
+             * Transcript Slice
+             * @default []
+             */
+            transcript_slice: string[];
+            /**
+             * Highlighted Line
+             * @default
+             */
+            highlighted_line: string;
+            /**
+             * Counter Text
+             * @default
+             */
+            counter_text: string;
+            /**
+             * Mp Spent
+             * @default 0
+             */
+            mp_spent: number;
+            /**
+             * Mp Remaining
+             * @default 0
+             */
+            mp_remaining: number;
+            /**
+             * Damage
+             * @default 0
+             */
+            damage: number;
         };
         /** MoveRequest */
         MoveRequest: {
@@ -1808,41 +1851,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryQueryResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    post_capture_api_encounters__encounter_id__capture_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                encounter_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CaptureRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CaptureResult"];
                 };
             };
             /** @description Validation Error */

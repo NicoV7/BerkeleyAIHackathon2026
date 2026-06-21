@@ -26,12 +26,14 @@ from app.redis_state import (
     ENCOUNTER_TTL_SECONDS,
     encounter_keys,
     get_hp_map,
+    get_mp_map,
     get_redis,
     get_transcript,
     k_hp,
     k_judge,
     k_meta,
     k_momentum,
+    k_mp,
     k_queue,
 )
 from app.schemas import (
@@ -143,6 +145,11 @@ def _to_combatant(m: Monster, role: str) -> Combatant:
         harness=dict(m.harness or {}),
         skills=list(m.skills or []),
         model=m.model,
+        # Gacha-wave stats — flow into compute_damage + MP economy.
+        atk=int(getattr(m, "atk", 10) or 10),
+        def_=int(getattr(m, "def_", 10) or 10),
+        max_mp=int(getattr(m, "max_mp", 50) or 50),
+        domain=str(getattr(m, "domain", "GENERAL") or "GENERAL"),
     )
 
 
@@ -187,6 +194,14 @@ async def seed_redis(
                         "harness": c.harness,
                         "skills": c.skills,
                         "model": c.model,
+                        # Gacha-wave stats persisted on the roster so load_combatants
+                        # rehydrates them after the first round (otherwise the
+                        # second round's compute_damage would see neutral defaults
+                        # and the MP cap would silently reset to 50).
+                        "atk": c.atk,
+                        "def": c.def_,
+                        "max_mp": c.max_mp,
+                        "domain": c.domain,
                     }
                     for c in combatants
                 ]
@@ -195,6 +210,9 @@ async def seed_redis(
     )
     for c in combatants:
         pipe.hset(k_hp(eid), c.monster_id, c.hp)
+        # Gacha Wave B: every combatant starts at full MP. End-of-round regen
+        # (+10) and skill-use deductions keep the cache in sync after that.
+        pipe.hset(k_mp(eid), c.monster_id, c.max_mp)
     pipe.rpush(k_queue(eid), *_initiative_order(combatants))
     pipe.hset(k_momentum(eid), mapping={"party": 1.0, "enemy": 1.0})
     for key in encounter_keys(eid):
@@ -227,6 +245,12 @@ async def load_combatants(eid: str) -> list[Combatant]:
                 harness=c.get("harness", {}) or {},
                 skills=c.get("skills", []) or [],
                 model=c.get("model"),
+                # Gacha-wave: rehydrate stats from the roster (default to neutral
+                # values for any encounter created before the stats were persisted).
+                atk=int(c.get("atk", 10) or 10),
+                def_=int(c.get("def", 10) or 10),
+                max_mp=int(c.get("max_mp", 50) or 50),
+                domain=str(c.get("domain", "GENERAL") or "GENERAL"),
             )
         )
     return combatants
@@ -270,6 +294,9 @@ async def build_encounter_state(eid: str) -> EncounterState:
             transcript_raw = list(enc.transcript or [])
             verdicts_raw = [json.dumps(v) for v in (enc.verdicts or [])]
 
+    # Gacha Wave B: surface MP (+ ATK/DEF/domain) on the encounter snapshot so
+    # the WS clients can paint the blue MP bar from `state` alone (no extra poll).
+    mp_map = await get_mp_map(eid)
     combatant_states = [
         CombatantState(
             monster_id=c.monster_id,
@@ -278,6 +305,11 @@ async def build_encounter_state(eid: str) -> EncounterState:
             role=c.role,  # type: ignore[arg-type]
             hp=c.hp,
             max_hp=c.max_hp,
+            mp=int(mp_map.get(c.monster_id, c.max_mp)),
+            max_mp=c.max_mp,
+            atk=c.atk,
+            def_=c.def_,
+            domain=c.domain,
         )
         for c in combatants
     ]

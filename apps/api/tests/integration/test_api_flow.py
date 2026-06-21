@@ -9,12 +9,12 @@ player loop:
     POST /api/runs/{id}/move            -> MoveResult (clamped position)
     POST /api/encounters                -> EncounterState (battle seeded)
     POST /api/encounters/{id}/turn      -> TurnResult (one debate round)
-    POST /api/encounters/{id}/capture   -> CaptureResult (reachable best-effort)
+    POST /api/runs/{id}/gacha/pull      -> GachaPullResult (named persona summon)
     GET  /api/runs/{id}/party           -> [MonsterSummary]
 
 For each hop we assert the HTTP status and the key response shape (the fields the
 frontend + downstream routers code against), not the exact non-deterministic
-content (HP rolls, judge scores, capture success are all RNG/model-driven).
+content (HP rolls, judge scores are RNG/model-driven; gacha persona rolls weight by tier).
 
 ------------------------------------------------------------------------------
 COLLECTION IS ALWAYS HOST-SAFE
@@ -345,37 +345,6 @@ async def test_get_party_lists_player_monsters(
     party = resp.json()
     assert isinstance(party, list) and len(party) >= 1
     assert all(m["owner"] == "player" for m in party)
-
-
-@pytest.mark.asyncio
-async def test_capture_attempt_returns_well_formed_result(
-    live_client: httpx.AsyncClient,
-) -> None:
-    # Arrange — create a battle so a wild monster + encounter exist.
-    run = await _create_run(live_client)
-    enc = (await live_client.post("/api/encounters", json={"run_id": run["id"]})).json()
-    wild_id = next(
-        (c["monster_id"] for c in enc["combatants"] if c["role"] == "enemy"),
-        None,
-    )
-    assert wild_id is not None, "encounter had no enemy combatant to target"
-
-    # Act — attempt capture. Success is HP-gated/RNG; we assert the CONTRACT only.
-    resp = await live_client.post(
-        f"/api/encounters/{enc['id']}/capture", json={"wild_id": wild_id}
-    )
-
-    # Assert
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert isinstance(body["success"], bool)
-    assert "message" in body
-    # On success a monster summary is returned; on failure it's null.
-    if body["success"]:
-        assert body["monster"] is not None
-        assert body["monster"]["owner"] == "player"
-    else:
-        assert body["monster"] is None
 
 
 @pytest.mark.asyncio

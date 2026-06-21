@@ -3,6 +3,7 @@ name: Leading Question
 type: SOCRATIC
 power: 1.1
 domain: SOCRATIC
+mp_cost: 15
 ---
 
 # Leading Question

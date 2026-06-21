@@ -3,6 +3,7 @@ name: Authority Cite
 type: ETHOS
 power: 1.1
 domain: ETHOS
+mp_cost: 25
 ---
 
 # Authority Cite

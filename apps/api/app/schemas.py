@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---- Common ----
 
@@ -42,6 +42,19 @@ class MonsterSummary(BaseModel):
     max_hp: int
     evolution_stage: int
     skills: list[Any] = []
+    # Gacha-wave stat fields. Defaults keep older serializers backward-compatible
+    # for any persisted snapshot that pre-dates the migration.
+    atk: int = 10
+    def_: int = Field(default=10, alias="def")
+    mp: int = 50
+    max_mp: int = 50
+    domain: str = "GENERAL"
+    wiki_url: Optional[str] = None
+    wiki_hydrated: bool = False
+
+    # `def_` is the Python attribute; the JSON wire format uses the natural
+    # keyword `def` so the FE never sees the trailing underscore.
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RunState(BaseModel):
@@ -149,6 +162,15 @@ class CombatantState(BaseModel):
     max_hp: int
     # Which side of the debate this combatant argues (clarity fix). Additive/Optional.
     side: Optional[Literal["for", "against"]] = None
+    # Gacha-wave stats — additive/optional so older clients keep working. The
+    # frontend uses these to render the MP bar and the ATK/DEF/MP chips.
+    mp: Optional[int] = None
+    max_mp: Optional[int] = None
+    atk: Optional[int] = None
+    def_: Optional[int] = Field(default=None, alias="def", serialization_alias="def")
+    domain: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class Utterance(BaseModel):
@@ -243,14 +265,48 @@ class AssistResult(BaseModel):
     suggestions: list[AssistSuggestion] = []  # 1+ improved drafts to pick from
 
 
-class CaptureRequest(BaseModel):
-    wild_id: str
+# ---- Gacha (replaces capture; named persona pulls + post-battle drops) ----
 
 
-class CaptureResult(BaseModel):
-    success: bool
-    monster: Optional[MonsterSummary] = None
-    message: str = ""
+class GachaPullRequest(BaseModel):
+    """Pull a persona into the run's party.
+
+    Without `summon_item_id` the pull is the run-start starter and rolls from
+    the common tier only. With one, the item is consumed and its tier weights
+    the persona roll (rare items unlock the rare tier, etc.).
+    """
+    summon_item_id: Optional[str] = None
+
+
+class GachaPullResult(BaseModel):
+    monster: MonsterSummary
+    persona_key: str
+    persona_tier: str  # "common" | "rare" | "legendary"
+
+
+class SummonItemSummary(BaseModel):
+    id: str
+    run_id: str
+    tier: str
+    consumed: bool
+
+
+class MemoryRecallResult(BaseModel):
+    """Result of `POST /api/encounters/{eid}/memory-recall` (Wave C ability).
+
+    `transcript_slice` is the chunk of the Redis transcript surfaced to the
+    player; `highlighted_line` is the specific enemy utterance the counter
+    answers. `damage` is the HP delta applied via the standard formula; on a
+    cache-miss fallback it is 0 and `mp_spent` is the refunded amount.
+    """
+    encounter_id: str
+    coach_monster_id: str
+    transcript_slice: list[str] = []
+    highlighted_line: str = ""
+    counter_text: str = ""
+    mp_spent: int = 0
+    mp_remaining: int = 0
+    damage: int = 0
 
 
 # ---- Gambits ----

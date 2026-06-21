@@ -18,6 +18,34 @@ export type EventType = (typeof EVENT_TYPES)[number];
 export const MONSTER_OWNERS = ["player", "wild", "enemy"] as const;
 export type MonsterOwner = (typeof MONSTER_OWNERS)[number];
 
+// Gacha wave: persona expertise domain. Drives the topic-match damage
+// multiplier in `app.debate.topics.domain_match_mult` (Wave 0). GENERAL is the
+// neutral default that always multiplies by 1.0.
+export const MONSTER_DOMAINS = [
+  "ENGINEERING",
+  "PHILOSOPHY",
+  "SCIENCE",
+  "BUSINESS",
+  "ETHICS",
+  "ART",
+  "GENERAL",
+] as const;
+export type MonsterDomain = (typeof MONSTER_DOMAINS)[number];
+
+// Mirrors `app.debate.topics.domain_match_mult` exactly — keep in sync by hand.
+//
+//   * GENERAL on either side -> 1.0 (no nudge)
+//   * matching domains       -> 1.2 (party-composition reward)
+//   * mismatched domains     -> 0.9 (off-domain penalty)
+export function domainMatchMult(monsterDomain: MonsterDomain, topicDomain: MonsterDomain): number {
+  if (monsterDomain === "GENERAL" || topicDomain === "GENERAL") return 1.0;
+  return monsterDomain === topicDomain ? 1.2 : 0.9;
+}
+
+// Summon item rarity — mirrors `app.db.models.SummonItemTier`.
+export const SUMMON_ITEM_TIERS = ["common", "rare", "legendary"] as const;
+export type SummonItemTier = (typeof SUMMON_ITEM_TIERS)[number];
+
 // Type-effectiveness chart (attacker -> defender -> multiplier).
 // Rock-paper-scissors style; tuned later in Wave 2 balancing.
 export const TYPE_CHART: Record<DebateType, Partial<Record<DebateType, number>>> = {

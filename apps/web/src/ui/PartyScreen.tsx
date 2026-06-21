@@ -1,8 +1,10 @@
 /**
- * PartyScreen — WS-E
+ * PartyScreen — WS-E (gacha wave: capture flow replaced by gacha pulls)
  *
- * Displays the player's current party, the last capture result, and links to
- * the Gambit editor (WS-C owns that component; we never embed it here).
+ * Displays the player's current party and links to the Gambit editor (WS-C
+ * owns that component; we never embed it here). The capture-result banner was
+ * removed when the capture acquisition flow was deleted — the gacha screen
+ * owns post-pull feedback now.
  *
  * Props: none — reads runId from global store.
  */
@@ -11,7 +13,7 @@ import { useGame } from "../state/store";
 import { api } from "../api/client";
 import { parseSkills, typeColor } from "../lib/skills";
 
-// ---- Types (mirrors app/schemas.py MonsterSummary + CaptureResult) ----
+// ---- Types (mirrors app/schemas.py MonsterSummary) ----
 
 interface MonsterSummary {
   id: string;
@@ -23,12 +25,14 @@ interface MonsterSummary {
   max_hp: number;
   evolution_stage: number;
   skills: (string | Record<string, unknown>)[];
-}
-
-interface CaptureResult {
-  success: boolean;
-  monster: MonsterSummary | null;
-  message: string;
+  // Gacha-wave stat fields (Wave B paints them into the UI; defaults keep this
+  // component renderable against pre-wave-A backends).
+  atk?: number;
+  def?: number;
+  mp?: number;
+  max_mp?: number;
+  domain?: string;
+  wiki_hydrated?: boolean;
 }
 
 function TypeBadge({ type }: { type: string }) {
@@ -91,6 +95,32 @@ function SkillChip({ skill }: { skill: ReturnType<typeof parseSkills>[number] })
   );
 }
 
+/**
+ * Tiny stat chip used by the gacha Wave B MonsterCard footer (ATK/DEF/MP +
+ * optional domain). One chip per stat so the player can see the persona's
+ * combat fingerprint at a glance without expanding the card.
+ */
+function StatChip({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string | number;
+  color?: string;
+}) {
+  return (
+    <span
+      className="pixel-inset px-1.5 py-0.5 font-hud text-[10px] inline-flex items-center gap-1"
+      style={{ borderColor: color ?? "rgba(232,230,216,0.18)" }}
+      title={`${label} ${value}`}
+    >
+      <span style={{ color: color ?? "var(--muted)" }}>{label}</span>
+      <span style={{ color: "var(--ink)" }}>{value}</span>
+    </span>
+  );
+}
+
 // ---- Single party member card ----
 function MonsterCard({ monster }: { monster: MonsterSummary }) {
   const evolutionLabel = monster.evolution_stage === 0
@@ -123,6 +153,37 @@ function MonsterCard({ monster }: { monster: MonsterSummary }) {
         ))}
       </div>
 
+      {/* Gacha Wave B stat chips: ATK/DEF/MP alongside type/level so the player
+          reads the monster's combat fingerprint from the card alone. Skip
+          gracefully when the API hasn't filled the fields (old pre-gacha runs). */}
+      {(typeof monster.atk === "number" ||
+        typeof monster.def === "number" ||
+        typeof monster.max_mp === "number" ||
+        (monster.domain && monster.domain !== "GENERAL")) && (
+        <div className="flex flex-wrap gap-1.5">
+          {typeof monster.atk === "number" && (
+            <StatChip label="ATK" value={monster.atk} color="var(--danger)" />
+          )}
+          {typeof monster.def === "number" && (
+            <StatChip label="DEF" value={monster.def} color="var(--win)" />
+          )}
+          {typeof monster.max_mp === "number" && (
+            <StatChip
+              label="MP"
+              value={
+                typeof monster.mp === "number"
+                  ? `${monster.mp}/${monster.max_mp}`
+                  : monster.max_mp
+              }
+              color="var(--accent)"
+            />
+          )}
+          {monster.domain && monster.domain !== "GENERAL" && (
+            <StatChip label="DOMAIN" value={monster.domain} />
+          )}
+        </div>
+      )}
+
       <XpBar xp={monster.xp} level={monster.level} />
 
       {skills.length > 0 && (
@@ -149,40 +210,12 @@ function MonsterCard({ monster }: { monster: MonsterSummary }) {
   );
 }
 
-// ---- Capture result banner ----
-function CaptureBanner({
-  result,
-  onDismiss,
-}: {
-  result: CaptureResult;
-  onDismiss: () => void;
-}) {
-  return (
-    <div
-      className="pixel-panel p-3 flex items-center justify-between gap-2 font-body text-sm"
-      style={{ borderColor: result.success ? "var(--win)" : "var(--danger)" }}
-    >
-      <span>
-        {result.success ? "Captured!" : "Failed"} — {result.message}
-      </span>
-      <button
-        onClick={onDismiss}
-        className="font-hud text-[10px] shrink-0"
-        style={{ color: "var(--muted)" }}
-      >
-        dismiss
-      </button>
-    </div>
-  );
-}
-
 // ---- Main component ----
 export default function PartyScreen() {
   const { runId } = useGame();
   const [party, setParty] = useState<MonsterSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [captureResult, setCaptureResult] = useState<CaptureResult | null>(null);
 
   const fetchParty = useCallback(async () => {
     if (!runId) return;
@@ -219,13 +252,6 @@ export default function PartyScreen() {
         </button>
       </div>
 
-      {captureResult && (
-        <CaptureBanner
-          result={captureResult}
-          onDismiss={() => setCaptureResult(null)}
-        />
-      )}
-
       {error && (
         <div
           className="pixel-panel p-3 font-body text-sm"
@@ -240,7 +266,7 @@ export default function PartyScreen() {
           <div className="text-4xl mb-3">👾</div>
           <div className="font-hud text-sm mb-1">No party members yet</div>
           <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
-            Weaken an enemy below 25% HP, then capture it in battle.
+            Pull a persona from the gacha to start your party.
           </div>
         </div>
       )}

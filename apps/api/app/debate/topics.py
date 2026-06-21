@@ -92,6 +92,81 @@ def topics_for_theme(theme: str | None) -> list[str]:
     return list(TOPIC_CATALOG)
 
 
+# ---- Gacha wave: topic domain (drives the ATK/DEF/MP damage multiplier) ----
+#
+# Only topics whose subject clearly maps to a domain are tagged. Everything else
+# stays GENERAL, which yields a neutral 1.0 multiplier in `domain_match_mult` —
+# so an untagged topic never penalizes a player and the catalog can be expanded
+# without re-tagging every entry.
+_TOPIC_DOMAIN_OVERRIDES: dict[str, str] = {
+    # Technology / engineering
+    "Artificial intelligence should be open-sourced.": "ENGINEERING",
+    "Self-driving cars will make roads safer.": "ENGINEERING",
+    "Cryptocurrency is the future of money.": "ENGINEERING",
+    "The internet has made us less intelligent.": "ENGINEERING",
+    "Robots will take more jobs than they create.": "ENGINEERING",
+    "Social media platforms should verify every user's identity.": "ENGINEERING",
+    # Science
+    "Humans will colonize Mars within 50 years.": "SCIENCE",
+    "Nuclear energy is the key to fighting climate change.": "SCIENCE",
+    "Genetically modified food is safe and necessary.": "SCIENCE",
+    "Climate change is the defining issue of our time.": "SCIENCE",
+    "Vaccination should be mandatory.": "SCIENCE",
+    "Space exploration is a waste of money.": "SCIENCE",
+    "Aliens have already visited Earth.": "SCIENCE",
+    # Ethics
+    "The death penalty should be abolished.": "ETHICS",
+    "Free will is an illusion.": "ETHICS",
+    "Humans are inherently selfish.": "ETHICS",
+    "Animals deserve the same rights as humans.": "ETHICS",
+    "Censorship is sometimes justified.": "ETHICS",
+    "Zoos are unethical and should be closed.": "ETHICS",
+    # Philosophy / society
+    "Money can buy happiness.": "PHILOSOPHY",
+    "Time travel, if possible, would do more harm than good.": "PHILOSOPHY",
+    "Privacy is dead and that's okay.": "PHILOSOPHY",
+    "Social media does more harm than good.": "PHILOSOPHY",
+    "Voting should be mandatory.": "PHILOSOPHY",
+    # Business
+    "A four-day work week should be the standard.": "BUSINESS",
+    "Universal basic income should be adopted everywhere.": "BUSINESS",
+    "Tipping culture should be abolished.": "BUSINESS",
+    "Remote work is better than working in an office.": "BUSINESS",
+    "Professional athletes are paid too much.": "BUSINESS",
+    "College is no longer worth the cost.": "BUSINESS",
+    # Art / culture
+    "Video games are a legitimate art form.": "ART",
+    "Books are better than their movie adaptations.": "ART",
+    "Reading fiction is more valuable than reading non-fiction.": "ART",
+    "Pineapple belongs on pizza.": "ART",
+    "Fast fashion should be banned.": "ART",
+}
+
+
+def topic_domain(topic: str) -> str:
+    """Return the domain tag for a topic, defaulting to ``"GENERAL"``."""
+    return _TOPIC_DOMAIN_OVERRIDES.get(topic, "GENERAL")
+
+
+def domain_match_mult(monster_domain: str | None, topic: str) -> float:
+    """Topic-domain multiplier for the damage formula.
+
+    * GENERAL on either side -> 1.0 (no nudge).
+    * matching domains       -> 1.2 (party-composition reward).
+    * mismatched domains     -> 0.9 (off-domain penalty).
+
+    Lives in this module so both ``orchestrator.py`` and ``routers/debate.py``
+    (Memory Recall) import it from one place and never drift.
+    """
+    if not monster_domain:
+        return 1.0
+    md = monster_domain.upper()
+    td = topic_domain(topic).upper()
+    if md == "GENERAL" or td == "GENERAL":
+        return 1.0
+    return 1.2 if md == td else 0.9
+
+
 def pick_random_topic(seed: int | None = None, theme: str | None = None) -> str:
     """Return a random debate topic.
 

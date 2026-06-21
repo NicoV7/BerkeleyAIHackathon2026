@@ -13,15 +13,28 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import random
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Encounter, EncounterResult
+from app.db.models import Encounter, EncounterResult, SummonItem
 from app.db.session import SessionLocal, get_session
-from app.debate.orchestrator import run_human_round_stream, run_round_stream
-from app.redis_state import get_transcript, k_meta
+from app.debate.orchestrator import _lead, run_human_round_stream, run_round_stream
+from app.debate.skill_engine import skill_cost
+from app.redis_state import (
+    append_utterance,
+    get_mp_map,
+    get_transcript,
+    k_judge,
+    k_meta,
+    set_hp,
+    set_mp,
+)
 from app.routers.encounter import (
     build_encounter_state,
     get_meta,
@@ -34,10 +47,13 @@ from app.schemas import (
     AssistResult,
     AutoRequest,
     JudgeVerdict,
+    MemoryRecallResult,
     PlayerArgueRequest,
     TurnResult,
     Utterance,
 )
+
+log = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api/encounters", tags=["debate"])
 
@@ -47,10 +63,48 @@ ROUND_TIMEOUT_S = 120.0
 AUTO_BUDGET_S = 240.0
 
 
+async def _check_skill_mp(eid: str, skill_id: str | None) -> None:
+    """Reject the request with 400 when the lead party monster can't afford the skill.
+
+    Gacha Wave B: cheap pre-flight on every /argue + /assist (and the WS argue
+    action). The cost is read from the .md front-matter via ``skill_cost``;
+    current MP is read from ``enc:{eid}:mp``. Free skills (cost 0) and the
+    "no skill selected" case are no-ops. Lead-party MP is resolved through the
+    same path the orchestrator uses so the gate is consistent. Best-effort: any
+    failure (missing Redis key, missing combatants) leaves the request to the
+    orchestrator's own defensive check.
+    """
+    if not skill_id:
+        return
+    cost = skill_cost(skill_id)
+    if cost <= 0:
+        return
+    try:
+        from app.routers.encounter import load_combatants
+
+        combatants = await load_combatants(eid)
+        lead = next((c for c in combatants if c.role == "party" and c.hp > 0), None)
+        if lead is None:
+            return
+        mp_map = await get_mp_map(eid)
+        # Default to the combatant's max_mp so a fresh encounter (cache miss)
+        # still validates against a real ceiling.
+        cur = int(mp_map.get(lead.monster_id, lead.max_mp))
+        if cur < cost:
+            raise HTTPException(
+                status_code=400,
+                detail=f"insufficient MP for {skill_id}: {cur}/{cost}",
+            )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 — never 500 on a defensive gate
+        return
+
+
 # ---- Finalize (idempotent) --------------------------------------------------
 
 
-async def _finalize(eid: str, result: EncounterResult) -> None:
+async def _finalize(eid: str, result: EncounterResult) -> list[dict]:
     """Persist the battle durably, write per-party BATTLE memories, then evict
     the conversation from Redis. Idempotent: a second call is a no-op.
 
@@ -58,6 +112,12 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
     them onto the Encounter row and into each party member's memory (so GEPA/RAG
     have real battle data that outlives the cache), and only then evict the heavy
     Redis keys to avoid context pollution.
+
+    Returns a list of LevelUp event payloads (one per party monster that
+    levelled this finalize). Callers that have a WS open (the /stream handler)
+    forward these as ``{"type": "LevelUp", ...}`` messages so the frontend
+    cinematic fires; REST callers may safely ignore the return value. A second
+    (idempotent) finalize returns ``[]``.
     """
     from app.redis_state import clear_conversation, get_hp_map, get_redis, k_judge
 
@@ -69,12 +129,14 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
     topic = meta.get("topic", "")
     roster = json.loads(meta.get("combatants", "[]"))
 
+    level_up_events: list[dict] = []
+
     async with SessionLocal() as session:
         enc = await session.get(Encounter, eid)
         if not enc:
-            return
+            return []
         if enc.result != EncounterResult.ongoing:
-            return  # already finalized
+            return []  # already finalized
         enc.result = result
         enc.transcript = transcript
         enc.verdicts = verdicts
@@ -87,8 +149,138 @@ async def _finalize(eid: str, result: EncounterResult) -> None:
         # available to GEPA training). Best-effort: never let this fail the battle.
         await _write_battle_memories(session, enc, topic, transcript, final_hp, roster, result)
 
+        # Wave A: on a win, roll for a SummonItem drop. The TurnResult schema
+        # does not carry this field today, so we only log it — the frontend
+        # picks the drop up via `GET /api/runs/{id}/summons`.
+        if result == EncounterResult.win:
+            dropped = await _maybe_drop_summon_item(session, enc.run_id)
+            if dropped is not None:
+                log.info(
+                    "gacha drop: encounter=%s run=%s item=%s tier=%s",
+                    eid, enc.run_id, dropped.id, dropped.tier,
+                )
+
+        # Wave D: award XP + apply per-level stat gains. Best-effort —
+        # progression must never block finalize. Each party monster that
+        # levels emits a LevelUp event the WS /stream handler forwards to the
+        # frontend cinematic.
+        try:
+            level_up_events = await _award_party_xp(session, enc, roster, result)
+        except Exception:  # noqa: BLE001
+            level_up_events = []
+
     # Conversation is durably stored — free the cache.
     await clear_conversation(eid)
+    return level_up_events
+
+
+async def _award_party_xp(
+    session: AsyncSession,
+    enc: Encounter,
+    roster: list[dict],
+    result: EncounterResult,
+) -> list[dict]:
+    """Apply XP rewards to every party monster and emit LevelUp events.
+
+    XP scales with the highest enemy level in the roster (so a tougher fight
+    gives more XP). A win pays full reward, a loss/flee pays the consolation
+    multiplier — both routes through ``balance.xp_reward``. The dict returned
+    by ``progress.award_xp`` is normalized into a WS-friendly LevelUp payload
+    only when the monster actually levelled.
+    """
+    from app.party import balance, progress
+
+    # Highest enemy level drives the reward curve; default to 1 if no enemies
+    # are recorded in the roster (defensive).
+    enemy_level = 1
+    for c in roster:
+        if c.get("role") == "enemy":
+            try:
+                lvl = int(c.get("level", 1) or 1)
+                if lvl > enemy_level:
+                    enemy_level = lvl
+            except (TypeError, ValueError):
+                continue
+
+    won = result == EncounterResult.win
+    amount = balance.xp_reward(enemy_level, won=won)
+    if amount <= 0:
+        return []
+
+    from app.db.models import Monster
+
+    events: list[dict] = []
+    for pid in enc.party_ids or []:
+        m = await session.get(Monster, pid)
+        if m is None:
+            continue
+        outcome = progress.award_xp(session, m, amount)
+        if not outcome.get("levelled"):
+            continue
+        events.append(
+            {
+                "type": "LevelUp",
+                "monster_id": m.id,
+                "new_level": int(outcome.get("new_level", m.level)),
+                "stat_gains": outcome.get(
+                    "stat_gains", {"atk": 0, "def": 0, "mp": 0, "hp": 0}
+                ),
+            }
+        )
+
+    try:
+        await session.commit()
+    except Exception:  # noqa: BLE001 — never let a commit failure 500 finalize
+        await session.rollback()
+        return []
+    return events
+
+
+# ---- Wave A: SummonItem post-battle drop -----------------------------------
+
+
+def _gacha_drop_rate() -> float:
+    """Drop rate is env-tunable (`GACHA_DROP_RATE`) with a 0.30 default."""
+    raw = os.getenv("GACHA_DROP_RATE", "0.30")
+    try:
+        rate = float(raw)
+    except ValueError:
+        return 0.30
+    return max(0.0, min(1.0, rate))
+
+
+# Tier weights for the post-battle drop. Slightly stingier than the starter
+# pull — most drops are common, legendary is a rare treat.
+_DROP_TIER_WEIGHTS: dict[str, int] = {"common": 80, "rare": 18, "legendary": 2}
+
+
+def _roll_drop_tier(rng: random.Random) -> str:
+    total = sum(_DROP_TIER_WEIGHTS.values())
+    pick = rng.uniform(0, total)
+    acc = 0.0
+    for tier, w in _DROP_TIER_WEIGHTS.items():
+        acc += w
+        if pick <= acc:
+            return tier
+    return "common"
+
+
+async def _maybe_drop_summon_item(
+    session: AsyncSession, run_id: str
+) -> SummonItem | None:
+    """Roll the drop chance; on a hit, persist a SummonItem and return it."""
+    try:
+        rng = random.Random()
+        if rng.random() > _gacha_drop_rate():
+            return None
+        item = SummonItem(run_id=run_id, tier=_roll_drop_tier(rng), consumed=False)
+        session.add(item)
+        await session.commit()
+        await session.refresh(item)
+        return item
+    except Exception as e:  # noqa: BLE001
+        log.info("gacha drop: skipped (%s)", e)
+        return None
 
 
 async def _write_battle_memories(
@@ -321,6 +513,10 @@ async def argue(
 ) -> TurnResult:
     """Human-argues (WS-G): the player's typed argument is the lead party monster's
     turn; the lead enemy rebuts autonomously. REST fallback for the WS argue action."""
+    # Gacha Wave B: reject up front when the player can't afford the chosen skill,
+    # so the textarea + skill picker know to refund the MP / re-enable the button
+    # before any LLM call burns latency.
+    await _check_skill_mp(eid, req.skill_id)
     try:
         new_utts, new_verdicts, phase_event = await asyncio.wait_for(
             _run_one_human_round(eid, req.text, req.skill_id), timeout=ROUND_TIMEOUT_S
@@ -352,6 +548,10 @@ async def assist(
     500-ing.
     """
     await get_meta(eid)  # 404 if encounter missing
+    # Gacha Wave B: same MP gate as /argue — the coach is allowed to suggest a
+    # different skill, but if the player explicitly picked one they can't afford
+    # we reject so the UI can refund the picker before the LLM call begins.
+    await _check_skill_mp(eid, req.skill_id)
     from app.debate.coach import coach_argument
 
     try:
@@ -369,6 +569,315 @@ async def assist(
             coach_monster_id=None,
             suggestions=[_fallback_suggestion(req.draft, "", req.skill_id)],
         )
+
+
+# ---- Memory Recall (Wave C: the headline ability) --------------------------
+#
+# `POST /api/encounters/{eid}/memory-recall` lets the lead party monster *peek*
+# the shared Redis transcript, quote an enemy line back word-for-word, and
+# counter it in its own persona voice. Damage flows through the same
+# `compute_damage` formula every other turn uses (so type chart, ATK/DEF
+# ratio, level scaling, and `domain_match_mult` all still apply); the score is
+# a fixed 80 baseline because this is an ability, not a judged turn.
+#
+# Hard contract:
+#   * MP cost 60. Reads from `enc:{eid}:mp`; falls back to `monster.max_mp`
+#     when the hash is empty (Wave B may not have populated it yet — keeps the
+#     demo playable before integration).
+#   * Cache miss / empty transcript / model timeout -> generic counter, half
+#     MP refund (30), damage = 0. Never 500s.
+#   * Writes the counter as a new Utterance to the transcript and the damage
+#     to `enc:{eid}:hp` so the regular HP-update path observes it next round.
+
+MEMORY_RECALL_MP_COST = 60
+MEMORY_RECALL_MP_REFUND = 30  # half-cost refund on graceful fallback
+MEMORY_RECALL_SCORE = 80.0  # fixed baseline through compute_damage
+MEMORY_RECALL_SKILL_MULT = 1.6  # mirrors `power:` in memory_recall.md
+MEMORY_RECALL_MODEL = "gemma3:1b"
+MEMORY_RECALL_MAX_TOKENS = 150
+MEMORY_RECALL_TEMPERATURE = 0.7
+MEMORY_RECALL_TIMEOUT_S = 20.0
+MEMORY_RECALL_TRANSCRIPT_SLICE = 5
+
+
+def _voice_of(combatant: Any) -> str:  # type: ignore[name-defined]
+    """Pick the lead monster's persona voice for the counter prompt.
+
+    Prefer `persona.voice` (set by Wave A's Wikipedia hydration), fall back to
+    `persona.tagline` (seed catalog default), then to the monster's name — so
+    the prompt is always grounded even before hydration completes.
+    """
+    persona = getattr(combatant, "persona", None) or {}
+    if isinstance(persona, dict):
+        voice = persona.get("voice") or persona.get("tagline")
+        if voice:
+            return str(voice)
+    return getattr(combatant, "name", "your monster") or "your monster"
+
+
+def _pick_highlighted_line(
+    transcript: list[dict], judge_verdicts: list[dict], party_ids: set[str]
+) -> str:
+    """Pick the enemy utterance to quote back.
+
+    Prefer the enemy line whose verdict dealt the highest damage TO a party
+    monster; fall back to the most-recent enemy utterance; finally to the last
+    line of any kind. Defensive — never raises.
+    """
+    # Highest-damage path: walk verdicts in damage-desc order, return the
+    # corresponding utterance text when target is on the party side.
+    if judge_verdicts:
+        try:
+            ranked = sorted(
+                (v for v in judge_verdicts if v.get("target") in party_ids),
+                key=lambda v: float(v.get("damage", 0) or 0),
+                reverse=True,
+            )
+        except Exception:  # noqa: BLE001
+            ranked = []
+        for v in ranked:
+            turn = v.get("turn")
+            actor = v.get("actor_id")
+            # Match the enemy utterance at the same turn (the speaker is the
+            # actor_id; for human rounds the verdict records `actor_id`).
+            for u in transcript:
+                if (
+                    u.get("turn") == turn
+                    and u.get("actor_role") == "enemy"
+                    and u.get("text")
+                ):
+                    return str(u["text"]).strip()
+                if actor and u.get("actor_id") == actor and u.get("text"):
+                    return str(u["text"]).strip()
+
+    # Fallback: most recent enemy utterance.
+    for u in reversed(transcript or []):
+        if u.get("actor_role") == "enemy" and u.get("text"):
+            return str(u["text"]).strip()
+
+    # Final fallback: the absolute last line (could be a judge or party line).
+    for u in reversed(transcript or []):
+        if u.get("text"):
+            return str(u["text"]).strip()
+    return ""
+
+
+def _transcript_slice(transcript: list[dict], n: int = 5) -> list[str]:
+    """Render the last N transcript lines as `"<actor_role>: <text>"` strings."""
+    out: list[str] = []
+    for u in transcript[-n:]:
+        role = u.get("actor_role") or "?"
+        text = (u.get("text") or "").strip()
+        if not text:
+            continue
+        out.append(f"{role}: {text}")
+    return out
+
+
+@router.post("/{eid}/memory-recall", response_model=MemoryRecallResult)
+async def memory_recall(
+    eid: str, session: AsyncSession = Depends(get_session)
+) -> MemoryRecallResult:
+    """Memory Recall ability — peek the Redis transcript, quote the enemy back.
+
+    See the module-level comment above for the full contract. Never 500s: any
+    cache miss, empty transcript, or model failure degrades to a generic counter
+    with a half-MP refund and `damage=0`.
+    """
+    # ---- Load encounter state ------------------------------------------------
+    meta = await get_meta(eid)  # 404 if encounter missing
+    phase = meta.get("phase", "debating")
+    if phase in ("won", "lost"):
+        raise HTTPException(status_code=409, detail=f"encounter already {phase}")
+    topic = meta.get("topic", "") or ""
+    combatants = await load_combatants(eid)
+
+    coach = _lead(combatants, "party")
+    enemy = _lead(combatants, "enemy")
+    if coach is None or enemy is None:
+        raise HTTPException(status_code=409, detail="no lead party/enemy to recall against")
+
+    # ---- MP gate (Wave B may not have populated `enc:{eid}:mp` yet) ---------
+    # If the hash is empty (or missing this combatant), default to the
+    # monster's max_mp so the demo works even before Wave B integrates the MP
+    # economy. Once Wave B writes initial MP at encounter start, this branch
+    # naturally cedes to the real value.
+    mp_map = await get_mp_map(eid)
+    monster_max_mp = int(
+        getattr(coach, "max_mp", None)
+        or getattr(coach, "max_hp", None)  # extreme fallback for legacy combatants
+        or MEMORY_RECALL_MP_COST
+    )
+    mp_before = int(mp_map.get(coach.monster_id, monster_max_mp))
+    if mp_before < MEMORY_RECALL_MP_COST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"not enough MP for Memory Recall ({mp_before}/{MEMORY_RECALL_MP_COST})",
+        )
+
+    # ---- Pick the line to quote --------------------------------------------
+    transcript = await get_transcript(eid)
+    judge_verdicts: list[dict] = []
+    try:
+        from app.redis_state import get_redis
+
+        r = get_redis()
+        raw = await r.lrange(k_judge(eid), 0, -1)
+        for blob in raw:
+            try:
+                judge_verdicts.append(json.loads(blob))
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        judge_verdicts = []
+
+    party_ids = {c.monster_id for c in combatants if c.role == "party"}
+    highlighted_line = _pick_highlighted_line(transcript, judge_verdicts, party_ids)
+    voice = _voice_of(coach)
+
+    # ---- Cache-miss fallback (no usable line) ------------------------------
+    if not highlighted_line:
+        return await _memory_recall_fallback(
+            eid=eid,
+            coach=coach,
+            voice=voice,
+            mp_before=mp_before,
+            transcript=transcript,
+            highlighted_line="",
+        )
+
+    # ---- Build the counter prompt ------------------------------------------
+    user_prompt = (
+        f"You are {coach.name}, a debater with this voice: {voice}.\n"
+        f'The enemy said: "{highlighted_line}"\n'
+        "In one sentence, counter this specific argument and explicitly quote or\n"
+        "reference their words back to them. Be sharp and in-character."
+    )
+
+    # ---- Generate (defensively) --------------------------------------------
+    counter_text: str = ""
+    try:
+        from app.gateway.gateway import gateway
+
+        raw_counter = await asyncio.wait_for(
+            gateway.complete(
+                [{"role": "user", "content": user_prompt}],
+                model=MEMORY_RECALL_MODEL,
+                temperature=MEMORY_RECALL_TEMPERATURE,
+                max_tokens=MEMORY_RECALL_MAX_TOKENS,
+                timeout=MEMORY_RECALL_TIMEOUT_S,
+            ),
+            timeout=MEMORY_RECALL_TIMEOUT_S + 2.0,
+        )
+        counter_text = (raw_counter or "").strip()
+    except Exception:  # noqa: BLE001
+        counter_text = ""
+
+    # On a model timeout/failure: graceful fallback (half-MP refund, no damage).
+    if not counter_text:
+        return await _memory_recall_fallback(
+            eid=eid,
+            coach=coach,
+            voice=voice,
+            mp_before=mp_before,
+            transcript=transcript,
+            highlighted_line=highlighted_line,
+        )
+
+    # ---- Apply damage via the Wave-0-extended compute_damage --------------
+    from app.debate.damage import compute_damage
+    from app.debate.topics import domain_match_mult
+
+    enemy_def = int(getattr(enemy, "def_", None) or 10)
+    enemy_level = int(getattr(enemy, "level", None) or 1)
+    coach_atk = int(getattr(coach, "atk", None) or 10)
+    coach_level = int(getattr(coach, "level", None) or 1)
+    coach_domain = str(getattr(coach, "domain", "GENERAL") or "GENERAL")
+
+    damage = compute_damage(
+        score=MEMORY_RECALL_SCORE,
+        attacker_type=coach.type,
+        defender_type=enemy.type,
+        skill_mult=MEMORY_RECALL_SKILL_MULT,
+        momentum=1.0,
+        attacker_level=coach_level,
+        defender_level=enemy_level,
+        attacker_atk=coach_atk,
+        defender_def=enemy_def,
+        domain_match=domain_match_mult(coach_domain, topic),
+    )
+    damage = max(0, int(damage))
+
+    # ---- Deduct MP + HP (via the existing set_mp / set_hp helpers) --------
+    mp_after = max(0, mp_before - MEMORY_RECALL_MP_COST)
+    await set_mp(eid, coach.monster_id, mp_after)
+
+    new_enemy_hp = max(0, int(enemy.hp) - damage)
+    await set_hp(eid, enemy.monster_id, new_enemy_hp)
+    # Reflect the deduction on the in-memory combatant snapshot too (so any
+    # downstream code that reads `combatants` sees the updated HP).
+    enemy.hp = new_enemy_hp
+
+    # ---- Append the counter as a new Utterance to the transcript ---------
+    turn_no = int(meta.get("turn_no", 0) or 0)
+    utterance = {
+        "turn": turn_no,
+        "actor_id": coach.monster_id,
+        "actor_role": "party",
+        "skill_used": "Memory Recall",
+        "text": counter_text,
+        "ts": time.time(),
+    }
+    await append_utterance(eid, utterance)
+
+    # ---- Build response --------------------------------------------------
+    refreshed_transcript = transcript + [utterance]
+    return MemoryRecallResult(
+        encounter_id=eid,
+        coach_monster_id=coach.monster_id,
+        transcript_slice=_transcript_slice(refreshed_transcript, MEMORY_RECALL_TRANSCRIPT_SLICE),
+        highlighted_line=highlighted_line,
+        counter_text=counter_text,
+        mp_spent=MEMORY_RECALL_MP_COST,
+        mp_remaining=mp_after,
+        damage=damage,
+    )
+
+
+async def _memory_recall_fallback(
+    *,
+    eid: str,
+    coach: Any,  # type: ignore[name-defined]
+    voice: str,
+    mp_before: int,
+    transcript: list[dict],
+    highlighted_line: str,
+) -> MemoryRecallResult:
+    """Graceful fallback: half-MP refund, no damage, generic counter.
+
+    Used on cache miss (empty transcript) and on model timeout/failure. Never
+    raises — keeps the contract that Memory Recall never 500s the request path.
+    """
+    counter = f"{getattr(coach, 'name', 'Your monster')} recalls: '{voice}' — but the moment passes."
+
+    # Refund half the MP cost (deduct only `MP_REFUND`, not the full cost).
+    mp_after = max(0, mp_before - MEMORY_RECALL_MP_REFUND)
+    try:
+        await set_mp(eid, coach.monster_id, mp_after)
+    except Exception:  # noqa: BLE001
+        # Even Redis being down must not 500 the response; skip the write.
+        mp_after = mp_before  # unchanged in that case
+
+    return MemoryRecallResult(
+        encounter_id=eid,
+        coach_monster_id=coach.monster_id,
+        transcript_slice=_transcript_slice(transcript, MEMORY_RECALL_TRANSCRIPT_SLICE),
+        highlighted_line=highlighted_line,
+        counter_text=counter,
+        mp_spent=MEMORY_RECALL_MP_REFUND,
+        mp_remaining=mp_after,
+        damage=0,
+    )
 
 
 @router.post("/{eid}/flee", response_model=TurnResult)
@@ -427,9 +936,30 @@ async def stream(ws: WebSocket, eid: str) -> None:
                 momentum = await load_momentum(eid)
 
                 if is_argue:
+                    # Gacha Wave B MP gate (WS path): if the player can't afford
+                    # the picked skill, surface a typed error and skip the round.
+                    # Mirrors the 400 returned by POST /{eid}/argue.
+                    skill_id_ws = msg.get("skill_id")
+                    try:
+                        await _check_skill_mp(eid, skill_id_ws)
+                    except HTTPException as he:
+                        # The outer loop will still emit `round_done` after this
+                        # iteration, so the client sees one mp_insufficient and
+                        # one terminal event (no duplicate round_done).
+                        await ws.send_json(
+                            {
+                                "type": "mp_insufficient",
+                                "data": {
+                                    "skill_id": skill_id_ws,
+                                    "detail": he.detail,
+                                },
+                            }
+                        )
+                        continue
+
                     stream = run_human_round_stream(
                         eid, topic, combatants, run_id, start_turn, momentum,
-                        str(msg.get("text", "")), msg.get("skill_id"),
+                        str(msg.get("text", "")), skill_id_ws,
                     )
                 else:
                     stream = run_round_stream(
@@ -453,7 +983,18 @@ async def stream(ws: WebSocket, eid: str) -> None:
                     phase=final_phase["phase"],
                 )
                 if final_phase["phase"] in _PHASE_TO_RESULT:
-                    await _finalize(eid, _PHASE_TO_RESULT[final_phase["phase"]])
+                    level_ups = await _finalize(
+                        eid, _PHASE_TO_RESULT[final_phase["phase"]]
+                    )
+                    # Forward each LevelUp event on the same WS channel as the
+                    # existing hp/phase events; the frontend overlay listens
+                    # for `{"type": "LevelUp", ...}`. Defensive: a send failure
+                    # must not crash the WS loop.
+                    for lu in level_ups:
+                        try:
+                            await ws.send_json(lu)
+                        except Exception:  # noqa: BLE001
+                            break
                     break
 
             await ws.send_json({"type": "round_done", "data": {"phase": (await get_meta(eid)).get("phase")}})

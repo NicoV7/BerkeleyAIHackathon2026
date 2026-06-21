@@ -3,6 +3,7 @@ name: Rhetorical Flourish
 type: RHETORIC
 power: 1.1
 domain: RHETORIC
+mp_cost: 15
 ---
 
 # Rhetorical Flourish

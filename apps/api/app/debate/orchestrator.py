@@ -35,6 +35,7 @@ from typing import Any, Optional
 from app.config import settings
 from app.debate.damage import compute_damage
 from app.debate.judge import heuristic_score, score_round
+from app.debate.topics import domain_match_mult
 from app.gateway.gateway import gateway
 
 # ---- Defensive integration seams --------------------------------------------
@@ -58,6 +59,10 @@ except Exception:  # noqa: BLE001 — never fail if the module isn't present yet
 
 CAPTURABLE_HP_FRACTION = 0.25
 TRANSCRIPT_WINDOW = 16  # last N utterances injected into actor context
+
+# Gacha Wave B: end-of-round MP regen. +10 / round, clamped to max_mp. Lives as
+# a module-level constant so tests + helpers in app.debate.mp share one source.
+MP_REGEN_PER_ROUND = 10
 
 
 # ---- Latency fast-path ------------------------------------------------------
@@ -264,6 +269,14 @@ class Combatant:
     # deterministically by the round runners (party lead = FOR the topic, enemy
     # lead = AGAINST it) so stances are crystal clear in prompts + utterances.
     side: Optional[str] = None
+    # ---- Gacha-wave stats (additive; defaults mirror Monster model defaults so
+    # pre-gacha rows / dicts keep the original numerical behavior). ----
+    atk: int = 10
+    # `def` is a Python keyword — the dataclass field stays `def_` to match
+    # the Monster ORM attribute (the column itself is just "def" in SQL).
+    def_: int = 10
+    max_mp: int = 50
+    domain: str = "GENERAL"
 
     @property
     def alive(self) -> bool:
@@ -562,6 +575,7 @@ def _apply_round_damage(
     combatants: list[Combatant],
     scored: list[tuple],
     momentum: dict[str, float],
+    topic: str = "",
 ) -> list[dict[str, Any]]:
     """Apply damage from a round's scored utterances. Returns verdict dicts.
 
@@ -571,6 +585,10 @@ def _apply_round_damage(
     Each `scored` entry is `(actor, score, rationale)` and may carry an optional
     4th element: a dict of extra verdict fields (e.g. why/logic/persuasion) that
     is merged into the emitted verdict. Older 3-tuple callers stay supported.
+
+    ``topic`` (gacha wave) flows into ``domain_match_mult`` so a domain-aligned
+    attacker (e.g. SCIENCE monster on a SCIENCE topic) gets the +20% bonus and a
+    mismatched attacker the -10% penalty. Default ``""`` reduces to 1.0.
     """
     verdicts: list[dict[str, Any]] = []
     side_net: dict[str, float] = {"party": 0.0, "enemy": 0.0}
@@ -584,6 +602,7 @@ def _apply_round_damage(
         if not targets:
             continue
         mom = momentum.get(actor.role, 1.0)
+        dmatch = domain_match_mult(getattr(actor, "domain", None) or "GENERAL", topic)
         total_dmg = 0
         # Split damage across living defenders.
         for target in targets:
@@ -595,6 +614,11 @@ def _apply_round_damage(
                 momentum=mom,
                 attacker_level=actor.level,
                 defender_level=target.level,
+                # Gacha wave: real ATK/DEF/domain feed the formula. Defaults on
+                # Combatant keep pre-gacha numerical behavior for old callers.
+                attacker_atk=getattr(actor, "atk", 10),
+                defender_def=getattr(target, "def_", 10),
+                domain_match=dmatch,
             )
             dmg = max(0, round(dmg / len(targets)))
             target.hp = max(0, target.hp - dmg)
@@ -616,6 +640,65 @@ def _apply_round_damage(
         momentum[side] = max(0.7, min(1.3, momentum.get(side, 1.0) + swing * 0.15))
 
     return verdicts
+
+
+def _skill_cost_safe(skill_name: str | None) -> int:
+    """Look up a skill's MP cost via skill_engine, never raising."""
+    if not skill_name:
+        return 0
+    try:
+        from app.debate.skill_engine import skill_cost as _sc  # type: ignore
+
+        return int(_sc(skill_name))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+async def _get_mp_safe(eid: str, monster_id: str, max_mp: int) -> int:
+    """Read a single combatant's MP from Redis; fall back to ``max_mp`` if absent."""
+    try:
+        from app.redis_state import get_mp_map
+
+        m = await get_mp_map(eid)
+        return int(m.get(monster_id, max_mp))
+    except Exception:  # noqa: BLE001 — never fail the round on cache hiccup
+        return max_mp
+
+
+async def _set_mp_safe(eid: str, monster_id: str, mp: int) -> None:
+    try:
+        from app.redis_state import set_mp
+
+        await set_mp(eid, monster_id, max(0, int(mp)))
+    except Exception:  # noqa: BLE001
+        return
+
+
+async def _regen_mp_and_emit(eid: str, combatants: list[Combatant]):
+    """Apply +``MP_REGEN_PER_ROUND`` to every combatant's MP and yield events.
+
+    Reads current MP from ``enc:{eid}:mp`` (Redis hash), clamps the new value to
+    each combatant's ``max_mp``, writes it back, and yields one
+    ``Event("mp", {monster_id, mp, max_mp})`` per combatant so WS clients can
+    update the blue MP bar in lockstep with HP.
+
+    Best-effort: any Redis failure swallows the error and skips emission so a
+    transient cache hiccup never ends the round.
+    """
+    try:
+        from app.redis_state import get_mp_map, set_mp
+
+        cur = await get_mp_map(eid)
+        for c in combatants:
+            try:
+                start = int(cur.get(c.monster_id, c.max_mp))
+            except (TypeError, ValueError):
+                start = c.max_mp
+            new = min(c.max_mp, start + MP_REGEN_PER_ROUND)
+            await set_mp(eid, c.monster_id, new)
+            yield Event("mp", {"monster_id": c.monster_id, "mp": new, "max_mp": c.max_mp})
+    except Exception:  # noqa: BLE001 — never break the round on a Redis blip
+        return
 
 
 def _phase_for(combatants: list[Combatant]) -> tuple[str, list[str]]:
@@ -753,7 +836,7 @@ async def run_round_stream(
             }
             scored.append((actor, js.score, js.rationale, extra))
 
-    verdicts = _apply_round_damage(combatants, scored, momentum)
+    verdicts = _apply_round_damage(combatants, scored, momentum, topic=topic)
 
     # Persist + emit verdicts and HP.
     from app.redis_state import get_redis, k_judge, ENCOUNTER_TTL_SECONDS
@@ -781,6 +864,12 @@ async def run_round_stream(
         # Emit ONE HpUpdate per combatant ({monster_id, hp, max_hp}) — the frontend
         # patches combatants by monster_id, so a {id: hp} map silently no-ops (HP bug).
         yield Event("hp", {"monster_id": c.monster_id, "hp": c.hp, "max_hp": c.max_hp})
+
+    # Gacha Wave B: end-of-round MP regen (+10, clamped to max_mp) for every
+    # combatant. Emits per-combatant `mp` events so the WS clients can paint the
+    # blue MP bar in lockstep with HP without a separate poll.
+    async for mp_ev in _regen_mp_and_emit(eid, combatants):
+        yield mp_ev
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
@@ -882,6 +971,29 @@ async def run_human_round_stream(
     enemy.side = "against"
 
     skill_name, attack_type, skill_power = _resolve_skill(player, skill_id)
+
+    # Gacha Wave B: skill MP gate. If the player selected a skill they cannot
+    # afford, strip the skill from THIS turn (the text still goes through —
+    # punishing the player with a dead turn would feel awful). Deduct on use.
+    if skill_name:
+        cost = _skill_cost_safe(skill_name)
+        if cost > 0:
+            cur_mp = await _get_mp_safe(eid, player.monster_id, player.max_mp)
+            if cur_mp < cost:
+                skill_name = None
+                attack_type = player.type
+                skill_power = 1.0
+            else:
+                await _set_mp_safe(eid, player.monster_id, cur_mp - cost)
+                yield Event(
+                    "mp",
+                    {
+                        "monster_id": player.monster_id,
+                        "mp": cur_mp - cost,
+                        "max_mp": player.max_mp,
+                    },
+                )
+
     fallback_model = next((c.model for c in combatants if c.model), None)
 
     # --- Player turn (human-typed) ---
@@ -1035,6 +1147,9 @@ async def run_human_round_stream(
         if target is None:
             continue
         mom = momentum.get(actor.role, 1.0)
+        # Gacha wave: real ATK/DEF/domain-match flow into the formula. Defaults
+        # on Combatant keep the math identical for pre-gacha rows / tests.
+        dmatch = domain_match_mult(getattr(actor, "domain", None) or "GENERAL", topic)
         dmg = compute_damage(
             score=js.score,
             attacker_type=atk_type,
@@ -1043,6 +1158,9 @@ async def run_human_round_stream(
             momentum=mom,
             attacker_level=actor.level,
             defender_level=target.level,
+            attacker_atk=getattr(actor, "atk", 10),
+            defender_def=getattr(target, "def_", 10),
+            domain_match=dmatch,
         )
         target.hp = max(0, target.hp - dmg)
         verdicts.append(
@@ -1081,6 +1199,11 @@ async def run_human_round_stream(
         # patches combatants by monster_id, so a {id: hp} map silently no-ops (HP bug).
         yield Event("hp", {"monster_id": c.monster_id, "hp": c.hp, "max_hp": c.max_hp})
 
+    # Gacha Wave B: same +10 MP regen at end-of-round as the autonomous path so
+    # the human player and the AI use the exact same MP economy.
+    async for mp_ev in _regen_mp_and_emit(eid, combatants):
+        yield mp_ev
+
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
 
@@ -1106,6 +1229,12 @@ def _monster_to_combatant(m: Any, role: str) -> Combatant:
     owner = g("owner", "wild")
     owner = getattr(owner, "value", owner)
     max_hp = int(g("max_hp", 100) or 100)
+    # Gacha-wave stats. Accept both attribute names (`def_` from the ORM, `def`
+    # from a plain dict / schema mirror) and fall back to neutral defaults so
+    # pre-gacha callers keep working.
+    def_val = g("def_", None)
+    if def_val is None:
+        def_val = g("def", 10)
     return Combatant(
         monster_id=str(g("id", f"{role}-{int(time.time()*1000)}")),
         name=str(g("name", role.title())),
@@ -1119,6 +1248,10 @@ def _monster_to_combatant(m: Any, role: str) -> Combatant:
         harness=dict(g("harness", {}) or {}),
         skills=list(g("skills", []) or []),
         model=g("model"),
+        atk=int(g("atk", 10) or 10),
+        def_=int(def_val or 10),
+        max_mp=int(g("max_mp", 50) or 50),
+        domain=str(g("domain", "GENERAL") or "GENERAL"),
     )
 
 

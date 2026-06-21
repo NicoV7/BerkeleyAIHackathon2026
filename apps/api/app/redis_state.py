@@ -8,6 +8,7 @@ Key layout (per encounter_id):
   enc:{id}:meta       hash   topic, turn_no, phase, current_actor, status
   enc:{id}:transcript list   JSON utterances {turn, actor_id, actor_role, skill_used, text, ts}
   enc:{id}:hp         hash   monster_id -> current_hp
+  enc:{id}:mp         hash   monster_id -> current_mp  (gacha wave)
   enc:{id}:queue      list   turn order (monster_ids) for the round
   enc:{id}:judge      list   JSON verdicts {turn, target, score, rationale, damage}
   enc:{id}:momentum   hash   side -> momentum float
@@ -79,8 +80,20 @@ def k_momentum(eid: str) -> str:
     return f"enc:{eid}:momentum"
 
 
+def k_mp(eid: str) -> str:
+    return f"enc:{eid}:mp"
+
+
 def encounter_keys(eid: str) -> list[str]:
-    return [k_meta(eid), k_transcript(eid), k_hp(eid), k_queue(eid), k_judge(eid), k_momentum(eid)]
+    return [
+        k_meta(eid),
+        k_transcript(eid),
+        k_hp(eid),
+        k_mp(eid),
+        k_queue(eid),
+        k_judge(eid),
+        k_momentum(eid),
+    ]
 
 
 def k_opening(topic_hash: str, prompt_ver: str) -> str:
@@ -114,6 +127,18 @@ async def set_hp(eid: str, monster_id: str, hp: int) -> None:
 async def get_hp_map(eid: str) -> dict[str, int]:
     r = get_redis()
     raw = await r.hgetall(k_hp(eid))
+    return {m: int(v) for m, v in raw.items()}
+
+
+async def set_mp(eid: str, monster_id: str, mp: int) -> None:
+    r = get_redis()
+    await r.hset(k_mp(eid), monster_id, mp)
+    await r.expire(k_mp(eid), ENCOUNTER_TTL_SECONDS)
+
+
+async def get_mp_map(eid: str) -> dict[str, int]:
+    r = get_redis()
+    raw = await r.hgetall(k_mp(eid))
     return {m: int(v) for m, v in raw.items()}
 
 

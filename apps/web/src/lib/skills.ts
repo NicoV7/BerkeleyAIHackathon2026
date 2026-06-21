@@ -15,24 +15,73 @@ export interface ParsedSkill {
   type: string; // DebateType, e.g. "PATHOS"; "" if unknown
   power: number; // damage multiplier; 1.0 default
   description: string;
+  /**
+   * Gacha Wave B: MP cost to use this skill. Mirrors the front-matter `mp_cost`
+   * field in `apps/api/app/skills/<slug>.md`. Defaults to the canonical catalog
+   * value when the API doesn't ship a `mp_cost`/`cost` field on the skill.
+   */
+  mp_cost: number;
+}
+
+/**
+ * Canonical MP cost per skill (gacha Wave B). Source of truth lives in
+ * `apps/api/app/skills/<slug>.md` front-matter; this map mirrors it so the
+ * web UI can dim unaffordable chips even when the skill blob from the API is
+ * older / lacks a `mp_cost` field. Keep in sync by hand.
+ */
+export const SKILL_MP_COSTS: Record<string, number> = {
+  "Analogy Strike": 20,
+  Anecdote: 15,
+  "Authority Cite": 25,
+  "Credential Drop": 30,
+  "Emotional Appeal": 20,
+  "Leading Question": 15,
+  "Logical Thrust": 20,
+  "Reframe Attack": 30,
+  "Rhetorical Flourish": 15,
+  "Socratic Probe": 20,
+  "Steel Man": 35,
+  Whataboutism: 25,
+};
+
+function defaultCost(name: string): number {
+  return SKILL_MP_COSTS[name] ?? 0;
 }
 
 export function parseSkill(s: unknown): ParsedSkill {
   if (typeof s === "string") {
-    return { id: s, name: s, type: "", power: 1, description: "" };
+    return {
+      id: s,
+      name: s,
+      type: "",
+      power: 1,
+      description: "",
+      mp_cost: defaultCost(s),
+    };
   }
   if (s && typeof s === "object") {
     const o = s as Record<string, unknown>;
     const name = String(o.name ?? o.id ?? "Skill");
+    // Prefer an explicit cost from the API; fall back to the catalog.
+    const explicit = Number(o.mp_cost ?? o.cost ?? Number.NaN);
+    const mp_cost = Number.isFinite(explicit) ? explicit : defaultCost(name);
     return {
       id: String(o.id ?? o.name ?? name),
       name,
       type: String(o.type ?? "").toUpperCase(),
       power: Number(o.power ?? 1) || 1,
       description: String(o.description ?? ""),
+      mp_cost,
     };
   }
-  return { id: "Skill", name: "Skill", type: "", power: 1, description: "" };
+  return {
+    id: "Skill",
+    name: "Skill",
+    type: "",
+    power: 1,
+    description: "",
+    mp_cost: 0,
+  };
 }
 
 export function parseSkills(arr: unknown): ParsedSkill[] {
