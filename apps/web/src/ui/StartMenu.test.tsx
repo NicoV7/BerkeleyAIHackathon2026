@@ -30,8 +30,9 @@ describe("StartMenu info overlays", () => {
     render(<StartMenu />);
 
     expect(screen.getByRole("textbox", { name: /player name/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /start run/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /select avatar logos/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /start game/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /random name/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /select avatar/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^about$/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /^controls$/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /^instructions$/i })).toBeVisible();
@@ -58,15 +59,14 @@ describe("StartMenu info overlays", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("opens the avatar selector and updates the selected avatar", () => {
+  it("generates a random player name without opening an overlay", () => {
     render(<StartMenu />);
 
-    fireEvent.click(screen.getByRole("button", { name: /select avatar logos/i }));
-    expect(screen.getByRole("dialog", { name: /select avatar/i })).toBeVisible();
-    expect(screen.getByText(/evidence tactician/i)).toBeVisible();
+    const nameInput = screen.getByRole("textbox", { name: /player name/i });
+    expect(nameInput).toHaveValue("Player");
 
-    fireEvent.click(screen.getByRole("button", { name: /pathos/i }));
+    fireEvent.click(screen.getByRole("button", { name: /random name/i }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /select avatar pathos/i })).toBeVisible();
+    expect(nameInput).not.toHaveValue("Player");
   });
 });

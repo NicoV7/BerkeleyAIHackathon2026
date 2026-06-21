@@ -1,4 +1,3 @@
-import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 import {
   DEFAULT_PLAYER_NAME,
@@ -8,13 +7,8 @@ import {
 } from "../state/store";
 import { api } from "../api/client";
 import { sfxMenuClose, sfxMenuHover, sfxMenuOpen, sfxMenuSelect, sfxSubmit } from "../lib/sfx";
-import { TYPE_COLOR } from "../lib/skills";
 import { useIrisTransition } from "./fx/IrisWipe";
 
-// The six debate "elements" (mirrors the elemental palette in index.css).
-// Rendered as a pulsing type-ring under the title — pure decoration, no state.
-const ELEMENTS = ["LOGOS", "PATHOS", "ETHOS", "CHAOS", "SOCRATIC", "RHETORIC"] as const;
-type AvatarMode = (typeof ELEMENTS)[number];
 type InfoPanel = "about" | "controls" | "instructions";
 
 // Hidden legacy topic seeds. The backend still requires `topic`, but encounters
@@ -26,6 +20,21 @@ const SUGGESTED = [
   "Time travel would do more harm than good",
   "Social media made us lonelier",
   "Pirates would beat ninjas",
+];
+
+const RANDOM_NAMES = [
+  "Ada",
+  "Socrates",
+  "Turing",
+  "Athena",
+  "Cipher",
+  "Logos",
+  "Nova",
+  "Quill",
+  "Vector",
+  "Rhetor",
+  "Thesis",
+  "Muse",
 ];
 
 const INFO_PANELS: Record<InfoPanel, { title: string; kicker: string; lines: string[] }> = {
@@ -42,7 +51,7 @@ const INFO_PANELS: Record<InfoPanel, { title: string; kicker: string; lines: str
     title: "Controls",
     kicker: "How to play",
     lines: [
-      "Enter names your player and Start Run begins the adventure.",
+      "Enter names your player and Start Game begins the adventure.",
       "Move through the overworld with arrow keys, then collide with enemies to start debates.",
       "In battle, type your argument, choose a rhetorical skill when available, and use capture when an enemy is weak.",
     ],
@@ -58,41 +67,14 @@ const INFO_PANELS: Record<InfoPanel, { title: string; kicker: string; lines: str
   },
 };
 
-const AVATAR_MODES: Record<AvatarMode, { title: string; role: string; description: string }> = {
-  LOGOS: {
-    title: "Logos",
-    role: "Evidence tactician",
-    description: "Wins by chaining facts, structure, and clean cause-and-effect reasoning.",
-  },
-  PATHOS: {
-    title: "Pathos",
-    role: "Emotion striker",
-    description: "Turns stories, stakes, and audience feeling into persuasive pressure.",
-  },
-  ETHOS: {
-    title: "Ethos",
-    role: "Credibility guard",
-    description: "Builds authority, trust, and expert framing before landing the argument.",
-  },
-  CHAOS: {
-    title: "Chaos",
-    role: "Reframe disruptor",
-    description: "Breaks stale logic, flips assumptions, and forces enemies onto new ground.",
-  },
-  SOCRATIC: {
-    title: "Socratic",
-    role: "Question engine",
-    description: "Uses sharp questions to expose weak claims and guide the debate's shape.",
-  },
-  RHETORIC: {
-    title: "Rhetoric",
-    role: "Style finisher",
-    description: "Turns strong wording, rhythm, and framing into decisive closing momentum.",
-  },
-};
-
 function pickHiddenTopic(): string {
   return SUGGESTED[Math.floor(Math.random() * SUGGESTED.length)] ?? SUGGESTED[0];
+}
+
+function pickRandomName(currentName: string): string {
+  const current = normalizePlayerName(currentName).toLowerCase();
+  const pool = RANDOM_NAMES.filter((name) => name.toLowerCase() !== current);
+  return pool[Math.floor(Math.random() * pool.length)] ?? RANDOM_NAMES[0];
 }
 
 function readStoredName(): string {
@@ -116,38 +98,29 @@ export default function StartMenu() {
   const [playerName, setPlayerName] = useState(readStoredName);
   const [starting, setStarting] = useState(false);
   const [activePanel, setActivePanel] = useState<InfoPanel | null>(null);
-  const [avatarOpen, setAvatarOpen] = useState(false);
-  const [avatarMode, setAvatarMode] = useState<AvatarMode>("LOGOS");
 
   useEffect(() => {
-    if (!activePanel && !avatarOpen) return;
+    if (!activePanel) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeOverlay();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activePanel, avatarOpen]);
+  }, [activePanel]);
 
   function openInfoPanel(panel: InfoPanel) {
     sfxMenuOpen();
     setActivePanel(panel);
   }
 
-  function openAvatarPanel() {
-    sfxMenuOpen();
-    setAvatarOpen(true);
-  }
-
   function closeOverlay() {
     sfxMenuClose();
     setActivePanel(null);
-    setAvatarOpen(false);
   }
 
-  function selectAvatar(mode: AvatarMode) {
+  function generateRandomName() {
     sfxMenuSelect();
-    setAvatarMode(mode);
-    setAvatarOpen(false);
+    setPlayerName(pickRandomName(playerName));
   }
 
   async function startRun() {
@@ -179,10 +152,7 @@ export default function StartMenu() {
   }
 
   return (
-    <main
-      className="start-menu flex-1 grid place-items-center p-4"
-      style={{ "--avatar-color": TYPE_COLOR[avatarMode] } as CSSProperties}
-    >
+    <main className="start-menu flex-1 grid place-items-center p-4">
       {/* —— ambient FX layers (decorative, non-interactive) —— */}
       <div className="sm-glow" aria-hidden />
       <div className="sm-stars" aria-hidden />
@@ -198,13 +168,14 @@ export default function StartMenu() {
 
           <button
             type="button"
-            className="sm-avatar-open font-hud"
-            style={{ color: TYPE_COLOR[avatarMode] }}
-            onClick={openAvatarPanel}
+            className="sm-title-start font-hud"
+            onClick={startRun}
             onMouseEnter={sfxMenuHover}
+            disabled={starting}
+            aria-busy={starting}
           >
-            <span>Select Avatar</span>
-            <strong>{AVATAR_MODES[avatarMode].title}</strong>
+            <span>Ready</span>
+            <strong>Start Game</strong>
           </button>
         </div>
 
@@ -230,16 +201,17 @@ export default function StartMenu() {
               />
 
               <button
-                className="pixel-btn pixel-btn--accent sm-start w-full"
-                onClick={startRun}
+                type="button"
+                className="pixel-btn pixel-btn--accent sm-random w-full"
+                onClick={generateRandomName}
                 disabled={starting}
-                aria-busy={starting}
+                onMouseEnter={sfxMenuHover}
               >
-                <span className="sm-start__icon" aria-hidden>
-                  ▶
+                <span className="sm-random__icon" aria-hidden>
+                  ✦
                 </span>
-                <span>Start Run</span>
-                <span className="sm-start__shine" aria-hidden />
+                <span>Random Name</span>
+                <span className="sm-random__shine" aria-hidden />
               </button>
             </section>
 
@@ -309,53 +281,6 @@ export default function StartMenu() {
         </div>
       )}
 
-      {avatarOpen && (
-        <div
-          className="sm-overlay"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeOverlay();
-          }}
-        >
-          <section
-            className="pixel-panel sm-overlay-panel sm-avatar-panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="sm-avatar-title"
-          >
-            <button
-              type="button"
-              className="sm-overlay-close"
-              aria-label="Close"
-              onClick={closeOverlay}
-            >
-              ×
-            </button>
-            <div className="sm-overlay-kicker font-hud">Choose your debate style</div>
-            <h2 id="sm-avatar-title" className="sm-overlay-title font-display">
-              Select Avatar
-            </h2>
-            <div className="sm-avatar-grid">
-              {ELEMENTS.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={`sm-avatar-card ${avatarMode === mode ? "sm-avatar-card--on" : ""}`}
-                  style={{ borderColor: TYPE_COLOR[mode] }}
-                  onClick={() => selectAvatar(mode)}
-                  onMouseEnter={sfxMenuHover}
-                >
-                  <span className="sm-avatar-card__title font-hud" style={{ color: TYPE_COLOR[mode] }}>
-                    {AVATAR_MODES[mode].title}
-                  </span>
-                  <span className="sm-avatar-card__role font-hud">{AVATAR_MODES[mode].role}</span>
-                  <span className="sm-avatar-card__copy">{AVATAR_MODES[mode].description}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

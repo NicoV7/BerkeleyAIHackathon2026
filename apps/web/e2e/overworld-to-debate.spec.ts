@@ -2,7 +2,7 @@
  * overworld-to-debate.spec.ts — full happy-path e2e for the debate spectacle.
  *
  * Flow under test (runs against the LIVE stack at http://localhost:5173):
- *   1. Load the app, type a player name, click "Start Run".
+ *   1. Load the app, type a player name, click "Start Game".
  *   2. Land in the overworld (Phaser canvas) and walk with arrow keys until
  *      walking into a red enemy fires an encounter (POST /api/runs/{id}/move
  *      returns an encounter_id -> store.setEncounter -> screen "encounter").
@@ -106,7 +106,7 @@ test.describe("overworld → debate spectacle (live stack)", () => {
     await expect(nameInput).toBeVisible({ timeout: NAV_TIMEOUT });
     await nameInput.fill(PLAYER_NAME);
 
-    const startRun = page.getByRole("button", { name: /start run/i });
+    const startRun = page.getByRole("button", { name: /start game/i });
     await expect(startRun).toBeEnabled();
 
     // --- Act: start the run → overworld. ---

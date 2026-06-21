@@ -7,7 +7,7 @@
  *
  * The demo spine (and what each beat must prove):
  *
- *   BEAT 0  new run        name entry → "Start Run" → in-run nav appears.
+ *   BEAT 0  new run        name entry → "Start Game" → in-run nav appears.
  *   BEAT 1  walk           overworld Phaser canvas accepts movement; the agent
  *                          sweeps the map until it collides with a wild enemy
  *                          and the app routes to the encounter screen. (If the
@@ -232,7 +232,7 @@ test.describe("T4 eval — full demo playthrough (live stack)", () => {
       await expect(nameInput).toBeVisible({ timeout: NAV_TIMEOUT });
       await nameInput.fill(PLAYER_NAME);
 
-      const startRun = page.getByRole("button", { name: /start run/i });
+      const startRun = page.getByRole("button", { name: /start game/i });
       await expect(startRun).toBeEnabled();
 
       // Act: start the run → in-run navigation (overworld/.../demo) renders.
