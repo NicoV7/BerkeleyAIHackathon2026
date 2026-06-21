@@ -387,7 +387,13 @@ export class OverworldScene extends Phaser.Scene {
     // Terrain atlas blits below the fallback graphics; both below actors.
     // Double-buffered: a front (visible) + back (hidden) fallback Graphics layer,
     // mirroring the two terrain RenderTextures created lazily in ensureTerrainRT.
-    this.atlasReady = this.textures.exists(ATLAS_KEY);
+    // RenderTexture.stamp() only composites under WebGL; in Canvas mode it is a
+    // silent no-op which left the whole terrain blank. Gate the atlas path on the
+    // active renderer so Canvas falls back to the procedural Graphics tiles
+    // (colored, never blank) while WebGL gets the pixel-art atlas.
+    this.atlasReady =
+      this.textures.exists(ATLAS_KEY) &&
+      this.game.renderer.type === Phaser.WEBGL;
     const g0 = this.add.graphics();
     g0.setDepth(OverworldScene.G_DEPTH[0]);
     const g1 = this.add.graphics();
