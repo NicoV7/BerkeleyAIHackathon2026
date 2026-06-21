@@ -82,20 +82,31 @@ export interface SceneRouterConfig {
   onEnterInterior?: (poi: RoutablePOI, interior: InteriorSpec) => void;
   /** Optional hook invoked when returning to the overworld at `returnTile`. */
   onExitInterior?: (returnTile: { x: number; y: number }) => void;
+  /**
+   * Optional NPC-talk callback forwarded to the interior scene so interior NPCs
+   * surface the same React dialogue as the overworld. Shape matches
+   * OverworldConfig.onNpcTalk (an NPCAnchor-like view).
+   */
+  onNpcTalk?: (npc: NPCAnchor) => void;
 }
 
 /**
  * Which Phaser scene a POI kind opens into. Keyed by the POI's interior_kind
  * hint (preferred) with a fallback by POI.kind.
  *
- * TODO(teammate Wave 3): register the real interior scenes in the Phaser game
- * config and fill these in. Until a key is present + registered, enter() no-ops
- * gracefully (the overworld keeps running).
+ * WS-3: the interior scenes (TownInteriorScene / DungeonInteriorScene — both the
+ * single InteriorScene class registered under two keys) are added to the Phaser
+ * game by OverworldScene at create() time, so these keys resolve at runtime.
+ * `town` POIs open the town interior; `den`/`cave`/`dungeon` open the dungeon
+ * interior. If a key is somehow unregistered, enter() still no-ops gracefully.
  */
 export const INTERIOR_SCENE_FOR_KIND: Record<string, string> = {
-  // town: "TownInteriorScene",     // TODO Wave 3
-  // cave: "DungeonInteriorScene",  // TODO Wave 3
-  // dungeon: "DungeonInteriorScene",
+  // by interior_kind hint:
+  town: "TownInteriorScene",
+  cave: "DungeonInteriorScene",
+  dungeon: "DungeonInteriorScene",
+  // by POI.kind fallback (when interior_kind is absent):
+  den: "DungeonInteriorScene",
 };
 
 /** Overworld scene key we return to on exit. */
@@ -157,6 +168,10 @@ export class SceneRouter {
         runId: this.cfg.runId,
         interior,
         router: this,
+        // Pass the POI's resolved interior kind so the scene picks the right
+        // palette/generator even though the interior `start` POI doesn't carry it.
+        interiorKind: poi.interior_kind ?? (poi.kind === "town" ? "town" : "cave"),
+        onNpcTalk: this.cfg.onNpcTalk,
       });
     } catch (e) {
       console.error("SceneRouter.enter failed:", e);
