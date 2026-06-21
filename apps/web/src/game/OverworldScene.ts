@@ -11,9 +11,102 @@ import Phaser from "phaser";
 
 export const TILE_SIZE = 32;
 
+// --- Kenney roguelike tileset (apps/web/public/tiles/) ---
+// Sheet is 57 cols × 31 rows of 16px tiles, margin 0 / spacing 1.
+// index = row * 57 + col (0-based). Indices below were read off the sheet and
+// cross-checked against Kenney's own sample_map.tmx. Tune if tiles look wrong.
+const SHEET = "/tiles/roguelikeSheet_transparent.png";
+const SHEET_TILE = 16; // native tile size in the sheet
+
+// Ground (full opaque tiles): plain green grass + occasional flower-grass.
+const GRASS_INDICES = [855, 856, 912, 913];
+const FLOWER_INDICES = [541, 542, 543, 544]; // grass tiles with a single flower
+const FLOWER_CHANCE = 0.12; // fraction of walkable tiles that get a flower
+const DIRT_INDEX = 462; // seamless center of the brown dirt 3×3 autotile (paths)
+
+// Blocked-tile props (transparent overlays that sit on the grass below):
+// brown trees so obstacles read clearly against the green grass.
+//   527 brown round tree · 530 brown pine · 540 bare/dead tree · 533 brown bush
+const PROP_INDICES = [527, 530, 540, 533];
+
+// --- Kenney roguelike CHARACTER sheet (apps/web/public/sprites/) ---
+// 54 cols × 12 rows of 16px tiles, margin 0 / spacing 1. index = row*54 + col.
+// These torso frames read as little head+body characters. Tune if needed.
+const CHAR_SHEET = "/sprites/roguelikeChar_transparent.png";
+const PLAYER_FRAME = 10; // teal/cyan villager (matches --party)
+const ENEMY_FRAME = 7; // orange villager (warm, contrasts the player)
+
+/**
+ * Deterministic per-tile pseudo-random in [0,1) — seeded by (x,y) so terrain
+ * variety is STABLE across rebuilds (no flicker if the map is re-drawn). `salt`
+ * decorrelates independent choices (grass vs flower vs prop) on the same tile.
+ */
+function tileRand(x: number, y: number, salt = 0): number {
+  let h = (x * 374761393 + y * 668265263 + salt * 2246822519) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function pick<T>(arr: T[], r: number): T {
+  return arr[Math.min(arr.length - 1, Math.floor(r * arr.length))];
+}
+
+/** Small seeded PRNG (mulberry32) for stable, map-wide procedural choices. */
+function mulberry32(seed: number): () => number {
+  return function () {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Carve a cosmetic dirt-path network as a set of "x,y" keys. A horizontal
+ * drunkard's-walk across the map plus a vertical one for a crossroads feel.
+ * Seeded by map size so it's deterministic (no flicker) and purely visual —
+ * the API's blocked grid is untouched, so path tiles stay walkable.
+ */
+function buildPathSet(width: number, height: number): Set<string> {
+  const path = new Set<string>();
+  const rng = mulberry32((width * 73856093) ^ (height * 19349663) ^ 0xc0ffee);
+
+  // Horizontal route, left edge to right edge.
+  let y = 1 + Math.floor(rng() * (height - 2));
+  for (let x = 0; x < width; x++) {
+    path.add(`${x},${y}`);
+    if (rng() < 0.3) path.add(`${x},${Math.min(height - 1, y + 1)}`); // 2-wide
+    const r = rng();
+    if (r < 0.33) y = Math.max(1, y - 1);
+    else if (r > 0.66) y = Math.min(height - 2, y + 1);
+  }
+
+  // Vertical route, top edge to bottom edge, for a crossroads.
+  let x = 1 + Math.floor(rng() * (width - 2));
+  for (let yy = 0; yy < height; yy++) {
+    path.add(`${x},${yy}`);
+    if (rng() < 0.3) path.add(`${Math.min(width - 1, x + 1)},${yy}`);
+    const r = rng();
+    if (r < 0.33) x = Math.max(1, x - 1);
+    else if (r > 0.66) x = Math.min(width - 2, x + 1);
+  }
+
+  return path;
+}
+
 export interface OverworldConfig {
   runId: string;
   onEncounter: (wildId: string) => void;
+  /** Fired once the map loads — lets the React HUD draw the minimap. */
+  onMapLoaded?: (m: {
+    width: number;
+    height: number;
+    tiles: number[][];
+    enemies: { id: string; x: number; y: number }[];
+  }) => void;
+  /** Fired on initial placement and every move — drives the minimap dot. */
+  onPlayerMove?: (x: number, y: number) => void;
 }
 
 interface TileEnemy {
@@ -46,6 +139,9 @@ export class OverworldScene extends Phaser.Scene {
 
   // Graphics objects
   private tileGraphics!: Phaser.GameObjects.Graphics;
+  private tilemap: Phaser.Tilemaps.Tilemap | null = null;
+  private shadowGfx: Phaser.GameObjects.Graphics | null = null;
+  private terrainBuilt = false;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private enemySprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
 
@@ -75,7 +171,22 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   preload() {
-    // No external assets — everything is drawn procedurally.
+    // Kenney roguelike tileset for ground + decoration. Sprites are still
+    // baked procedurally in bakeSprites(); only the terrain uses real art.
+    this.load.spritesheet("rogue", SHEET, {
+      frameWidth: SHEET_TILE,
+      frameHeight: SHEET_TILE,
+      margin: 0,
+      spacing: 1,
+    });
+    // Kenney character sheet for player/enemy sprites (falls back to baked
+    // blobs if this 404s — see create()/drawEnemies guards on "chars").
+    this.load.spritesheet("chars", CHAR_SHEET, {
+      frameWidth: SHEET_TILE,
+      frameHeight: SHEET_TILE,
+      margin: 0,
+      spacing: 1,
+    });
   }
 
   /**
@@ -144,9 +255,11 @@ export class OverworldScene extends Phaser.Scene {
     // Bake the procedural pixel-art sprites once (no external assets).
     this.bakeSprites();
 
-    // Player sprite (cyan hero — matches --party). pixelArt upscaling keeps it crisp.
-    this.playerSprite = this.add.sprite(0, 0, "player");
-    this.playerSprite.setDisplaySize(TILE_SIZE - 4, TILE_SIZE - 4);
+    // Player sprite — Kenney character if loaded, else the baked cyan blob.
+    this.playerSprite = this.textures.exists("chars")
+      ? this.add.sprite(0, 0, "chars", PLAYER_FRAME)
+      : this.add.sprite(0, 0, "player");
+    this.playerSprite.setDisplaySize(TILE_SIZE, TILE_SIZE);
     this.playerSprite.setDepth(10);
 
     // Input
@@ -158,8 +271,28 @@ export class OverworldScene extends Phaser.Scene {
       right: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
 
+    // Camera zoom keeps ~14 tiles visible vertically; recompute on canvas resize
+    // so the world stays a comfortable size at any window dimension.
+    this.applyZoom();
+    this.scale.on("resize", this.applyZoom, this);
+
     // Load initial map state
     await this.fetchMapAndDraw();
+  }
+
+  /**
+   * Zoom so the map COVERS the viewport (no dark margins) — fills the shorter
+   * axis and scrolls the longer one. Falls back to default 20×15 until the map
+   * loads. Clamped so tiles never get absurdly large/small.
+   */
+  private applyZoom() {
+    const view = this.scale.gameSize;
+    const vw = view.width || this.cameras.main.width;
+    const vh = view.height || this.cameras.main.height;
+    const worldW = (this.mapData?.width ?? 20) * TILE_SIZE;
+    const worldH = (this.mapData?.height ?? 15) * TILE_SIZE;
+    const z = Phaser.Math.Clamp(Math.max(vw / worldW, vh / worldH), 1, 4);
+    this.cameras.main.setZoom(z);
   }
 
   private async fetchMapAndDraw() {
@@ -174,15 +307,108 @@ export class OverworldScene extends Phaser.Scene {
       this.mapData = data;
       this.px = this.mapData.player_x;
       this.py = this.mapData.player_y;
-      this.drawMap();
+      // Build the world ONCE; subsequent refreshes only move sprites. This is
+      // what lets per-tile variety be stable (no flicker) and keeps /move cheap.
+      this.buildTerrain();
       this.drawEnemies(this.mapData.enemies);
       this.positionPlayer();
+      // Now that map dimensions are known, fit the zoom to cover the viewport.
+      this.applyZoom();
+      // Hand the grid + enemy positions to the React HUD for the minimap.
+      this.cfg.onMapLoaded?.({
+        width: this.mapData.width,
+        height: this.mapData.height,
+        tiles: this.mapData.tiles,
+        enemies: this.mapData.enemies.map((e) => ({ id: e.id, x: e.x, y: e.y })),
+      });
     } catch (e) {
       console.error("Failed to fetch map:", e);
     }
   }
 
-  private drawMap() {
+  /**
+   * Paint the whole world a single time with the Kenney roguelike tileset:
+   * - "ground" layer (depth 0): seeded grass + occasional flower-grass.
+   * - shadow graphics (depth 1): a soft ellipse under each tall prop ("grounds"
+   *   it so trees don't look like they float).
+   * - "decor" layer (depth 2): a seeded tree/bush on every blocked tile.
+   * 16px tiles are scaled to TILE_SIZE (32) so they align with the scene's
+   * existing player/enemy/camera coordinate system. Falls back to procedural
+   * rectangles if the PNG failed to load.
+   */
+  private buildTerrain() {
+    if (!this.mapData || this.terrainBuilt) return;
+
+    if (!this.textures.exists("rogue")) {
+      this.drawProceduralMap();
+      this.terrainBuilt = true;
+      return;
+    }
+
+    const { width, height, tiles } = this.mapData;
+
+    const map = this.make.tilemap({
+      tileWidth: SHEET_TILE,
+      tileHeight: SHEET_TILE,
+      width,
+      height,
+    });
+    this.tilemap = map;
+
+    const tileset = map.addTilesetImage(
+      "rogue",
+      "rogue",
+      SHEET_TILE,
+      SHEET_TILE,
+      0,
+      1
+    )!;
+    const scale = TILE_SIZE / SHEET_TILE; // 16 -> 32
+
+    const ground = map.createBlankLayer("ground", tileset)!;
+    ground.setScale(scale).setDepth(0);
+
+    const decor = map.createBlankLayer("decor", tileset)!;
+    decor.setScale(scale).setDepth(2);
+
+    const shadows = this.add.graphics();
+    shadows.setDepth(1);
+    this.shadowGfx = shadows;
+
+    // Cosmetic dirt-path network (walkable; purely a ground-layer paint job).
+    const pathSet = buildPathSet(width, height);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const blocked = tiles[y][x] === 1;
+        const onPath = pathSet.has(`${x},${y}`);
+
+        // Ground is ALWAYS opaque — grass normally, dirt where a path runs.
+        // Both flowers and trees are transparent overlays that sit on top.
+        const groundIdx =
+          onPath && !blocked ? DIRT_INDEX : pick(GRASS_INDICES, tileRand(x, y, 3));
+        ground.putTileAt(groundIdx, x, y);
+
+        if (blocked) {
+          // Grounding shadow at the prop's base.
+          const cx = x * TILE_SIZE + TILE_SIZE / 2;
+          const cy = y * TILE_SIZE + TILE_SIZE * 0.82;
+          shadows.fillStyle(0x000000, 0.22);
+          shadows.fillEllipse(cx, cy, TILE_SIZE * 0.72, TILE_SIZE * 0.3);
+          // Seeded brown tree — obstacles stand out against the grass.
+          decor.putTileAt(pick(PROP_INDICES, tileRand(x, y, 5)), x, y);
+        } else if (!onPath && tileRand(x, y, 7) < FLOWER_CHANCE) {
+          // Seeded flower scatter on the overlay, above the grass (not on paths).
+          decor.putTileAt(pick(FLOWER_INDICES, tileRand(x, y, 11)), x, y);
+        }
+      }
+    }
+
+    this.terrainBuilt = true;
+  }
+
+  /** Fallback terrain (no art): desaturated grass / darker walls. */
+  private drawProceduralMap() {
     if (!this.mapData) return;
     const g = this.tileGraphics;
     g.clear();
@@ -223,8 +449,11 @@ export class OverworldScene extends Phaser.Scene {
       if (!this.enemySprites.has(enemy.id)) {
         const ex = enemy.x * TILE_SIZE + TILE_SIZE / 2;
         const ey = enemy.y * TILE_SIZE + TILE_SIZE / 2;
-        const spr = this.add.sprite(ex, ey, "enemy");
-        spr.setDisplaySize(TILE_SIZE - 6, TILE_SIZE - 6);
+        // Kenney character if loaded, else the baked rose blob.
+        const spr = this.textures.exists("chars")
+          ? this.add.sprite(ex, ey, "chars", ENEMY_FRAME)
+          : this.add.sprite(ex, ey, "enemy");
+        spr.setDisplaySize(TILE_SIZE, TILE_SIZE);
         spr.setDepth(5);
 
         // Pulsing animation (relative to the baked display scale)
@@ -248,6 +477,7 @@ export class OverworldScene extends Phaser.Scene {
     const wx = this.px * TILE_SIZE + TILE_SIZE / 2;
     const wy = this.py * TILE_SIZE + TILE_SIZE / 2;
     this.playerSprite.setPosition(wx, wy);
+    this.cfg.onPlayerMove?.(this.px, this.py);
 
     // Camera follows player with padding
     if (this.mapData) {
@@ -353,7 +583,17 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   destroy() {
+    this.scale.off("resize", this.applyZoom, this);
     this.enemySprites.forEach((spr) => spr.destroy());
     this.enemySprites.clear();
+    if (this.shadowGfx) {
+      this.shadowGfx.destroy();
+      this.shadowGfx = null;
+    }
+    if (this.tilemap) {
+      this.tilemap.destroy();
+      this.tilemap = null;
+    }
+    this.terrainBuilt = false;
   }
 }
