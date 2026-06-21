@@ -16,6 +16,7 @@ hydration scheduler swallows any local failure so the endpoint never 500s.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import random
 from typing import Annotated, Optional
@@ -37,9 +38,9 @@ from app.db.session import get_session
 from app.schemas import (
     GachaPullRequest,
     GachaPullResult,
-    MonsterSummary,
     SummonItemSummary,
 )
+from app.serializers import monster_summary
 
 log = logging.getLogger("uvicorn.error")
 
@@ -99,28 +100,6 @@ def _pick_persona(personas: list[Persona], tier: str, rng: random.Random) -> Per
 # ---------------------------------------------------------------------------
 
 
-def _monster_summary(m: Monster) -> MonsterSummary:
-    """Mirror MonsterSummary projection from party.py but include gacha-wave fields."""
-    return MonsterSummary(
-        id=m.id,
-        name=m.name,
-        type=m.type.value if hasattr(m.type, "value") else str(m.type),
-        owner=m.owner.value if hasattr(m.owner, "value") else str(m.owner),
-        level=m.level,
-        xp=m.xp,
-        max_hp=m.max_hp,
-        evolution_stage=m.evolution_stage,
-        skills=m.skills or [],
-        atk=getattr(m, "atk", 10),
-        def_=getattr(m, "def_", 10),
-        mp=getattr(m, "mp", 50),
-        max_mp=getattr(m, "max_mp", 50),
-        domain=getattr(m, "domain", MonsterDomain.GENERAL),
-        wiki_url=getattr(m, "wiki_url", None),
-        wiki_hydrated=getattr(m, "wiki_hydrated", False),
-    )
-
-
 def _summon_summary(item: SummonItem) -> SummonItemSummary:
     return SummonItemSummary(
         id=item.id,
@@ -153,6 +132,15 @@ def _coerce_type(value: object) -> DebateType:
     except Exception:  # noqa: BLE001
         # Final fallback so a bad seed row can never 500 the pull.
         return DebateType.logos
+
+
+def _rng_for_pull(run_id: str, body: GachaPullRequest) -> random.Random:
+    """Return an RNG for a pull, deterministic only when the request asks for it."""
+    if body.seed is None:
+        return random.Random()
+    material = f"{run_id}:{body.summon_item_id or 'starter'}:{body.seed}".encode()
+    seed = int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
+    return random.Random(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +184,7 @@ async def pull(
             detail="Persona catalog not seeded; cannot pull",
         )
 
-    rng = random.Random()
+    rng = _rng_for_pull(run_id, body)
     tier = _roll_tier(_weights_for_item(item_tier), rng)
     persona = _pick_persona(personas, tier, rng)
 
@@ -241,7 +229,7 @@ async def pull(
     _schedule_hydration(monster.id, persona.wiki_url, persona.tagline or "")
 
     return GachaPullResult(
-        monster=_monster_summary(monster),
+        monster=monster_summary(monster),
         persona_key=persona.key,
         persona_tier=tier,
     )

@@ -14,15 +14,17 @@ import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import asc, select
+from sqlalchemy import asc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.models import Monster, TrainingArtifact
+from app.db.models import Item, ItemKind, Monster, TrainingArtifact
 from app.db.session import get_session
 from app.schemas import (
     PreferenceBatch,
     PreferenceSubmit,
+    QuickTrainRequest,
+    QuickTrainResult,
     Scorecard,
     TrainingHistory,
     TrainingHistoryEntry,
@@ -106,6 +108,126 @@ async def train_grpo(
     monster = await _get_monster(session, monster_id)
     batch = await grpo_hitl.start_grpo(session, monster, model=_MODEL)
     return batch
+
+
+# Map a training ItemKind -> (Monster stat column, effect-JSON key). The column
+# names mirror the economy use-path so quick-train and the lead-member train apply
+# the SAME stat semantics. ``"def"`` is quoted (reserved word) for raw SQL.
+_TRAINING_STAT: dict[ItemKind, tuple[str, str]] = {
+    ItemKind.training_atk: ("atk", "atk"),
+    ItemKind.training_def: ('"def"', "def"),
+    ItemKind.training_mp: ("max_mp", "mp"),
+}
+
+
+@router.post("/training/quick", response_model=QuickTrainResult)
+async def quick_train(
+    body: QuickTrainRequest,
+    session: AsyncSession = Depends(get_session),
+) -> QuickTrainResult:
+    """Consume a training item to INSTANTLY boost a monster's stats (WS-2/#16).
+
+    NO self-play, NO LLM, NO benchmark — the item's catalog ``effect`` JSON is
+    applied DIRECTLY to the monster's stat columns (atk / def / max_mp) plus a
+    tiny matching genome-power tweak, inside one atomic transaction:
+
+      1. Atomic inventory decrement (``WHERE qty >= 1``) — the SAME conditional
+         consume the economy use-path uses, so a double-tap can't over-consume.
+      2. Resolve item kind -> stat column + boost amount from the catalog effect.
+      3. ``UPDATE monsters SET <col> = <col> + :amt`` (durable, concurrency-safe).
+
+    Rejects (no consume) if the item is not owned, not a training item, or the
+    monster doesn't exist.
+    """
+    monster = await _get_monster(session, body.monster_id)
+    run_id = monster.run_id
+
+    item = await session.get(Item, body.item_key)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    kind = item.kind if isinstance(item.kind, ItemKind) else ItemKind(str(item.kind))
+    if kind not in _TRAINING_STAT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not a training item: {body.item_key}",
+        )
+
+    # ---- 1. Atomic decrement: reject if not owned (no consume, no boost) ----
+    dec = await session.execute(
+        text(
+            "UPDATE player_inventory SET qty = qty - 1 "
+            "WHERE run_id = :rid AND item_key = :ik AND qty >= 1"
+        ),
+        {"rid": run_id, "ik": body.item_key},
+    )
+    if dec.rowcount != 1:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail=f"Item not in inventory: {body.item_key}"
+        )
+
+    # ---- 2. Resolve boost + 3. Apply DIRECTLY to the monster stat column ----
+    col, effect_key = _TRAINING_STAT[kind]
+    amount = int((item.effect or {}).get(effect_key, 0))
+    if amount > 0:
+        await session.execute(
+            text(f"UPDATE monsters SET {col} = {col} + :amt WHERE id = :mid"),
+            {"amt": amount, "mid": body.monster_id},
+        )
+        # Tiny matching genome-power tweak (no training run): nudges the skill
+        # power so the boost shows up in damage math too. Mutated directly here —
+        # never via selfplay.py.
+        _bump_genome_power(monster, amount)
+        session.add(monster)
+
+    await session.commit()
+    await session.refresh(monster)
+
+    remaining = await _inventory_qty(session, run_id, body.item_key)
+    label = col.strip('"')
+    return QuickTrainResult(
+        monster_id=body.monster_id,
+        item_key=body.item_key,
+        applied={label: amount},
+        stats={
+            "atk": int(monster.atk),
+            "def": int(monster.def_),
+            "mp": int(monster.mp),
+            "max_mp": int(monster.max_mp),
+        },
+        remaining_qty=remaining,
+        message=f"{label.upper()} +{amount} (instant, no training run).",
+    )
+
+
+def _bump_genome_power(monster: Monster, amount: int) -> None:
+    """Apply a small, bounded genome ``power`` nudge for a quick-train boost.
+
+    Mutates the monster's persona/harness genome in place (additive). Best-effort
+    and bounded so repeated quick-trains can't inflate power unboundedly. No LLM
+    or self-play is involved — this is a direct field tweak.
+    """
+    try:
+        harness = dict(getattr(monster, "harness", {}) or {})
+        cur = float(harness.get("power", 1.0))
+        harness["power"] = round(min(cur + 0.01 * amount, 2.0), 4)
+        monster.harness = harness
+    except Exception:  # noqa: BLE001 — genome tweak is best-effort
+        pass
+
+
+async def _inventory_qty(session: AsyncSession, run_id: str, item_key: str) -> int:
+    """Owned quantity of an item for a run (0 if none)."""
+    res = await session.execute(
+        text(
+            "SELECT qty FROM player_inventory "
+            "WHERE run_id = :rid AND item_key = :ik"
+        ),
+        {"rid": run_id, "ik": item_key},
+    )
+    row = res.first()
+    return int(row[0]) if row is not None else 0
 
 
 @router.post("/training/{job_id}/preference", response_model=TrainJob)

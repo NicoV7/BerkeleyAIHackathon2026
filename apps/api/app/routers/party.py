@@ -16,9 +16,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.db.models import GambitRule, Monster, MonsterDomain
+from app.db.models import GambitRule, Monster
 from app.db.session import get_session
 from app.schemas import GambitList, GambitRuleModel, MonsterSummary
+from app.serializers import monster_summary
 
 router = APIRouter(prefix="/api", tags=["party"])
 
@@ -31,26 +32,8 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 
 
 def _monster_summary(m: Monster) -> MonsterSummary:
-    # Gacha-wave stats are surfaced here too so the FE polling endpoint
-    # (`GET /api/monsters/{id}`) carries `wiki_hydrated` for the hydrate gate.
-    return MonsterSummary(
-        id=m.id,
-        name=m.name,
-        type=m.type.value if hasattr(m.type, "value") else str(m.type),
-        owner=m.owner.value if hasattr(m.owner, "value") else str(m.owner),
-        level=m.level,
-        xp=m.xp,
-        max_hp=m.max_hp,
-        evolution_stage=m.evolution_stage,
-        skills=m.skills or [],
-        atk=getattr(m, "atk", 10),
-        def_=getattr(m, "def_", 10),
-        mp=getattr(m, "mp", 50),
-        max_mp=getattr(m, "max_mp", 50),
-        domain=getattr(m, "domain", MonsterDomain.GENERAL),
-        wiki_url=getattr(m, "wiki_url", None),
-        wiki_hydrated=getattr(m, "wiki_hydrated", False),
-    )
+    """Return the shared monster projection used by polling and party routes."""
+    return monster_summary(m)
 
 
 # ---------------------------------------------------------------------------

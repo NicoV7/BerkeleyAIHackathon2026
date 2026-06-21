@@ -52,6 +52,9 @@ class MonsterSummary(BaseModel):
     domain: str = "GENERAL"
     wiki_url: Optional[str] = None
     wiki_hydrated: bool = False
+    # Persona voice/tagline is additive but important for gacha reveal and battle
+    # prompt visibility. Older responses can omit it and still validate.
+    persona: dict[str, Any] = Field(default_factory=dict)
 
     # `def_` is the Python attribute; the JSON wire format uses the natural
     # keyword `def` so the FE never sees the trailing underscore.
@@ -68,6 +71,10 @@ class RunState(BaseModel):
     player_y: int
     status: str
     party: list[MonsterSummary] = []
+    # Economy (WS-1): coin wallet. Optional/additive so existing RunState
+    # constructors (map.py / runs.py) keep working without change; the primary
+    # wallet surface is GET /api/runs/{id}/wallet.
+    coins: int = 0
 
 
 class TileEnemy(BaseModel):
@@ -221,6 +228,8 @@ class Utterance(BaseModel):
     skill_used: Optional[str] = None
     text: str
     ts: float
+    server_ts: Optional[float] = None
+    elapsed_ms: Optional[int] = None
 
 
 class JudgeVerdict(BaseModel):
@@ -317,6 +326,10 @@ class GachaPullRequest(BaseModel):
     the persona roll (rare items unlock the rare tier, etc.).
     """
     summon_item_id: Optional[str] = None
+    seed: Optional[int] = Field(
+        default=None,
+        description="Optional deterministic seed for test/demo reproducibility",
+    )
 
 
 class GachaPullResult(BaseModel):
@@ -330,6 +343,86 @@ class SummonItemSummary(BaseModel):
     run_id: str
     tier: str
     consumed: bool
+
+
+# ---- Economy (WS-1: coins + items + inventory + shop) ----
+
+
+class WalletState(BaseModel):
+    """A run's coin balance."""
+
+    run_id: str
+    coins: int
+
+
+class InventoryItem(BaseModel):
+    """One owned item line for a run (joined with its catalog metadata)."""
+
+    item_key: str
+    name: str
+    kind: str
+    qty: int
+    effect: dict[str, Any] = {}
+    price: int = 0
+
+
+class UseItemRequest(BaseModel):
+    """Consume one unit of an owned item, applying its effect."""
+
+    item_key: str
+
+
+class UseItemResult(BaseModel):
+    """Outcome of consuming an item.
+
+    `applied` describes the effect that was applied (e.g. {"hp": 40}); `target`
+    is the monster id the effect hit (None for camp_token / banked effects).
+    `remaining_qty` is the item count left after the use.
+    """
+
+    run_id: str
+    item_key: str
+    applied: dict[str, Any] = {}
+    target: Optional[str] = None
+    remaining_qty: int = 0
+    message: str = ""
+
+
+class ShopItem(BaseModel):
+    """One purchasable line in an NPC's shop."""
+
+    item_key: str
+    name: str
+    kind: str
+    price: int
+    qty: int
+    effect: dict[str, Any] = {}
+
+
+class ShopState(BaseModel):
+    npc_id: str
+    items: list[ShopItem] = []
+
+
+class BuyItemRequest(BaseModel):
+    item_key: str
+    qty: int = Field(default=1, ge=1, description="Number of units to buy")
+
+
+class BuyItemResult(BaseModel):
+    """Outcome of a shop purchase.
+
+    `spent` is the total coins deducted; `coins` is the wallet balance after the
+    buy; `owned_qty` is the run's inventory count for the item after the buy.
+    """
+
+    run_id: str
+    npc_id: str
+    item_key: str
+    qty: int
+    spent: int
+    coins: int
+    owned_qty: int
 
 
 class MemoryRecallResult(BaseModel):
@@ -388,6 +481,29 @@ class MemoryQueryResult(BaseModel):
 
 class TrainRequest(BaseModel):
     rounds: int = 4
+
+
+class QuickTrainRequest(BaseModel):
+    """Consume a training item to instantly boost a specific monster (WS-2/#16).
+
+    No self-play, no LLM — the item's catalog effect is applied DIRECTLY to the
+    monster's stat columns. ``item_key`` must be a training item
+    (training_atk / training_def / training_mp).
+    """
+
+    monster_id: str
+    item_key: str
+
+
+class QuickTrainResult(BaseModel):
+    """Outcome of a quick-train: which stats moved and the new values."""
+
+    monster_id: str
+    item_key: str
+    applied: dict[str, int] = {}     # e.g. {"atk": 3}
+    stats: dict[str, int] = {}       # post-train {"atk","def","mp","max_mp"}
+    remaining_qty: int = 0
+    message: str = ""
 
 
 class Scorecard(BaseModel):

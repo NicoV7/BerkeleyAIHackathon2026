@@ -19,22 +19,25 @@ Tile legend (the map grid):
 """
 from __future__ import annotations
 
+import logging
 import random
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models import Run
 from app.db.session import get_session
-from app.schemas import NPCAnchor, POI, Region, WorldSpecLite
+from app.schemas import MonsterSummary, NPCAnchor, POI, Region, WorldSpecLite
 from app.world import boss_profile, event_log, figures, npcs, quests
 from app.world.algorithms import INTERIOR_KINDS, get_generator
 from app.world.algorithms.base import BLOCKED_TILES
 from app.world.algorithms.biomes import BiomeGenerator
+
+log = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api", tags=["world"])
 
@@ -368,6 +371,10 @@ WorldEventKind = Literal[
     "region_entered",
     "battle_won",
     "fallacy_flagged",
+    # WS-2 quest-completing events.
+    "enemy_killed",
+    "item_found",
+    "npc_debated",
 ]
 
 
@@ -376,6 +383,40 @@ class WorldEventRequest(BaseModel):
 
     kind: WorldEventKind
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class ItemPickupRequest(BaseModel):
+    """Pick up an item from the world (the canonical ``item_found`` emit point)."""
+
+    item_key: str
+    qty: int = 1
+    # When False, only the world event fires (the item is granted elsewhere); the
+    # default grants the item into inventory AND fires the event in one call.
+    grant: bool = True
+
+
+class NpcDebatedRequest(BaseModel):
+    """Record that the player won a debate against an NPC (``npc_debated`` emit)."""
+
+    npc_id: str
+
+
+class OfferTypedQuestRequest(BaseModel):
+    """Offer any quest objective from an NPC (hunt/find/debate, not just clears)."""
+
+    npc_id: str
+    objective: Literal["hunt_enemy", "find_item", "debate_npc", "defeat_boss"]
+    target: str
+    target_name: Optional[str] = None
+    target_xy: Optional[dict[str, int]] = None
+
+
+class FirstPullResponse(BaseModel):
+    """Result of the onboarding first-agent grant."""
+
+    monster: MonsterSummary
+    granted: bool  # True if THIS call created the agent; False if already granted
+    quest: Optional[dict[str, Any]] = None
 
 
 async def _get_run_or_404(
@@ -692,10 +733,41 @@ async def accept_quest(
 async def list_run_quests(
     run_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    active_only: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
-    """Return accepted/completed quests for a run."""
+    """Return quests for a run, each with the minimap-pin contract.
+
+    Each quest carries: ``id``, ``type`` (the objective), ``title``,
+    ``description``, ``status`` ("accepted" | "completed"), and ``target_xy``
+    ``{x, y}`` POI coordinate for the minimap pin when applicable (None when the
+    target has no resolvable position, e.g. an item-find with no fixed POI).
+
+    The legacy ``quest_id``/``objective`` keys are kept alongside ``id``/``type``
+    so existing consumers (NPC dialogue, tests) keep working.
+    """
     await _get_run_or_404(run_id, session)
-    return {"quests": await quests.list_quests(run_id)}
+    raw = await quests.list_quests(run_id)
+    out: list[dict[str, Any]] = []
+    for q in raw:
+        status = q.get("status", "accepted")
+        if active_only and status != "accepted":
+            continue
+        out.append(
+            {
+                "id": q.get("quest_id"),
+                "quest_id": q.get("quest_id"),
+                "type": q.get("objective"),
+                "objective": q.get("objective"),
+                "title": q.get("title", ""),
+                "description": q.get("description", ""),
+                "status": status,
+                "target": q.get("target"),
+                "target_xy": q.get("target_xy"),
+                "reward": q.get("reward", ""),
+                "reward_spec": q.get("reward_spec", {}),
+            }
+        )
+    return {"quests": out}
 
 
 @router.post("/runs/{run_id}/events")
@@ -723,4 +795,137 @@ async def append_world_event(
         evt = await event_log.append(run_id, body.kind, **data)
 
     completed = await quests.maybe_complete_quests(run_id, body.kind, **data)
-    return {"event": _event_to_dict(evt), "completed_quests": completed}
+    rewards = await _payout_quest_rewards(session, run_id, completed)
+    return {
+        "event": _event_to_dict(evt),
+        "completed_quests": completed,
+        "rewards": rewards,
+    }
+
+
+async def _payout_quest_rewards(
+    session: AsyncSession, run_id: str, completed: list[str]
+) -> dict[str, Any]:
+    """Pay coins/items for each newly-completed quest via the economy award helper.
+
+    Reads the reward_spec snapshotted on each ``quest_completed`` event, then
+    credits coins + grants items through ``app.economy.award`` (the SAME atomic
+    SQL path the shop uses). Best-effort: a payout failure never breaks the event
+    append. Returns ``{quest_id: {"coins": int, "items": {key: qty}}}``.
+    """
+    if not completed:
+        return {}
+    try:
+        from app.economy.award import award as award_reward
+
+        specs = await quests.completed_reward_specs(run_id, completed)
+        paid: dict[str, Any] = {}
+        for qid in completed:
+            spec = specs.get(qid) or {}
+            if spec:
+                paid[qid] = await award_reward(session, run_id, spec)
+        await session.commit()
+        return paid
+    except Exception as e:  # noqa: BLE001 — reward payout must never 500 the event
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001 — fake/closed session has no rollback
+            pass
+        log.info("quest reward payout skipped (%s)", e)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# WS-2 quest emit points — item pickup + npc-debated + typed quest offers
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/items/pickup")
+async def pickup_item(
+    run_id: str,
+    body: ItemPickupRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Pick up a world item: grant it to inventory + fire the ``item_found`` event.
+
+    This is the canonical emit point for ``item_found`` — completing ``find_item``
+    quests (and paying their rewards). Granting reuses the SAME atomic economy
+    award helper as the shop/quest payout. When ``grant`` is False, only the event
+    fires (the item is assumed granted elsewhere).
+    """
+    await _get_run_or_404(run_id, session)
+
+    owned_qty = 0
+    if body.grant:
+        from app.economy.award import grant_item
+
+        try:
+            owned_qty = await grant_item(session, run_id, body.item_key, body.qty)
+            await session.commit()
+        except Exception as e:  # noqa: BLE001 — a bad item key still fires the event
+            await session.rollback()
+            log.info("item pickup grant skipped (%s)", e)
+
+    evt = await event_log.append(run_id, "item_found", item_key=body.item_key)
+    completed = await quests.maybe_complete_quests(
+        run_id, "item_found", item_key=body.item_key
+    )
+    rewards = await _payout_quest_rewards(session, run_id, completed)
+    return {
+        "event": _event_to_dict(evt),
+        "item_key": body.item_key,
+        "owned_qty": owned_qty,
+        "completed_quests": completed,
+        "rewards": rewards,
+    }
+
+
+@router.post("/runs/{run_id}/npc/{npc_id}/debated")
+async def npc_debated(
+    run_id: str,
+    npc_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Record a won debate against an NPC: fires ``npc_debated`` + completes quests.
+
+    The canonical emit point for ``npc_debated`` — completing ``debate_npc`` quests
+    and paying their rewards. Idempotent at the quest level (a second call after
+    completion is a no-op for that quest).
+    """
+    await _get_run_or_404(run_id, session)
+    evt = await event_log.append(run_id, "npc_debated", npc_id=npc_id)
+    completed = await quests.maybe_complete_quests(
+        run_id, "npc_debated", npc_id=npc_id
+    )
+    rewards = await _payout_quest_rewards(session, run_id, completed)
+    return {
+        "event": _event_to_dict(evt),
+        "npc_id": npc_id,
+        "completed_quests": completed,
+        "rewards": rewards,
+    }
+
+
+@router.post("/runs/{run_id}/quest/offer")
+async def offer_typed_quest(
+    run_id: str,
+    body: OfferTypedQuestRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Offer ANY quest objective from an NPC (hunt/find/debate/boss).
+
+    Complements ``POST /quest/accept`` (which only offers dungeon clears from
+    canonical state). Idempotent: re-offering the same (npc, objective, target)
+    returns the already-accepted quest. ``target_xy`` lets the NPC pin a minimap
+    POI for hunt/find quests; dungeon-shaped ``kind:x:y`` targets self-resolve.
+    """
+    await _get_run_or_404(run_id, session)
+    quest = await quests.offer_typed_quest(
+        run_id,
+        body.npc_id,
+        body.objective,
+        body.target,
+        target_name=body.target_name,
+        target_xy=body.target_xy,
+    )
+    return {"quest": quest.to_dict()}

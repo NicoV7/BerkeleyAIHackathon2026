@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import Monster, MonsterOwner, Run, RunStatus
 from app.db.session import get_session
 from app.party.generator import generate_wild, roll_starter_party
@@ -35,6 +36,7 @@ from app.schemas import (
     RunState,
     TileEnemy,
 )
+from app.serializers import monster_summary
 from app.world.algorithms.base import BLOCKED_TILES
 
 router = APIRouter(prefix="/api", tags=["map"])
@@ -55,17 +57,8 @@ WILD_COUNT = 32  # wild enemies placed globally per run
 
 
 def _monster_to_summary(m: Monster) -> MonsterSummary:
-    return MonsterSummary(
-        id=m.id,
-        name=m.name,
-        type=m.type.value,
-        owner=m.owner.value,
-        level=m.level,
-        xp=m.xp,
-        max_hp=m.max_hp,
-        evolution_stage=m.evolution_stage,
-        skills=m.skills or [],
-    )
+    """Return the shared monster projection used in run state payloads."""
+    return monster_summary(m)
 
 
 def _generate_tiles(seed: int) -> list[list[int]]:
@@ -249,8 +242,14 @@ async def create_run(
     await session.commit()
     await session.refresh(run)
 
-    party = await roll_starter_party(session, run.id, seed=body.seed)
-    # Also seed wild enemies (so they exist in DB for map queries)
+    # Onboarding (WS-2): a NEW run starts EMPTY by default — the scripted intro
+    # NPC grants the first agent via POST /api/runs/{id}/onboarding/first-pull.
+    # The legacy auto-rolled starter party is gated behind `empty_start_enabled`.
+    if settings.empty_start_enabled:
+        party: list[Monster] = []
+    else:
+        party = await roll_starter_party(session, run.id, seed=body.seed)
+    # Always seed wild enemies (so they exist in DB for map queries)
     await generate_wild(session, run.id, n=WILD_COUNT, seed=body.seed)
 
     return RunState(

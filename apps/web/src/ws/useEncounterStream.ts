@@ -32,6 +32,8 @@ export interface Utterance {
   skill_used?: string | null;
   text: string;
   ts: number;
+  server_ts?: number;
+  elapsed_ms?: number;
 }
 
 export interface JudgeVerdict {
@@ -65,6 +67,9 @@ export interface TokenDelta {
   text: string;
   /** Optional role hint; the view also resolves role/color from the roster. */
   actor_role?: "party" | "enemy" | "judge";
+  /** Server wall-clock timestamp and elapsed generation time for latency telemetry. */
+  server_ts?: number;
+  elapsed_ms?: number;
 }
 
 /**
@@ -78,6 +83,8 @@ export interface LiveUtterance {
   actor_id: string;
   actor_role?: "party" | "enemy" | "judge";
   text: string;
+  server_ts?: number;
+  elapsed_ms?: number;
   /** True once the matching `utterance` closed the buffer (drives fallback). */
   done: boolean;
   /** When true, no tokens streamed — view should typewriter the whole text. */
@@ -96,6 +103,8 @@ export interface EstimateScore {
   actor_id: string;
   score: number;
   actor_role?: "party" | "enemy" | "judge";
+  server_ts?: number;
+  elapsed_ms?: number;
 }
 
 /** Live HP update for a single combatant ({ type: "hp", data: HpUpdate }). */
@@ -463,6 +472,8 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
                 actor_id: t.actor_id,
                 actor_role: t.actor_role ?? cur?.actor_role,
                 text: (cur?.text ?? "") + (t.text ?? ""),
+                server_ts: t.server_ts ?? cur?.server_ts,
+                elapsed_ms: t.elapsed_ms ?? cur?.elapsed_ms,
                 done: false,
                 fallback: false,
               };
@@ -506,6 +517,8 @@ export function useEncounterStream(encounterId: string | null): EncounterStreamS
                   actor_id: u.actor_id,
                   actor_role: u.actor_role,
                   text: u.text,
+                  server_ts: u.server_ts,
+                  elapsed_ms: u.elapsed_ms,
                   done: true,
                   fallback: true,
                 },
