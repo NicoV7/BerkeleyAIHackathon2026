@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     memory_cache_enabled: bool = True
     redis_index_name: str = "mem_idx"
 
+    # Agent-generated world (Wave 3). OFF by default: local-without-good-model is
+    # unaffected and /world stays purely procedural. When True, /world tries the
+    # LLM generator and falls back to procedural on any failure.
+    world_gen_enabled: bool = False
+
     # App
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173"

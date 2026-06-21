@@ -25,6 +25,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import Run
 from app.db.session import get_session
 from app.schemas import POI, Region, WorldSpecLite
@@ -246,4 +247,19 @@ async def get_world(
         raise HTTPException(status_code=404, detail="Run not found")
 
     tiles = _generate_tiles(run.seed)
+
+    # Wave 3 (gated, default OFF): try the agent generator first. It is cached
+    # per seed and returns None on ANY failure, so this can NEVER 500 or break
+    # determinism — on None (or an unexpected raise) we use the procedural world.
+    if settings.world_gen_enabled:
+        try:
+            from app.world.generator import generate_world
+
+            generated = await generate_world(run.seed, MAP_WIDTH, MAP_HEIGHT)
+            if generated is not None:
+                return generated
+        except Exception:  # noqa: BLE001 — generator must never break the route
+            pass
+
+    # Default / fallback path: the Wave-2 seed-deterministic procedural world.
     return build_world(run.seed, tiles, MAP_WIDTH, MAP_HEIGHT)
