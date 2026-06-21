@@ -146,6 +146,26 @@ select {
   font-family: var(--font-body);
 }
 
+/* ---- Shared shell: animated loading ellipsis (LoadingState) ---- */
+.pixel-loading-dots::after {
+  content: "";
+  animation: pixel-loading-dots 1.2s steps(4, end) infinite;
+}
+@keyframes pixel-loading-dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+
 /* ---- Pixel panel: hard border + hard offset shadow ---- */
 .pixel-panel {
   background: var(--panel);

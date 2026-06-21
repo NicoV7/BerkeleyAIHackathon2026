@@ -46,6 +46,20 @@ export function domainMatchMult(monsterDomain: MonsterDomain, topicDomain: Monst
 export const SUMMON_ITEM_TIERS = ["common", "rare", "legendary"] as const;
 export type SummonItemTier = (typeof SUMMON_ITEM_TIERS)[number];
 
+// Economy item categories (WS-1) — mirrors `app.db.models.ItemKind`.
+//   * potion_hp / potion_mp  — consumable, restores HP/MP
+//   * camp_token             — consumed by the camp/rest flow
+//   * training_atk/def/mp    — permanent stat-up applied to the lead party member
+export const ITEM_KINDS = [
+  "potion_hp",
+  "potion_mp",
+  "camp_token",
+  "training_atk",
+  "training_def",
+  "training_mp",
+] as const;
+export type ItemKind = (typeof ITEM_KINDS)[number];
+
 // Type-effectiveness chart (attacker -> defender -> multiplier).
 // Rock-paper-scissors style; tuned later in Wave 2 balancing.
 export const TYPE_CHART: Record<DebateType, Partial<Record<DebateType, number>>> = {
