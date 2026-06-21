@@ -35,6 +35,7 @@ from app.schemas import (
     RunState,
     TileEnemy,
 )
+from app.serializers import monster_summary
 from app.world.algorithms.base import BLOCKED_TILES
 
 router = APIRouter(prefix="/api", tags=["map"])
@@ -55,17 +56,8 @@ WILD_COUNT = 32  # wild enemies placed globally per run
 
 
 def _monster_to_summary(m: Monster) -> MonsterSummary:
-    return MonsterSummary(
-        id=m.id,
-        name=m.name,
-        type=m.type.value,
-        owner=m.owner.value,
-        level=m.level,
-        xp=m.xp,
-        max_hp=m.max_hp,
-        evolution_stage=m.evolution_stage,
-        skills=m.skills or [],
-    )
+    """Return the shared monster projection used in run state payloads."""
+    return monster_summary(m)
 
 
 def _generate_tiles(seed: int) -> list[list[int]]:

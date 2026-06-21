@@ -123,10 +123,12 @@ async def test_human_round_streams_enemy_tokens(
     streamed = "".join(e.data["text"] for e in token_events)
     assert "rights" in streamed
     assert all(e.data["side"] == "against" for e in token_events)
+    assert all("server_ts" in e.data and "elapsed_ms" in e.data for e in token_events)
 
     # The canonical enemy utterance still emits with the full assembled text.
     enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
     assert enemy_utt and enemy_utt[0].data["text"].strip() == streamed.strip()
+    assert "server_ts" in enemy_utt[0].data and "elapsed_ms" in enemy_utt[0].data
 
 
 # --------------------------------------------------------------------------- #
@@ -358,3 +360,27 @@ def test_side_helper_defaults_from_role() -> None:
     c = _combatant("enemy", "x", "X")
     c.side = "for"  # explicit override wins
     assert orch._side_for(c) == "for"
+
+
+def test_apply_round_damage_uses_autonomous_skill_power() -> None:
+    party = _combatant("party", "p1", "Sage", "LOGOS")
+    enemy = _combatant("enemy", "e1", "Brute", "LOGOS")
+    momentum = {"party": 1.0, "enemy": 1.0}
+
+    verdicts = orch._apply_round_damage(
+        [party, enemy],
+        [
+            (
+                party,
+                70.0,
+                "solid",
+                {},
+                {"attack_type": "LOGOS", "skill_mult": 2.0},
+            )
+        ],
+        momentum,
+        topic="remote work",
+    )
+
+    assert verdicts[0]["damage"] == 40
+    assert enemy.hp == 60

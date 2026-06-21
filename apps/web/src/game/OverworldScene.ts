@@ -19,9 +19,14 @@
 import Phaser from "phaser";
 import { EnemyManager, type Enemy, type EnemySpawn } from "./EnemyAI";
 import { NPCBehaviorManager, type NPCAnchorView } from "./NPCBehavior";
+import {
+  createPlayerTextures,
+  PlayerSpriteAnimator,
+  playerTextureKey,
+} from "./PlayerAnimator";
 import { PostFX } from "./PostFX";
 import { SceneRouter, type RegionSpec, type RoutablePOI } from "./SceneRouter";
-import { WorldSim } from "./WorldSim";
+import { WorldSim, type MoveIntent } from "./WorldSim";
 import { TILE_SIZE } from "./constants";
 export { TILE_SIZE } from "./constants";
 
@@ -53,7 +58,6 @@ const BLOCKED_TILES = new Set<number>([
 const SHEET = "/tiles/roguelikeSheet_transparent.png";
 const CHAR_SHEET = "/sprites/roguelikeChar_transparent.png";
 const SHEET_TILE = 16;
-const PLAYER_FRAME = 10;
 const ENEMY_FRAME = 7;
 
 /**
@@ -162,6 +166,7 @@ export class OverworldScene extends Phaser.Scene {
   // Graphics objects
   private tileGraphics!: Phaser.GameObjects.Graphics;
   private playerSprite!: Phaser.GameObjects.Sprite;
+  private playerAnimator!: PlayerSpriteAnimator;
 
   // Client-side world simulation + roaming enemy runtime
   private sim: WorldSim | null = null;
@@ -180,6 +185,7 @@ export class OverworldScene extends Phaser.Scene {
     left: Phaser.Input.Keyboard.Key;
     right: Phaser.Input.Keyboard.Key;
   };
+  private runKey!: Phaser.Input.Keyboard.Key;
 
   // Position-sync debounce bookkeeping
   private syncAccumMs = 0;
@@ -306,12 +312,14 @@ export class OverworldScene extends Phaser.Scene {
 
     // Bake the procedural pixel-art sprites once (no external assets).
     this.bakeSprites();
+    createPlayerTextures(this);
 
-    this.playerSprite = this.textures.exists("chars")
-      ? this.add.sprite(0, 0, "chars", PLAYER_FRAME)
+    this.playerSprite = this.textures.exists(playerTextureKey("down", 1))
+      ? this.add.sprite(0, 0, playerTextureKey("down", 1))
       : this.add.sprite(0, 0, "player");
     this.playerSprite.setDisplaySize(TILE_SIZE, TILE_SIZE);
     this.playerSprite.setDepth(10);
+    this.playerAnimator = new PlayerSpriteAnimator(this.playerSprite);
 
     // Input
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -321,6 +329,7 @@ export class OverworldScene extends Phaser.Scene {
       left: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
       right: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
+    this.runKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
 
     // Flush the latest position to the server when the scene tears down
     // (navigation away / encounter transition) — the on-transition sync.
@@ -593,14 +602,14 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   /** Read keyboard intent into a normalised {dx,dy} for WorldSim. */
-  private readIntent(): { dx: number; dy: number } {
+  private readIntent(): MoveIntent {
     let dx = 0;
     let dy = 0;
     if (this.cursors.left.isDown || this.wasd.left.isDown) dx -= 1;
     if (this.cursors.right.isDown || this.wasd.right.isDown) dx += 1;
     if (this.cursors.up.isDown || this.wasd.up.isDown) dy -= 1;
     if (this.cursors.down.isDown || this.wasd.down.isDown) dy += 1;
-    return { dx, dy };
+    return { dx, dy, running: this.runKey.isDown };
   }
 
   update(time: number, delta: number) {
@@ -608,8 +617,14 @@ export class OverworldScene extends Phaser.Scene {
       return;
 
     // 1) Integrate smooth player movement + local collision.
-    this.sim.update(this.readIntent(), delta);
+    const intent = this.readIntent();
+    this.sim.update(intent, delta);
     this.sim.applyToSprite(this.playerSprite);
+    this.playerAnimator.update({
+      intent,
+      velocity: { vx: this.sim.vx, vy: this.sim.vy },
+      deltaMs: delta,
+    });
     this.emitPlayerTile();
     this.npcs.update(time, this.sim.x, this.sim.y);
     this.maybeTriggerNpcTalk(time);

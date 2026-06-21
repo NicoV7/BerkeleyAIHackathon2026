@@ -52,6 +52,9 @@ class MonsterSummary(BaseModel):
     domain: str = "GENERAL"
     wiki_url: Optional[str] = None
     wiki_hydrated: bool = False
+    # Persona voice/tagline is additive but important for gacha reveal and battle
+    # prompt visibility. Older responses can omit it and still validate.
+    persona: dict[str, Any] = Field(default_factory=dict)
 
     # `def_` is the Python attribute; the JSON wire format uses the natural
     # keyword `def` so the FE never sees the trailing underscore.
@@ -221,6 +224,8 @@ class Utterance(BaseModel):
     skill_used: Optional[str] = None
     text: str
     ts: float
+    server_ts: Optional[float] = None
+    elapsed_ms: Optional[int] = None
 
 
 class JudgeVerdict(BaseModel):
@@ -317,6 +322,10 @@ class GachaPullRequest(BaseModel):
     the persona roll (rare items unlock the rare tier, etc.).
     """
     summon_item_id: Optional[str] = None
+    seed: Optional[int] = Field(
+        default=None,
+        description="Optional deterministic seed for test/demo reproducibility",
+    )
 
 
 class GachaPullResult(BaseModel):

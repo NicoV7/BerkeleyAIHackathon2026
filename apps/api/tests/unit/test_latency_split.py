@@ -189,3 +189,22 @@ def test_side_instruction_distinguishes_for_from_against() -> None:
     assert "ASSIGNED SIDE: FOR" in for_sys
     assert "ASSIGNED SIDE: AGAINST" in against_sys
     assert for_sys != against_sys
+
+
+def test_persona_prompt_includes_generated_and_gacha_fields() -> None:
+    actor = _combatant("for", role="party")
+    actor.persona = {
+        "voice": "I know that I know nothing.",
+        "tagline": "Question everything.",
+        "backstory": "A market philosopher with a patient trap.",
+        "tone": "calmly relentless",
+        "quirks": "answers with questions",
+    }
+
+    sys = _system_text(actor, "AI tutors should be free")
+
+    assert "I know that I know nothing" in sys
+    assert "Question everything" in sys
+    assert "market philosopher" in sys
+    assert "calmly relentless" in sys
+    assert "answers with questions" in sys
