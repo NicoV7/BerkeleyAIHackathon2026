@@ -26,6 +26,17 @@ import {
 } from "./PlayerAnimator";
 import { PostFX } from "./PostFX";
 import { SceneRouter, type RegionSpec, type RoutablePOI } from "./SceneRouter";
+import {
+  SHEET_COLS,
+  SHEET_ROWS,
+  baseFrameFor,
+  bridgeFrameFor,
+  forestBorderEdges,
+  overlayFor,
+  shorelineEdges,
+  type EdgeStamp,
+  type Neighbors,
+} from "./TileAtlas";
 import { WorldSim, type MoveIntent } from "./WorldSim";
 import { TILE_SIZE } from "./constants";
 export { TILE_SIZE } from "./constants";
@@ -59,6 +70,10 @@ const SHEET = "/tiles/roguelikeSheet_transparent.png";
 const CHAR_SHEET = "/sprites/roguelikeChar_transparent.png";
 const SHEET_TILE = 16;
 const ENEMY_FRAME = 7;
+/** Phaser texture key for the loaded Kenney roguelike terrain atlas. */
+const ATLAS_KEY = "rogue";
+/** Atlas frames are 16px; the world renders at TILE_SIZE → integer upscale. */
+const ATLAS_SCALE = TILE_SIZE / SHEET_TILE;
 
 /**
  * Deterministic per-tile 32-bit hash. Used to drive sub-tile color jitter so
@@ -164,6 +179,11 @@ export class OverworldScene extends Phaser.Scene {
   private worldData: WorldState | null = null;
 
   // Graphics objects
+  // terrainRT: the atlas terrain blitted here (real pixel-art tiles + edge
+  // autotiling + bridges). tileGraphics: drawn ON TOP for the procedural
+  // fallback (unmapped tile-ints) and POI markers, so nothing renders blank.
+  private terrainRT: Phaser.GameObjects.RenderTexture | null = null;
+  private atlasReady = false;
   private tileGraphics!: Phaser.GameObjects.Graphics;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
@@ -221,7 +241,10 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   preload() {
-    this.load.spritesheet("rogue", SHEET, {
+    // Kenney roguelike terrain atlas: 16px tiles, 1px spacing, no margin →
+    // a clean 57×31 grid (verified against the 968×526 PNG). The frame indices
+    // in TileAtlas.ts assume exactly this geometry.
+    this.load.spritesheet(ATLAS_KEY, SHEET, {
       frameWidth: SHEET_TILE,
       frameHeight: SHEET_TILE,
       margin: 0,
@@ -232,6 +255,23 @@ export class OverworldScene extends Phaser.Scene {
       frameHeight: SHEET_TILE,
       margin: 0,
       spacing: 1,
+    });
+    // Warn (don't crash) if the atlas geometry drifts from what TileAtlas maps —
+    // an upgraded sheet with different dimensions would mis-key every frame.
+    this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+      const tex = this.textures.get(ATLAS_KEY);
+      const src = tex?.getSourceImage() as { width?: number; height?: number } | undefined;
+      if (!src?.width || !src?.height) return;
+      const stride = SHEET_TILE + 1; // tile + 1px spacing
+      const cols = Math.floor((src.width + 1) / stride);
+      const rows = Math.floor((src.height + 1) / stride);
+      const even = (src.width + 1) % stride === 0 && (src.height + 1) % stride === 0;
+      if (!even || cols !== SHEET_COLS || rows !== SHEET_ROWS) {
+        console.warn(
+          `[OverworldScene] atlas geometry ${src.width}x${src.height} → ${cols}x${rows} ` +
+            `(expected ${SHEET_COLS}x${SHEET_ROWS}); tile frame mapping may be off.`
+        );
+      }
     });
   }
 
@@ -307,7 +347,10 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   async create() {
+    // Terrain atlas blits below the fallback graphics; both below actors.
+    this.atlasReady = this.textures.exists(ATLAS_KEY);
     this.tileGraphics = this.add.graphics();
+    this.tileGraphics.setDepth(-1);
     this.cameras.main.setBackgroundColor("#1a1a2e");
 
     // Bake the procedural pixel-art sprites once (no external assets).
@@ -447,84 +490,234 @@ export class OverworldScene extends Phaser.Scene {
     this.cfg.onPlayerMove?.(x, y);
   }
 
+  /** Tile-int at (x,y) in CHUNK-LOCAL coords; out-of-bounds returns the same
+   * tile so autotiling treats the chunk border as "no edge" (avoids fake
+   * shorelines/borders at the seam where the next chunk will load). */
+  private tileAt(x: number, y: number, fallback: number): number {
+    const t = this.mapData?.tiles;
+    if (!t || y < 0 || y >= t.length || x < 0 || x >= t[0].length) return fallback;
+    return t[y][x];
+  }
+
+  /** Orthogonal neighbours of a chunk-local tile (border → self, see tileAt). */
+  private neighborsOf(x: number, y: number, self: number): Neighbors {
+    return {
+      n: this.tileAt(x, y - 1, self),
+      s: this.tileAt(x, y + 1, self),
+      e: this.tileAt(x + 1, y, self),
+      w: this.tileAt(x - 1, y, self),
+    };
+  }
+
+  /**
+   * Redraw the whole (chunk) map. WS-8 will double-buffer chunks; we keep the
+   * "rebuild on every drawMap" contract and just change WHAT is drawn:
+   *   - atlas frames stamped into terrainRT (real pixel-art tiles),
+   *   - edge autotiling (water shorelines, forest/grass borders) + bridges,
+   *   - procedural color jitter ONLY for tile-ints with no atlas frame.
+   */
   private drawMap() {
     if (!this.mapData) return;
     const g = this.tileGraphics;
     g.clear();
 
+    const originX = this.mapData.origin_x ?? 0;
+    const originY = this.mapData.origin_y ?? 0;
+    const widthPx = this.mapData.width * TILE_SIZE;
+    const heightPx = this.mapData.height * TILE_SIZE;
+
+    const rt = this.atlasReady ? this.ensureTerrainRT(widthPx, heightPx) : null;
+    if (rt) {
+      rt.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
+      rt.clear();
+    }
+
     for (let y = 0; y < this.mapData.height; y++) {
       for (let x = 0; x < this.mapData.width; x++) {
         const tile = this.mapData.tiles[y][x];
-        const blocked = BLOCKED_TILES.has(tile);
-        const camp = tile === TILE.CAMP;
-        const px = ((this.mapData.origin_x ?? 0) + x) * TILE_SIZE;
-        const py = ((this.mapData.origin_y ?? 0) + y) * TILE_SIZE;
-
-        // Per-tile color variation breaks the "flat tilemap" read. Hash of
-        // (x,y) maps to a -8..+8 RGB jitter; same map = same look every boot.
+        const px = (originX + x) * TILE_SIZE;
+        const py = (originY + y) * TILE_SIZE;
         const jitter = tileJitter(x, y);
-        const fill = terrainFill(tile, jitter);
-        g.fillStyle(fill, 1);
-        g.fillRect(px, py, TILE_SIZE, TILE_SIZE);
 
-        // Sub-tile foliage speckle so grass/forest read as continuous terrain.
-        if (tile === TILE.GRASS || tile === TILE.FOREST) {
-          const speckleAlpha = 0.18 + (jitter & 0x3f) / 600;
-          g.fillStyle(tile === TILE.FOREST ? 0x3f6c36 : 0x4a5a36, speckleAlpha);
-          const sx = px + ((jitter >> 2) & 0xf);
-          const sy = py + ((jitter >> 6) & 0xf);
-          g.fillRect(sx, sy, 2, 2);
-          g.fillRect(sx + 6, sy + 5, 2, 2);
-        }
-
-        if (tile === TILE.ROAD) {
-          g.fillStyle(0x8c6a42, 0.35);
-          g.fillRect(px + 4, py + 13, TILE_SIZE - 8, 3);
-        }
-
-        if (tile === TILE.WATER) {
-          g.fillStyle(0x6fb7d7, 0.22);
-          g.fillRect(px + 4, py + 9 + (jitter & 0x3), TILE_SIZE - 8, 2);
-          g.fillRect(px + 10, py + 20 - (jitter & 0x5), TILE_SIZE - 16, 2);
-        }
-
-        if (tile === TILE.MOUNTAIN) {
-          g.fillStyle(0xd3d0bd, 0.22);
-          g.fillTriangle(
-            px + TILE_SIZE / 2,
-            py + 6,
-            px + 8,
-            py + TILE_SIZE - 7,
-            px + TILE_SIZE - 8,
-            py + TILE_SIZE - 7
-          );
-        }
-
-        if (tile === TILE.TOWN) {
-          g.fillStyle(0xd4b46e, 0.25);
-          g.fillRect(px + 7, py + 7, TILE_SIZE - 14, TILE_SIZE - 14);
-        }
-
-        if (tile === TILE.CAVE) {
-          g.fillStyle(0x0e1018, 0.65);
-          g.fillRect(px + 8, py + 9, TILE_SIZE - 16, TILE_SIZE - 13);
-        }
-
-        // Darker wall texture for hard blocked tiles.
-        if (blocked && tile !== TILE.WATER && tile !== TILE.MOUNTAIN) {
-          g.fillStyle(0x1b2118, 0.85);
-          g.fillRect(px + 6, py + 6, TILE_SIZE - 12, TILE_SIZE - 12);
-        }
-
-        // Campsite overlay (walkable; gold hearth marker)
-        if (camp) {
-          g.fillStyle(0xffcf3f, 0.55);
-          g.fillRect(px + 10, py + 10, TILE_SIZE - 20, TILE_SIZE - 20);
+        const base = baseFrameFor(tile);
+        if (rt && base !== null) {
+          this.drawAtlasTile(rt, tile, x, y, px, py, jitter);
+        } else {
+          // Procedural fallback so unmapped tile-ints never render blank.
+          this.drawFallbackTile(g, tile, px, py, jitter);
         }
       }
     }
 
     this.drawPois();
+  }
+
+  /** Stamp one atlas-backed tile (+ overlay + autotile edges + bridge) into rt.
+   * Local-relative origin: rt is positioned at the chunk origin, so stamp at
+   * the tile's chunk-local pixel offset. */
+  private drawAtlasTile(
+    rt: Phaser.GameObjects.RenderTexture,
+    tile: number,
+    x: number,
+    y: number,
+    px: number,
+    py: number,
+    jitter: number
+  ) {
+    const originX = this.mapData!.origin_x ?? 0;
+    const originY = this.mapData!.origin_y ?? 0;
+    const lx = px - originX * TILE_SIZE;
+    const ly = py - originY * TILE_SIZE;
+    const nb = this.neighborsOf(x, y, tile);
+
+    // Base ground frame (grass/water/road/stone/...). A ROAD touching WATER is
+    // swapped for the wooden bridge plank.
+    const bridge = bridgeFrameFor(tile, nb);
+    const base = bridge ?? baseFrameFor(tile)!;
+    this.stamp(rt, base, lx, ly);
+
+    // Edge autotiling: translucent sand shoreline where water meets land, and a
+    // faint darker-green seam where grass meets forest.
+    for (const edge of shorelineEdges(tile, nb)) this.stampEdge(rt, edge, lx, ly);
+    for (const edge of forestBorderEdges(tile, nb)) this.stampEdge(rt, edge, lx, ly);
+
+    // Feature overlay (tree / campfire / structure) drawn on top of the base.
+    const overlay = overlayFor(tile, jitter);
+    if (overlay) {
+      this.stamp(rt, overlay.frame, lx, ly, overlay.alpha, overlay.tint);
+    }
+  }
+
+  /** Stamp a 16px atlas frame upscaled to TILE_SIZE at local (lx,ly). */
+  private stamp(
+    rt: Phaser.GameObjects.RenderTexture,
+    frame: number,
+    lx: number,
+    ly: number,
+    alpha = 1,
+    tint?: number
+  ) {
+    rt.stamp(ATLAS_KEY, frame, lx, ly, {
+      originX: 0,
+      originY: 0,
+      scale: ATLAS_SCALE,
+      alpha,
+      ...(tint !== undefined ? { tint } : {}),
+    });
+  }
+
+  /** Stamp an edge accent frame clipped (by half-tile offset) to one side. */
+  private stampEdge(
+    rt: Phaser.GameObjects.RenderTexture,
+    edge: EdgeStamp,
+    lx: number,
+    ly: number
+  ) {
+    // Nudge the full-tile accent toward the relevant edge so it reads as a strip
+    // hugging that side rather than recolouring the whole tile.
+    const off = TILE_SIZE * 0.5;
+    let dx = 0;
+    let dy = 0;
+    if (edge.side === "n") dy = -off;
+    else if (edge.side === "s") dy = off;
+    else if (edge.side === "e") dx = off;
+    else dx = -off;
+    rt.stamp(ATLAS_KEY, edge.frame, lx + dx, ly + dy, {
+      originX: 0,
+      originY: 0,
+      scale: ATLAS_SCALE,
+      alpha: edge.alpha,
+      ...(edge.tint !== undefined ? { tint: edge.tint } : {}),
+    });
+  }
+
+  /**
+   * Original procedural color-jitter renderer, retained ONLY as the fallback for
+   * tile-ints with no atlas frame (so the overworld never shows blank tiles).
+   */
+  private drawFallbackTile(
+    g: Phaser.GameObjects.Graphics,
+    tile: number,
+    px: number,
+    py: number,
+    jitter: number
+  ) {
+    const blocked = BLOCKED_TILES.has(tile);
+    const fill = terrainFill(tile, jitter);
+    g.fillStyle(fill, 1);
+    g.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+
+    if (tile === TILE.GRASS || tile === TILE.FOREST) {
+      const speckleAlpha = 0.18 + (jitter & 0x3f) / 600;
+      g.fillStyle(tile === TILE.FOREST ? 0x3f6c36 : 0x4a5a36, speckleAlpha);
+      const sx = px + ((jitter >> 2) & 0xf);
+      const sy = py + ((jitter >> 6) & 0xf);
+      g.fillRect(sx, sy, 2, 2);
+      g.fillRect(sx + 6, sy + 5, 2, 2);
+    }
+
+    if (tile === TILE.ROAD) {
+      g.fillStyle(0x8c6a42, 0.35);
+      g.fillRect(px + 4, py + 13, TILE_SIZE - 8, 3);
+    }
+
+    if (tile === TILE.WATER) {
+      g.fillStyle(0x6fb7d7, 0.22);
+      g.fillRect(px + 4, py + 9 + (jitter & 0x3), TILE_SIZE - 8, 2);
+      g.fillRect(px + 10, py + 20 - (jitter & 0x5), TILE_SIZE - 16, 2);
+    }
+
+    if (tile === TILE.MOUNTAIN) {
+      g.fillStyle(0xd3d0bd, 0.22);
+      g.fillTriangle(
+        px + TILE_SIZE / 2,
+        py + 6,
+        px + 8,
+        py + TILE_SIZE - 7,
+        px + TILE_SIZE - 8,
+        py + TILE_SIZE - 7
+      );
+    }
+
+    if (tile === TILE.TOWN) {
+      g.fillStyle(0xd4b46e, 0.25);
+      g.fillRect(px + 7, py + 7, TILE_SIZE - 14, TILE_SIZE - 14);
+    }
+
+    if (tile === TILE.CAVE) {
+      g.fillStyle(0x0e1018, 0.65);
+      g.fillRect(px + 8, py + 9, TILE_SIZE - 16, TILE_SIZE - 13);
+    }
+
+    if (blocked && tile !== TILE.WATER && tile !== TILE.MOUNTAIN) {
+      g.fillStyle(0x1b2118, 0.85);
+      g.fillRect(px + 6, py + 6, TILE_SIZE - 12, TILE_SIZE - 12);
+    }
+
+    if (tile === TILE.CAMP) {
+      g.fillStyle(0xffcf3f, 0.55);
+      g.fillRect(px + 10, py + 10, TILE_SIZE - 20, TILE_SIZE - 20);
+    }
+  }
+
+  /** Lazily create / resize the terrain RenderTexture to the current chunk. */
+  private ensureTerrainRT(
+    widthPx: number,
+    heightPx: number
+  ): Phaser.GameObjects.RenderTexture {
+    if (
+      this.terrainRT &&
+      (this.terrainRT.width !== widthPx || this.terrainRT.height !== heightPx)
+    ) {
+      this.terrainRT.destroy();
+      this.terrainRT = null;
+    }
+    if (!this.terrainRT) {
+      this.terrainRT = this.add.renderTexture(0, 0, widthPx, heightPx);
+      this.terrainRT.setOrigin(0, 0);
+      this.terrainRT.setDepth(-2);
+    }
+    return this.terrainRT;
   }
 
   private worldPois(): RoutablePOI[] {
@@ -763,5 +956,7 @@ export class OverworldScene extends Phaser.Scene {
   destroy() {
     this.enemies.destroy();
     this.npcs.destroy();
+    this.terrainRT?.destroy();
+    this.terrainRT = null;
   }
 }
