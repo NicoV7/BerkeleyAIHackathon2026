@@ -98,7 +98,8 @@ def _combatant(side: str, role: str) -> Combatant:
 
 def test_stream_done_reports_timeout_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """A stalled first token -> the `done` chunk reports fallback=True reason=timeout."""
-    monkeypatch.setattr(orch, "_first_token_timeout", lambda: 0.01)
+    # WS-4: _first_token_timeout now takes an optional model arg (warm widening).
+    monkeypatch.setattr(orch, "_first_token_timeout", lambda model=None: 0.01)
 
     async def _never_yields(messages, model=None, **k):
         await asyncio.sleep(5)

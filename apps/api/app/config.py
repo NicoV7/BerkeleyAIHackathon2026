@@ -80,6 +80,18 @@ class Settings(BaseSettings):
     first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
     actor_max_tokens: int = 64
     prewarm_enabled: bool = True
+    # WS-4 warm-path latency. Once the actor model is confirmed WARM (a prewarm
+    # ping at encounter create succeeded, so the model is resident in Ollama and
+    # not paying the cold-load tax), the live streaming path may wait a bit longer
+    # for the first token before failing over to a templated fallback. This LOWERS
+    # the fallback rate on a healthy-but-busy model without re-introducing the cold
+    # hang: a truly stalled model is still bounded by `first_token_timeout_s` until
+    # it's marked warm. Set to first_token_timeout_s to disable the widening.
+    first_token_timeout_warm_s: int = 22
+    # Ollama keep_alive sent on the encounter-create prewarm so the actor model
+    # stays resident across the battle's idle gaps (turn-to-turn thinking + the
+    # player typing). A string Ollama accepts ("10m") or seconds. Empty -> omit.
+    ollama_keep_alive: str = "10m"
     ollama_base_url: str = "http://ollama:11434"
     anthropic_api_key: str = ""
     anthropic_base_url: str = "https://api.anthropic.com"
