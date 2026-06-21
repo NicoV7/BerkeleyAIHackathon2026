@@ -129,6 +129,8 @@ class CombatantState(BaseModel):
     role: Literal["party", "enemy"]
     hp: int
     max_hp: int
+    # Which side of the debate this combatant argues (clarity fix). Additive/Optional.
+    side: Optional[Literal["for", "against"]] = None
 
 
 class Utterance(BaseModel):

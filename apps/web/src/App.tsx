@@ -13,7 +13,7 @@ import TrainingScreen from "./ui/TrainingScreen";
 //   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
 //   training  -> WS-F (TrainingScreen)
 export default function App() {
-  const { runId, screen, topic, setRun, setScreen } = useGame();
+  const { runId, screen, topic, battleLocked, setRun, setScreen } = useGame();
   const [health, setHealth] = useState<string>("…");
   const [topicInput, setTopicInput] = useState("Pineapple belongs on pizza");
 
@@ -97,20 +97,35 @@ export default function App() {
         </main>
       ) : (
         <>
-          <nav
-            className="flex gap-2 px-4 py-2"
-            style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
-          >
-            {(["overworld", "encounter", "party", "training"] as const).map((s) => (
-              <button
-                key={s}
-                className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
-                onClick={() => setScreen(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </nav>
+          {/* Battle isolation: while a battle is active (battleLocked), the
+              global nav is replaced by a "locked" banner so the only way out is
+              the in-battle Flee button (or a natural win/lose). */}
+          {battleLocked ? (
+            <div
+              className="flex items-center gap-2 px-4 py-2 font-hud text-[10px]"
+              style={{ borderBottom: "2px solid rgba(232,230,216,0.12)", color: "var(--warn)" }}
+            >
+              <span>⚔️ In battle</span>
+              <span style={{ color: "var(--muted)" }}>
+                — navigation locked. Flee to return to the overworld.
+              </span>
+            </div>
+          ) : (
+            <nav
+              className="flex gap-2 px-4 py-2"
+              style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}
+            >
+              {(["overworld", "encounter", "party", "training"] as const).map((s) => (
+                <button
+                  key={s}
+                  className={`pixel-btn text-[10px] ${screen === s ? "pixel-btn--accent" : ""}`}
+                  onClick={() => setScreen(s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </nav>
+          )}
           <main className="flex-1 overflow-auto">
             <ScreenPanel screen={screen} />
           </main>

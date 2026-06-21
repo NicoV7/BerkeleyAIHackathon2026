@@ -27,6 +27,7 @@ run before WS-C / WS-D / WS-A land.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -47,6 +48,12 @@ try:  # WS-D: RAG. retrieve(monster_id, query, run_id=..., k=...) -> list[str]
     from app.memory.retriever import retrieve as _retrieve  # type: ignore
 except Exception:  # noqa: BLE001
     _retrieve = None
+
+try:  # skill_engine (sibling agent): skill_instructions(skill_name, attacker_type) -> str
+    from app.debate.skill_engine import skill_instructions  # type: ignore
+except Exception:  # noqa: BLE001 — never fail if the module isn't present yet
+    def skill_instructions(name: Any, atype: Any) -> str:  # type: ignore[misc]
+        return ""
 
 
 CAPTURABLE_HP_FRACTION = 0.25
@@ -73,34 +80,60 @@ def _actor_timeout() -> float:
 
 # Real, side-taking fallback arguments. When the model fails/stalls we still want
 # the transcript to READ like a debate, not the old "(NAME presses the point on
-# TOPIC.)" filler. Each template makes a concrete claim + reason and takes a
-# stance. We vary the template by the actor's debate TYPE so consecutive
-# fallbacks aren't identical, and rotate within a type by turn count.
-_FALLBACK_TEMPLATES: dict[str, list[str]] = {
+# TOPIC.)" filler AND not vague meta-hedging ("I take the side that survives the
+# hardest question"). Each template makes a CONCRETE claim about the actual topic
+# and explicitly argues FOR or AGAINST it. Keyed by (side, type) so the player's
+# FOR monster and the enemy's AGAINST monster never read identically, and varied
+# within a bucket by a turn seed.
+# Every template explicitly contains the capitalized stance word ("FOR" / "AGAINST")
+# so the stance is unmistakable in the transcript.
+_FALLBACK_FOR: dict[str, list[str]] = {
     "LOGOS": [
-        "On {topic}, the logic is one-sided: the evidence points my way, and no "
-        "counterargument has survived scrutiny. Follow the reasoning and my side wins.",
-        "{topic} comes down to consequences, and the data favors my position — the "
-        "costs of the other view are concrete while its benefits are hypothetical.",
+        "I argue FOR {topic}: the evidence runs in its favor and every objection raised "
+        "against it collapses once you ask for specifics. The case stands.",
+        "I am FOR {topic} — trace the consequences and the benefits are concrete while the "
+        "harms opponents warn of stay hypothetical. The logic backs my side.",
     ],
     "PATHOS": [
-        "Think about who {topic} actually affects: real people bear the cost of the "
-        "opposing view, and that is exactly why my side is the right one to back.",
-        "On {topic}, I refuse to trade real human stakes for a tidy abstraction — the "
-        "human cost of the other position is the whole reason I stand where I do.",
+        "I stand FOR {topic} because of who it actually helps — real people gain, and "
+        "denying them that to protect a tidy abstraction is the real cost here.",
+        "Picture the people {topic} lifts up. That human stake is exactly why I argue FOR "
+        "it, and why the opposing view rings hollow.",
     ],
     "ETHOS": [
-        "On {topic}, credibility matters: the people who actually do this work back my "
-        "position, while the opposing case leans on claims it cannot stand behind.",
-        "I argue {topic} from principle, not convenience — my side is the one that holds "
-        "up under its own standards, and the opposition's does not.",
+        "I argue FOR {topic}: the people who do this work and live with it back it, while "
+        "the case against leans on claims it cannot stand behind.",
+        "I am FOR {topic} on principle, not convenience — it holds to its own standards, "
+        "which is more than the opposition's position can honestly say.",
     ],
 }
-_FALLBACK_DEFAULT = [
-    "My position on {topic} is the defensible one: it carries the stronger reasons "
-    "and the opposing case collapses the moment you press it for specifics.",
-    "On {topic}, I take the side that survives the hardest question — concede nothing "
-    "without reclaiming it, and the burden stays on my opponent to answer.",
+_FALLBACK_AGAINST: dict[str, list[str]] = {
+    "LOGOS": [
+        "I argue AGAINST {topic}: the strongest version of the claim still fails on its "
+        "own terms, and the supposed evidence dissolves under scrutiny.",
+        "I am AGAINST {topic} — follow the consequences and the costs are concrete while "
+        "the promised upside is speculative. The reasoning cuts against it.",
+    ],
+    "PATHOS": [
+        "I am AGAINST {topic} because of who actually pays for it — real people bear the "
+        "downside, and that human cost is the whole reason I oppose it.",
+        "Think about who gets hurt if {topic} wins. That stake is exactly why I stand "
+        "AGAINST it, not for some tidy slogan.",
+    ],
+    "ETHOS": [
+        "I argue AGAINST {topic}: the people closest to it know its standards don't hold, "
+        "and the case for it leans on assurances it cannot back up.",
+        "I am AGAINST {topic} on principle — it cannot meet the very test it sets for "
+        "itself, and consistency demands rejecting it.",
+    ],
+}
+_FALLBACK_FOR_DEFAULT = [
+    "I argue FOR {topic}: it carries the stronger reasons and the case against it falls "
+    "apart the moment you press it for specifics.",
+]
+_FALLBACK_AGAINST_DEFAULT = [
+    "I argue AGAINST {topic}: the case for it carries hidden costs and collapses under a "
+    "single concrete question.",
 ]
 
 
@@ -130,16 +163,38 @@ async def prewarm_models(models: list[str] | None = None) -> None:
             pass
 
 
-def _fallback_argument(actor: "Combatant", topic: str, turn_seed: int = 0) -> str:
-    """A REAL short argument (1-2 sentences, takes a side) for model failure.
+def _side_for(actor: "Combatant") -> str:
+    """The debate side an actor argues: 'for' or 'against'.
 
-    Varies by actor type + a turn seed so it doesn't read identically every time.
-    This is the graceful-degradation text the live/headless/human paths fall back
-    to — it must look like a debate move, never the old "presses the point" stub.
+    Prefers an explicit `side` set on the combatant (deterministic assignment in
+    the round runners); otherwise derives a sensible default from role so the
+    party argues FOR the topic and enemies argue AGAINST it.
+    """
+    s = (getattr(actor, "side", None) or "").lower()
+    if s in ("for", "against"):
+        return s
+    return "for" if actor.role == "party" else "against"
+
+
+def _fallback_argument(actor: "Combatant", topic: str, turn_seed: int = 0) -> str:
+    """A REAL short argument (1-2 sentences, takes a concrete side) for model failure.
+
+    Explicitly argues FOR or AGAINST the actual topic — never the old "presses the
+    point" stub and never vague meta-hedging. Keyed by (side, type) so the FOR and
+    AGAINST monsters read differently, varied by a turn seed within a bucket. This
+    is the graceful-degradation text the live/headless/human paths fall back to.
     """
     topic_str = topic or "this question"
-    pool = _FALLBACK_TEMPLATES.get((actor.type or "").upper(), _FALLBACK_DEFAULT)
-    idx = abs(hash((actor.monster_id, turn_seed))) % len(pool)
+    side = _side_for(actor)
+    type_key = (actor.type or "").upper()
+    if side == "against":
+        pool = _FALLBACK_AGAINST.get(type_key, _FALLBACK_AGAINST_DEFAULT)
+    else:
+        pool = _FALLBACK_FOR.get(type_key, _FALLBACK_FOR_DEFAULT)
+    # Deterministic index — Python's salted hash() varies per process (test flake);
+    # use a stable digest so the same (monster, turn) always picks the same line.
+    key = f"{actor.monster_id}:{turn_seed}".encode()
+    idx = int.from_bytes(hashlib.md5(key).digest()[:4], "big") % len(pool)
     return pool[idx].format(topic=topic_str)
 
 
@@ -160,6 +215,10 @@ class Combatant:
     harness: dict[str, Any] = field(default_factory=dict)
     skills: list[Any] = field(default_factory=list)
     model: Optional[str] = None
+    # Which side of the debate this combatant argues — "for" | "against". Assigned
+    # deterministically by the round runners (party lead = FOR the topic, enemy
+    # lead = AGAINST it) so stances are crystal clear in prompts + utterances.
+    side: Optional[str] = None
 
     @property
     def alive(self) -> bool:
@@ -278,17 +337,22 @@ def _build_actor_messages(
     memories: list[str],
     name_lookup: dict[str, str],
 ) -> list[dict[str, str]]:
-    side = "your team" if actor.role == "party" else "the opposing team"
+    team = "your team" if actor.role == "party" else "the opposing team"
+    side = _side_for(actor)
+    stance_verb = "FOR" if side == "for" else "AGAINST"
     persona = _persona_line(actor)
     skills = _skill_names(actor)
 
     sys_parts = [
-        f"You are {actor.name}, a debate combatant of type {actor.type}. "
-        f"You are debating on {side}.",
+        f"You are {actor.name}, a debate combatant of type {actor.type}, on {team}.",
         f"The debate topic is: {topic}",
-        "Make ONE sharp, persuasive argument that advances your side and rebuts "
-        "the latest opposing point. Be vivid and concise (2-4 sentences). Speak "
-        "in-character; do not narrate or use stage directions.",
+        # Crystal-clear stance: argue the assigned side of the CONCRETE topic.
+        f"YOUR SIDE: you argue {stance_verb} the topic. Take that side explicitly and "
+        f"make a concrete claim about {topic} — state plainly why you are {stance_verb} it.",
+        "Make ONE sharp, persuasive argument that advances your side and rebuts the "
+        "latest opposing point. Be vivid and concise (2-4 sentences). Speak in-character. "
+        "Do NOT narrate, use stage directions, or hedge with vague meta-talk about "
+        "debate strategy — argue the actual topic with a concrete claim.",
     ]
     if persona:
         sys_parts.append(f"Your persona — {persona}.")
@@ -298,6 +362,13 @@ def _build_actor_messages(
         sys_parts.append(f"Your commander orders you to: {action['behavior']}.")
     if action.get("skill"):
         sys_parts.append(f"Use your skill: {action['skill']}.")
+        # Enrich with the skill_engine seam (defensive — never fails if absent).
+        try:
+            extra = skill_instructions(action.get("skill"), actor.type)
+        except Exception:  # noqa: BLE001
+            extra = ""
+        if extra:
+            sys_parts.append(str(extra))
     if action.get("tone"):
         sys_parts.append(f"Adopt a {action['tone']} tone.")
     if memories:
@@ -555,6 +626,12 @@ async def run_round_stream(
         order = [active] + enemies
     else:
         order = living
+
+    # CLEAR SIDES (deterministic): party argues FOR the topic, enemies AGAINST it.
+    # Threaded onto the combatants so prompts + emitted utterances carry the stance.
+    for c in combatants:
+        c.side = "for" if c.role == "party" else "against"
+
     scored_inputs: list[dict[str, Any]] = []
     actor_by_id = {c.monster_id: c for c in combatants}
 
@@ -584,6 +661,7 @@ async def run_round_stream(
                     {
                         "turn": turn_no,
                         "actor_id": actor.monster_id,
+                        "side": actor.side,
                         "text": chunk["text"],
                     },
                 )
@@ -594,6 +672,7 @@ async def run_round_stream(
             "turn": turn_no,
             "actor_id": actor.monster_id,
             "actor_role": actor.role,
+            "side": actor.side,
             "skill_used": action.get("skill"),
             "text": text,
             "ts": time.time(),
@@ -702,10 +781,23 @@ async def run_human_round_stream(
     """Async generator running ONE human-driven round. Yields Event objects.
 
     The player's typed argument is the lead party monster's turn; the lead enemy
-    rebuts autonomously. Both are scored together, damage applies (the player's
-    chosen skill scales it), then hp/phase emit. Mirrors `run_round_stream`'s
-    event protocol so the WS/REST callers are unchanged. Mutates `combatants` HP
-    and `momentum` in place.
+    rebuts autonomously. RESPONSIVENESS + CLARITY fixes:
+
+      * STREAMED enemy rebuttal — the enemy uses `_stream_utterance` (same token
+        mechanism as the auto round), so the WS emits `token` events as they arrive
+        and perceived latency is first-token, not full generation.
+      * PARALLELIZED judging — the player's already-known argument is judged in a
+        task that runs CONCURRENTLY with enemy generation; the enemy text is judged
+        right after and both are `asyncio.gather`-ed. LLM calls overlap instead of
+        running strictly sequentially, while damage still applies once both scores
+        exist.
+      * CLEAR SIDES — the player's lead argues FOR the topic, the enemy lead argues
+        AGAINST it (deterministic). `side` is threaded into both prompts and carried
+        on the emitted utterance/token events.
+
+    Damage applies (the player's chosen skill scales it), then hp/phase emit.
+    Mirrors `run_round_stream`'s event protocol so the WS/REST callers are
+    unchanged. Mutates `combatants` HP and `momentum` in place.
     """
     from app.redis_state import (
         ENCOUNTER_TTL_SECONDS,
@@ -725,7 +817,14 @@ async def run_human_round_stream(
         yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
         return
 
+    # --- CLEAR SIDES (deterministic): the player's lead argues FOR the topic, the
+    # lead enemy argues AGAINST it. Thread it onto the combatants so the prompt +
+    # the emitted utterances both carry the stance. ---
+    player.side = "for"
+    enemy.side = "against"
+
     skill_name, attack_type, skill_power = _resolve_skill(player, skill_id)
+    fallback_model = next((c.model for c in combatants if c.model), None)
 
     # --- Player turn (human-typed) ---
     turn_no += 1
@@ -734,6 +833,7 @@ async def run_human_round_stream(
         "turn": turn_no,
         "actor_id": player.monster_id,
         "actor_role": "party",
+        "side": player.side,
         "skill_used": skill_name,
         "text": text,
         "ts": time.time(),
@@ -741,19 +841,54 @@ async def run_human_round_stream(
     await append_utterance(eid, player_utt)
     yield Event("utterance", player_utt)
 
-    # --- Enemy rebuttal (autonomous) ---
-    turn_no += 1
-    battle_state = _build_battle_state(enemy, combatants, topic, turn_no, 50.0, momentum)
+    enemy_turn = turn_no + 1
+
+    # --- PARALLELIZE: judge the player's ALREADY-KNOWN argument concurrently with
+    # generating (streaming) the enemy rebuttal. The player score doesn't depend on
+    # the enemy text, so the two LLM calls overlap instead of running back-to-back.
+    # We kick off the player-judge task first, then stream the enemy so its tokens
+    # reach the WS as they arrive (perceived latency = first enemy token).
+    player_judge_task = asyncio.create_task(
+        score_round(
+            topic,
+            [{"actor_id": player.monster_id, "text": text}],
+            fallback_model=fallback_model,
+        )
+    )
+
+    # --- Enemy rebuttal (autonomous, STREAMED) ---
+    battle_state = _build_battle_state(enemy, combatants, topic, enemy_turn, 50.0, momentum)
     action = _decide_action(enemy, battle_state)
     memories = await _gather_memories(enemy, topic, run_id)
     transcript = await get_transcript_safe(eid)
-    enemy_text = await _generate_utterance(
-        enemy, topic, transcript, action, memories, name_lookup
-    )
+
+    enemy_text = ""
+    try:
+        async for chunk in _stream_utterance(
+            enemy, topic, transcript, action, memories, name_lookup
+        ):
+            if chunk["kind"] == "token":
+                yield Event(
+                    "token",
+                    {
+                        "turn": enemy_turn,
+                        "actor_id": enemy.monster_id,
+                        "side": enemy.side,
+                        "text": chunk["text"],
+                    },
+                )
+            else:  # "done"
+                enemy_text = chunk["text"]
+    except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
+        if not enemy_text:
+            enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+
+    turn_no = enemy_turn
     enemy_utt = {
         "turn": turn_no,
         "actor_id": enemy.monster_id,
         "actor_role": "enemy",
+        "side": enemy.side,
         "skill_used": action.get("skill"),
         "text": enemy_text,
         "ts": time.time(),
@@ -761,17 +896,19 @@ async def run_human_round_stream(
     await append_utterance(eid, enemy_utt)
     yield Event("utterance", enemy_utt)
 
-    # --- Judge both at once ---
-    fallback_model = next((c.model for c in combatants if c.model), None)
-    scores = await score_round(
-        topic,
-        [
-            {"actor_id": player.monster_id, "text": text},
-            {"actor_id": enemy.monster_id, "text": enemy_text},
-        ],
-        fallback_model=fallback_model,
+    # --- Judge: the player score was computed concurrently with enemy generation;
+    # now judge the enemy text. Gather both so any straggler resolves together. ---
+    enemy_judge_task = asyncio.create_task(
+        score_round(
+            topic,
+            [{"actor_id": enemy.monster_id, "text": enemy_text}],
+            fallback_model=fallback_model,
+        )
     )
-    score_by_id = {js.actor_id: js for js in scores}
+    player_scores, enemy_scores = await asyncio.gather(
+        player_judge_task, enemy_judge_task
+    )
+    score_by_id = {js.actor_id: js for js in (*player_scores, *enemy_scores)}
 
     # --- Apply damage (player's skill scales their hit; enemy uses 1.0) ---
     verdicts: list[dict[str, Any]] = []

@@ -127,6 +127,85 @@ ARCHETYPES: list[dict[str, Any]] = [
 ARCHETYPES_BY_KEY: dict[str, dict[str, Any]] = {a["key"]: a for a in ARCHETYPES}
 
 
+# ---------------------------------------------------------------------------
+# Types as DOMAINS: each DebateType is a rhetorical domain with its own
+# description + signature skill moves. This is the single source of truth that
+# the generator (to assign type-appropriate skills) and the skill_engine (to
+# fall back to a by-type instruction) both read.
+#
+# Skill NAMES here are kept identical to the inline catalog in
+# ``app.party.generator`` and to packages/shared/enums.ts so frontend chips,
+# damage typing, and the skill .md files all line up. Each name slugifies to a
+# matching ``app/skills/<slug>.md`` file consumed by the skill engine.
+# ---------------------------------------------------------------------------
+
+#: DebateType value (uppercase string) -> domain definition.
+#:   * ``description``  — what this rhetorical domain is about.
+#:   * ``signature_skills`` — the move names that belong to this domain.
+TYPE_DOMAINS: dict[str, dict[str, Any]] = {
+    "LOGOS": {
+        "description": (
+            "The domain of logic and evidence. LOGOS debaters win with facts, "
+            "tight reasoning, data, and structural rigour."
+        ),
+        "signature_skills": ["Logical Thrust", "Steel Man"],
+    },
+    "PATHOS": {
+        "description": (
+            "The domain of emotion and story. PATHOS debaters move the audience "
+            "with vivid human stakes, empathy, and felt consequence."
+        ),
+        "signature_skills": ["Emotional Appeal", "Anecdote"],
+    },
+    "ETHOS": {
+        "description": (
+            "The domain of credibility and authority. ETHOS debaters borrow trust "
+            "from expertise, institutions, and earned standing."
+        ),
+        "signature_skills": ["Authority Cite", "Credential Drop"],
+    },
+    "CHAOS": {
+        "description": (
+            "The domain of disruption and reframing. CHAOS debaters refuse the "
+            "given frame, flip premises, and scramble the opponent's line."
+        ),
+        "signature_skills": ["Reframe Attack", "Whataboutism"],
+    },
+    "SOCRATIC": {
+        "description": (
+            "The domain of questioning. SOCRATIC debaters win by asking precise "
+            "questions that expose gaps and lead opponents to concede."
+        ),
+        "signature_skills": ["Socratic Probe", "Leading Question"],
+    },
+    "RHETORIC": {
+        "description": (
+            "The domain of style and framing. RHETORIC debaters persuade with "
+            "memorable phrasing, vivid analogy, and rhythmic force."
+        ),
+        "signature_skills": ["Rhetorical Flourish", "Analogy Strike"],
+    },
+}
+
+
+def domain_for_type(debate_type: Any) -> dict[str, Any]:
+    """Return the domain definition for a ``DebateType`` or its string value.
+
+    Accepts a :class:`DebateType` enum member or a (case-insensitive) string.
+    Returns an empty-ish default ``{"description": "", "signature_skills": []}``
+    for an unknown type so callers never need to guard against ``KeyError``.
+    """
+    key = getattr(debate_type, "value", debate_type)
+    if key is None:
+        return {"description": "", "signature_skills": []}
+    return TYPE_DOMAINS.get(str(key).upper(), {"description": "", "signature_skills": []})
+
+
+def signature_skills_for_type(debate_type: Any) -> list[str]:
+    """Return the list of signature skill names for a type (``[]`` if unknown)."""
+    return list(domain_for_type(debate_type).get("signature_skills", []))
+
+
 def pick_archetype(rng: random.Random) -> dict[str, Any]:
     """Return one archetype dict, chosen with the provided seeded RNG.
 

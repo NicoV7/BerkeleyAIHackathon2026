@@ -35,6 +35,10 @@ _SKILL_CATALOG: list[dict[str, Any]] = [
     {"name": "Analogy Strike",    "type": "RHETORIC", "power": 1.0, "description": "Compare with vivid analogy."},
 ]
 
+#: name -> catalog dict, for resolving a domain's signature skill names back to
+#: full skill objects (with type/power/description) when generating monsters.
+_SKILL_BY_NAME: dict[str, dict[str, Any]] = {s["name"]: s for s in _SKILL_CATALOG}
+
 # Persona templates
 _BACKSTORIES = [
     "A philosophy professor who debates for sport.",
@@ -72,17 +76,47 @@ _WILD_NAMES = [
 ]
 
 
+def _domain_skills_for(debate_type: DebateType) -> list[dict[str, Any]]:
+    """Resolve a type's domain *signature* skills to full catalog dicts.
+
+    Reads the type->domain->skills registry in :mod:`app.party.archetypes`
+    (single source of truth), then maps each signature move name back to its
+    full ``{name, type, power, description}`` object. Falls back to type-matched
+    catalog entries if the registry is unavailable, so generation never breaks.
+    """
+    names = _archetypes.signature_skills_for_type(debate_type)
+    skills = [_SKILL_BY_NAME[n] for n in names if n in _SKILL_BY_NAME]
+    if not skills:
+        skills = [s for s in _SKILL_CATALOG if s["type"] == debate_type.value]
+    return skills
+
+
 def _pick_skills(rng: random.Random, debate_type: DebateType, n: int = 2) -> list[dict[str, Any]]:
-    """Pick n skills, favouring the monster's own type, from the inline catalog."""
-    same_type = [s for s in _SKILL_CATALOG if s["type"] == debate_type.value]
+    """Pick n skills drawn from the monster's TYPE domain first.
+
+    A monster gets moves from its own rhetorical domain (a PATHOS agent gets
+    pathos moves), per the type->domain registry, topped up from other domains
+    only if more are needed. Backward-compatible: same return shape (list of
+    catalog dicts), still favours the monster's own type, deterministic for a
+    given ``rng``.
+    """
+    same_type = _domain_skills_for(debate_type)
     other = [s for s in _SKILL_CATALOG if s["type"] != debate_type.value]
     chosen: list[dict[str, Any]] = []
     if same_type:
         chosen.append(rng.choice(same_type))
-    while len(chosen) < n and other:
-        pick = rng.choice(other)
-        if pick not in chosen:
-            chosen.append(pick)
+    # Prefer remaining same-domain moves before reaching into other domains.
+    remaining_same = [s for s in same_type if s not in chosen]
+    pools = (remaining_same, other)
+    for pool in pools:
+        pool = list(pool)
+        while len(chosen) < n and pool:
+            pick = rng.choice(pool)
+            pool.remove(pick)
+            if pick not in chosen:
+                chosen.append(pick)
+        if len(chosen) >= n:
+            break
     return chosen[:n]
 
 

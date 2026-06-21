@@ -644,6 +644,8 @@ export interface components {
             hp: number;
             /** Max Hp */
             max_hp: number;
+            /** Side */
+            side?: ("for" | "against") | null;
         };
         /** CreateEncounterRequest */
         CreateEncounterRequest: {

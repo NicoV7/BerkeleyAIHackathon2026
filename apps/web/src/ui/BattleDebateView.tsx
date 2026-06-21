@@ -46,6 +46,30 @@ import {
 } from "../ws/useEncounterStream";
 
 // ---------------------------------------------------------------------------
+// Debate sides — the player's monster argues FOR the topic, the enemy AGAINST.
+// The backend sets `side` ("for"/"against") on CombatantState; if absent we
+// infer from role (party => FOR, enemy => AGAINST) so labels always render.
+// ---------------------------------------------------------------------------
+
+type DebateSide = "for" | "against";
+
+function combatantSide(c: CombatantState): DebateSide {
+  // `side` is an optional backend-provided hint; read it defensively so this
+  // works whether or not the generated type declares it yet.
+  const raw = (c as { side?: string }).side;
+  if (raw === "for" || raw === "against") return raw;
+  return c.role === "party" ? "for" : "against";
+}
+
+function sideLabel(side: DebateSide): string {
+  return side === "for" ? "FOR" : "AGAINST";
+}
+
+function sideColor(side: DebateSide): string {
+  return side === "for" ? "var(--win)" : "var(--danger)";
+}
+
+// ---------------------------------------------------------------------------
 // HP bar — chunky segmented, drains on hp events
 // ---------------------------------------------------------------------------
 
@@ -82,20 +106,21 @@ function CombatantCard({
   floatDmg: number | null;
   floatKey?: number | string;
 }) {
-  const sideColor = c.role === "party" ? "var(--party)" : "var(--enemy)";
+  const roleColor = c.role === "party" ? "var(--party)" : "var(--enemy)";
+  const side = combatantSide(c);
   return (
     <div
       className="pixel-panel p-2 min-w-[150px] flex-1 relative transition-shadow"
       style={{
-        borderColor: sideColor,
-        boxShadow: isActive ? `0 0 0 2px ${sideColor}, 3px 3px 0 #000` : undefined,
+        borderColor: roleColor,
+        boxShadow: isActive ? `0 0 0 2px ${roleColor}, 3px 3px 0 #000` : undefined,
         opacity: isActive === false ? 0.78 : 1,
       }}
     >
       {isActive && (
         <div
           className="absolute -top-2 left-1 font-hud text-[8px] px-1"
-          style={{ background: sideColor, color: "#000" }}
+          style={{ background: roleColor, color: "#000" }}
         >
           ACTIVE
         </div>
@@ -110,7 +135,7 @@ function CombatantCard({
         </div>
       )}
       <div className="flex items-center justify-between">
-        <span className="font-hud text-[10px]" style={{ color: sideColor }}>
+        <span className="font-hud text-[10px]" style={{ color: roleColor }}>
           {c.role === "party" ? "PARTY" : "ENEMY"}
           {isLead && " ★"}
         </span>
@@ -120,6 +145,14 @@ function CombatantCard({
         >
           {c.type}
         </span>
+      </div>
+      {/* Debate stance: FOR (player side) vs AGAINST (enemy side). */}
+      <div
+        className="font-hud text-[9px] px-1 inline-block mt-1"
+        style={{ background: sideColor(side), color: "#000" }}
+        title={side === "for" ? "Arguing FOR the topic" : "Arguing AGAINST the topic"}
+      >
+        {sideLabel(side)}
       </div>
       <div className="font-hud text-sm truncate mt-0.5">{c.name}</div>
       <div className="font-body text-[11px] mb-1" style={{ color: "var(--muted)" }}>
@@ -167,6 +200,16 @@ function UtteranceBubble({
   const color = isJudge ? "var(--accent)" : isParty ? "var(--party)" : "var(--enemy)";
   const text = useTypewriter(u.text, isNewest);
   const actorName = liveNames[u.actor_id] ?? u.actor_id;
+  // Debaters carry a stance; the judge is neutral. Side comes from the optional
+  // backend hint on the utterance, falling back to role (party=FOR, enemy=AGAINST).
+  const rawSide = (u as { side?: string }).side;
+  const turnSide: DebateSide | null = isJudge
+    ? null
+    : rawSide === "for" || rawSide === "against"
+      ? rawSide
+      : isParty
+        ? "for"
+        : "against";
 
   return (
     <div
@@ -177,6 +220,14 @@ function UtteranceBubble({
         <span className="font-hud text-[10px]" style={{ color }}>
           {actorName}
         </span>
+        {turnSide && (
+          <span
+            className="font-hud text-[8px] px-1"
+            style={{ background: sideColor(turnSide), color: "#000" }}
+          >
+            {sideLabel(turnSide)}
+          </span>
+        )}
         {u.skill_used && (
           <span className="font-hud text-[9px] px-1" style={{ background: "rgba(255,255,255,0.1)" }}>
             {u.skill_used}
@@ -270,7 +321,8 @@ function VerdictBadge({ v, fresh }: { v: JudgeVerdict; fresh: boolean }) {
 // ---------------------------------------------------------------------------
 
 export function BattleDebateView() {
-  const { activeEncounterId, runId, topic: runTopic, setEncounter, setYouScores } = useGame();
+  const { activeEncounterId, runId, topic: runTopic, setEncounter, setYouScores, setBattleLocked } =
+    useGame();
   const {
     status,
     encounter,
@@ -382,6 +434,15 @@ export function BattleDebateView() {
   const isOver = phase === "won" || phase === "lost";
   const canArgue = phase === "debating" || phase === "intro" || phase === "capturable";
 
+  // Battle isolation: lock the global nav while the battle is live, release it
+  // the moment it resolves (won/lost) so the post-battle "Leave" can navigate.
+  useEffect(() => {
+    setBattleLocked(!!activeEncounterId && !isOver);
+  }, [activeEncounterId, isOver, setBattleLocked]);
+
+  // Player's debate side (lead party monster) — drives the "You argue FOR" copy.
+  const playerSide: DebateSide = leadParty ? combatantSide(leadParty) : "for";
+
   // Active-turn indicator. While a round is running, infer who is "speaking"
   // from the newest transcript line; otherwise it's the player's move.
   const lastActorRole = transcript.length
@@ -484,6 +545,9 @@ export function BattleDebateView() {
   async function handleFlee() {
     // When the battle is already over, just leave — the encounter is finalized.
     if (!isOver) await restAction("/flee");
+    // Release the nav lock and return to the overworld (setEncounter(null) sets
+    // screen -> "overworld" and clears battleLocked).
+    setBattleLocked(false);
     setEncounter(null);
   }
 
@@ -518,7 +582,8 @@ export function BattleDebateView() {
       <div className="flex items-center justify-between px-4 py-2" style={{ borderBottom: "2px solid rgba(232,230,216,0.12)" }}>
         <div className="min-w-0">
           <div className="font-hud text-[8px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-            Debate topic
+            You argue{" "}
+            <span style={{ color: sideColor(playerSide) }}>{sideLabel(playerSide)}</span>
           </div>
           <div className="font-hud text-xs truncate" title={encounter?.topic ?? runTopic}>
             {encounter?.topic || runTopic || "Loading…"}
