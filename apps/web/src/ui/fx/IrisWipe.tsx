@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -52,6 +53,12 @@ export function IrisTransitionProvider({ children }: { children: ReactNode }) {
       setPhaseState("idle");
     }
   }, [setPhaseState]);
+
+  useEffect(() => {
+    if (phase === "idle") return;
+    const id = window.setTimeout(handleEnd, 760);
+    return () => window.clearTimeout(id);
+  }, [handleEnd, phase]);
 
   return (
     <IrisTransitionContext.Provider value={{ phase, transition }}>

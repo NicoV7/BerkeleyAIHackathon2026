@@ -298,3 +298,34 @@ def test_get_run_missing_raises_404(require_db) -> None:  # noqa: ANN001
             assert exc.value.status_code == 404
 
     asyncio.run(_scenario())
+
+
+def test_get_run_party_returns_player_monsters(monkeypatch) -> None:
+    """The UI HUD/party/training screens call GET /runs/{id}/party."""
+
+    class FakeSession:
+        async def get(self, _model, run_id: str) -> Run:
+            return _make_run(id=run_id)
+
+    async def fake_player_monsters(_session, run_id: str) -> list[Monster]:
+        return [_make_monster(id="p1", run_id=run_id)]
+
+    monkeypatch.setattr(runs, "_player_monsters", fake_player_monsters)
+
+    party = asyncio.run(runs.get_run_party("run-1", FakeSession()))
+
+    assert [m.id for m in party] == ["p1"]
+    assert all(m.owner == "player" for m in party)
+
+
+def test_get_run_party_missing_run_raises_404() -> None:
+    from fastapi import HTTPException
+
+    class FakeSession:
+        async def get(self, _model, _run_id: str) -> None:
+            return None
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(runs.get_run_party("missing", FakeSession()))
+
+    assert exc.value.status_code == 404
