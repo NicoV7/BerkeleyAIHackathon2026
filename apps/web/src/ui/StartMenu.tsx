@@ -169,7 +169,7 @@ export default function StartMenu() {
         theme?: string | null;
       }>(
         "/api/runs",
-        { topic, player_name: name }
+        { topic, player_name: name, avatar_type: avatarMode }
       );
       transition(() => setRun(run.id, run.debate_topic, run.player_name ?? name, run.theme ?? ""));
     } catch {

@@ -613,10 +613,13 @@ export function BattleDebateView() {
     [encounter]
   );
 
-  // Lead party monster = highest level, party-first (matches backend _lead).
+  // Lead party monster = chosen avatar first, then the old stat fallback.
   const leadParty = useMemo(() => {
     const party = combatants.filter((c) => c.role === "party");
-    return party.length ? party.slice().sort((a, b) => b.max_hp - a.max_hp)[0] : null;
+    return (
+      party.find((c) => c.is_avatar) ??
+      (party.length ? party.slice().sort((a, b) => b.max_hp - a.max_hp)[0] : null)
+    );
   }, [combatants]);
 
   // Lead enemy (first living enemy, else first enemy) — used as the defender for
@@ -626,17 +629,34 @@ export function BattleDebateView() {
     return enemies.find((c) => c.hp > 0) ?? enemies[0] ?? null;
   }, [combatants]);
 
+  const displayedCombatants = useMemo(() => {
+    const leadId = leadParty?.monster_id;
+    return combatants.slice().sort((a, b) => {
+      const rank = (c: CombatantState) =>
+        c.role === "party" ? (c.monster_id === leadId ? 0 : 1) : 2;
+      return rank(a) - rank(b);
+    });
+  }, [combatants, leadParty?.monster_id]);
+
   // Fetch the player's party once to source the lead monster's skills.
   useEffect(() => {
     if (!runId) return;
     api
-      .get<Array<{ id: string; type: string; level: number; skills: unknown[] }>>(
-        `/api/runs/${runId}/party`
-      )
+      .get<
+        Array<{
+          id: string;
+          type: string;
+          level: number;
+          skills: unknown[];
+          is_avatar?: boolean;
+        }>
+      >(`/api/runs/${runId}/party`)
       .then((party) => {
         if (!party.length) return;
-        // Lead = highest level (tiebreak first).
-        const lead = party.slice().sort((a, b) => (b.level ?? 0) - (a.level ?? 0))[0];
+        // Lead = selected avatar when present; otherwise highest level.
+        const lead =
+          party.find((m) => m.is_avatar) ??
+          party.slice().sort((a, b) => (b.level ?? 0) - (a.level ?? 0))[0];
         setLeadId(lead.id);
         setSkills(parseSkills(lead.skills));
       })
@@ -992,7 +1012,7 @@ export function BattleDebateView() {
             Awaiting combatant data…
           </div>
         ) : (
-          combatants.map((c) => {
+          displayedCombatants.map((c) => {
             // Active combatant: the lead party on the player's turn, the lead
             // enemy while the opponent is arguing. No highlight once over.
             const activeId = isOver

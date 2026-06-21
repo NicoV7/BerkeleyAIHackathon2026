@@ -241,7 +241,9 @@ async def create_run(
     await session.commit()
     await session.refresh(run)
 
-    party = await roll_starter_party(session, run.id, seed=body.seed)
+    party = await roll_starter_party(
+        session, run.id, seed=body.seed, avatar_type=body.avatar_type
+    )
     # Also seed wild enemies (so they exist in DB for map queries)
     await generate_wild(session, run.id, n=WILD_COUNT, seed=body.seed)
 

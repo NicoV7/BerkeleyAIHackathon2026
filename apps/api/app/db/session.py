@@ -45,6 +45,9 @@ async def init_db() -> None:
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS domain VARCHAR NOT NULL DEFAULT 'GENERAL'",
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_url VARCHAR",
             "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS wiki_hydrated BOOLEAN NOT NULL DEFAULT FALSE",
+            # Avatar selection: marks the player's chosen-avatar starter as the
+            # run's permanent main character (lead). Additive; defaults False.
+            "ALTER TABLE monsters ADD COLUMN IF NOT EXISTS is_avatar BOOLEAN NOT NULL DEFAULT FALSE",
         ):
             await conn.execute(text(stmt))
 

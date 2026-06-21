@@ -178,6 +178,7 @@ export interface CombatantState {
   atk?: number;
   def?: number;
   domain?: string;
+  is_avatar?: boolean;
 }
 
 export interface EncounterState {

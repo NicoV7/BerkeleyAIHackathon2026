@@ -75,6 +75,32 @@ _WILD_NAMES = [
     "Verbosio", "Demagog", "Sophist", "Hyperbole", "Truism",
 ]
 
+#: Flavour-matched starter name per debate type, so a chosen PATHOS avatar reads
+#: as "PathosDrake", ETHOS as "EthosGuard", etc. (all are members of
+#: ``_STARTER_NAMES``). Falls back to the first starter name for safety.
+_TYPE_STARTER_NAME: dict[str, str] = {
+    "LOGOS": "LogiKnight",
+    "PATHOS": "PathosDrake",
+    "ETHOS": "EthosGuard",
+    "CHAOS": "ChaosWitch",
+    "SOCRATIC": "SocraLeaf",
+    "RHETORIC": "RhetorFox",
+}
+
+
+def _parse_avatar_type(avatar_type: str | None) -> DebateType | None:
+    """Parse a client-supplied avatar string into a :class:`DebateType`, or None.
+
+    Accepts any case (``"pathos"`` / ``"PATHOS"``). Returns None for a missing or
+    unknown value so starter generation falls back to the random roll.
+    """
+    if not avatar_type:
+        return None
+    try:
+        return DebateType(str(avatar_type).strip().upper())
+    except ValueError:
+        return None
+
 
 def _domain_skills_for(debate_type: DebateType) -> list[dict[str, Any]]:
     """Resolve a type's domain *signature* skills to full catalog dicts.
@@ -227,21 +253,45 @@ def build_wild_monster(
     )
 
 
-async def roll_starter_party(session: AsyncSession, run_id: str, seed: int = 0) -> list[Monster]:
+async def roll_starter_party(
+    session: AsyncSession,
+    run_id: str,
+    seed: int = 0,
+    avatar_type: str | None = None,
+) -> list[Monster]:
     """Create 2–3 starter party monsters and persist them to the DB.
+
+    When ``avatar_type`` names a valid :class:`DebateType`, the FIRST starter is
+    the player's chosen avatar: forced to that type with the type's signature
+    moves (e.g. PATHOS -> Emotional Appeal / Anecdote), a flavour-matched name,
+    and ``is_avatar=True`` so the battle UI treats it as the run's permanent main
+    character. The remaining starters keep random types for coverage. An
+    absent/invalid ``avatar_type`` reproduces the original fully-random roll
+    exactly (rng consumption order unchanged for that path).
 
     Exposed interface consumed by WS-B and WS-E.
     """
     rng = random.Random(seed ^ hash(run_id) & 0xFFFFFFFF)
     n = rng.randint(2, 3)
+    avatar = _parse_avatar_type(avatar_type)
     monsters: list[Monster] = []
     used_names: set[str] = set()
-    for _ in range(n):
-        dtype = rng.choice(_DEBATE_TYPES)
-        name = rng.choice([nm for nm in _STARTER_NAMES if nm not in used_names] or _STARTER_NAMES)
+    for i in range(n):
+        is_avatar = avatar is not None and i == 0
+        if is_avatar:
+            # The chosen avatar: fixed type + the type's signature moves only.
+            dtype = avatar
+            name = _TYPE_STARTER_NAME.get(dtype.value, _STARTER_NAMES[0])
+        else:
+            dtype = rng.choice(_DEBATE_TYPES)
+            name = rng.choice(
+                [nm for nm in _STARTER_NAMES if nm not in used_names] or _STARTER_NAMES
+            )
         used_names.add(name)
+        # `persona` is built in the same rng position as before so the no-avatar
+        # path stays byte-for-byte deterministic for a given seed.
         persona = _build_persona(rng)
-        skills = _pick_skills(rng, dtype, n=2)
+        skills = _domain_skills_for(dtype) if is_avatar else _pick_skills(rng, dtype, n=2)
         m = Monster(
             run_id=run_id,
             owner=MonsterOwner.player,
@@ -254,6 +304,7 @@ async def roll_starter_party(session: AsyncSession, run_id: str, seed: int = 0) 
             xp=0,
             max_hp=100,
             evolution_stage=0,
+            is_avatar=is_avatar,
             model="gemma3:1b",
             # Naive UTC to match TIMESTAMP WITHOUT TIME ZONE column
             created_at=datetime.utcnow(),
