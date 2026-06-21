@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { useGame } from "../state/store";
 
 export interface HudMap {
   width: number;
@@ -122,6 +123,7 @@ function Minimap({
 
 function StatBars({ runId }: { runId: string }) {
   const [mon, setMon] = useState<PartyMonster | null>(null);
+  const playerName = useGame((s) => s.playerName);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,6 +146,14 @@ function StatBars({ runId }: { runId: string }) {
 
   return (
     <div className="pixel-panel p-2 space-y-1.5" style={{ width: MINIMAP_PX + 8 }}>
+      {playerName ? (
+        <div
+          className="font-hud text-[9px] truncate"
+          style={{ color: "var(--accent)", textShadow: "1px 1px 0 #000" }}
+        >
+          {playerName}
+        </div>
+      ) : null}
       <div className="font-hud text-[8px] truncate" style={{ color: "var(--ink)" }}>
         {mon ? mon.name : "—"}
         {mon ? <span style={{ color: "var(--muted)" }}> · Lv{mon.level}</span> : null}

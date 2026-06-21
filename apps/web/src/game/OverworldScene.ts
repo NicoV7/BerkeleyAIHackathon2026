@@ -112,6 +112,7 @@ function terrainFill(tile: number, jitter: number): number {
 
 export interface OverworldConfig {
   runId: string;
+  playerName?: string;
   onEncounter: (wildId: string) => void;
   onNpcTalk?: (npc: NPCAnchorView) => void;
   onMapLoaded?: (m: {
@@ -167,6 +168,7 @@ export class OverworldScene extends Phaser.Scene {
   private tileGraphics!: Phaser.GameObjects.Graphics;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
+  private playerNameTag!: Phaser.GameObjects.Text;
 
   // Client-side world simulation + roaming enemy runtime
   private sim: WorldSim | null = null;
@@ -321,6 +323,21 @@ export class OverworldScene extends Phaser.Scene {
     this.playerSprite.setDepth(10);
     this.playerAnimator = new PlayerSpriteAnimator(this.playerSprite);
 
+    // Floating name tag — white text, transparent background, always pinned
+    // above the player's head (positioned each frame in update()).
+    this.playerNameTag = this.add
+      .text(0, 0, this.cfg.playerName ?? "", {
+        fontFamily: '"Press Start 2P", monospace',
+        fontSize: "8px",
+        color: "#ffffff",
+        align: "center",
+        stroke: "#000000",
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(20)
+      .setVisible(Boolean(this.cfg.playerName));
+
     // Input
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.wasd = {
@@ -414,6 +431,7 @@ export class OverworldScene extends Phaser.Scene {
 
       // Position player + attach the follow camera now that the sim exists.
       this.sim.applyToSprite(this.playerSprite);
+      this.updateNameTag();
       this.sim.attachCamera(this.cameras.main, this.playerSprite);
       this.emitHudMap();
       this.emitPlayerTile();
@@ -436,6 +454,13 @@ export class OverworldScene extends Phaser.Scene {
         y: e.y - originY,
       })),
     });
+  }
+
+  /** Pin the floating name tag just above the player sprite's head. */
+  private updateNameTag() {
+    if (!this.playerNameTag.visible) return;
+    const headOffset = this.playerSprite.displayHeight / 2 + 4;
+    this.playerNameTag.setPosition(this.playerSprite.x, this.playerSprite.y - headOffset);
   }
 
   private emitPlayerTile() {
@@ -620,6 +645,7 @@ export class OverworldScene extends Phaser.Scene {
     const intent = this.readIntent();
     this.sim.update(intent, delta);
     this.sim.applyToSprite(this.playerSprite);
+    this.updateNameTag();
     this.playerAnimator.update({
       intent,
       velocity: { vx: this.sim.vx, vy: this.sim.vy },
