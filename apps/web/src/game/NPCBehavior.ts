@@ -33,6 +33,11 @@ export class NPCBehaviorManager {
     }
   }
 
+  /** Visit each NPC's current world position (used to draw blob shadows). */
+  forEach(cb: (x: number, y: number) => void): void {
+    for (const actor of this.actors) cb(actor.sprite.x, actor.sprite.y);
+  }
+
   nearest(
     playerX: number,
     playerY: number,

@@ -230,6 +230,13 @@ export class OverworldScene extends Phaser.Scene {
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
 
+  // V3: blob shadows under actors (one Graphics layer, redrawn each frame) + a
+  // water shimmer (throttled brightness pulse on the visible water tiles).
+  private shadowGfx!: Phaser.GameObjects.Graphics;
+  private liveWaterCells: { x: number; y: number }[] = [];
+  private shimmerMapRef: MapState | null = null;
+  private lastShimmerMs = 0;
+
   // Depth bands per buffer slot, indexed [front, back]. The whole front buffer
   // (base + overlay + POI graphics) renders above the whole back buffer, and all
   // terrain renders below the actors (enemy=5, npc=7, player=10).
@@ -418,6 +425,11 @@ export class OverworldScene extends Phaser.Scene {
     this.frontBuffer = 0;
     this.liveWindow = null;
     this.cameras.main.setBackgroundColor("#1a1a2e");
+
+    // Blob-shadow layer: above terrain (depth < 0), below all actors (enemy=5,
+    // npc=7/9, player=10). Redrawn every frame in drawShadows().
+    this.shadowGfx = this.add.graphics();
+    this.shadowGfx.setDepth(4);
 
     // Bake the procedural pixel-art sprites once (no external assets).
     this.bakeSprites();
@@ -970,6 +982,57 @@ export class OverworldScene extends Phaser.Scene {
     );
   }
 
+  /**
+   * Redraw the blob-shadow layer: a soft dark ellipse under the player and every
+   * live enemy/NPC, so actors read as standing ON the ground rather than floating.
+   * Cleared + redrawn each frame (cheap — only a handful of actors on screen).
+   */
+  private drawShadows() {
+    const g = this.shadowGfx;
+    if (!g) return;
+    g.clear();
+    g.fillStyle(0x000000, 0.26);
+    const foot = TILE_SIZE * 0.3;
+    const ellipse = (x: number, y: number, w: number, h: number) =>
+      g.fillEllipse(x, y + foot, w, h);
+    if (this.playerSprite) ellipse(this.playerSprite.x, this.playerSprite.y, TILE_SIZE * 0.5, TILE_SIZE * 0.22);
+    this.enemies.forEach((x, y) => ellipse(x, y, TILE_SIZE * 0.5, TILE_SIZE * 0.22));
+    this.npcs.forEach((x, y) => ellipse(x, y, TILE_SIZE * 0.42, TILE_SIZE * 0.18));
+  }
+
+  /**
+   * Shimmer the visible water: a throttled, per-cell brightness pulse (grayscale
+   * tint multiplied over the water frame) so water reads as moving/reflective.
+   * The water-cell list is recomputed only when the live chunk changes.
+   */
+  private updateWaterShimmer(timeMs: number) {
+    if (this.mapData !== this.shimmerMapRef) {
+      this.shimmerMapRef = this.mapData;
+      this.liveWaterCells = [];
+      const d = this.mapData;
+      if (d) {
+        for (let y = 0; y < d.height; y++) {
+          for (let x = 0; x < d.width; x++) {
+            if (d.tiles[y][x] === TILE.WATER) this.liveWaterCells.push({ x, y });
+          }
+        }
+      }
+    }
+    if (timeMs - this.lastShimmerMs < 110 || !this.liveWaterCells.length) return;
+    this.lastShimmerMs = timeMs;
+    const buf = this.terrain[this.frontBuffer];
+    if (!buf) return;
+    const t = timeMs / 600;
+    for (const c of this.liveWaterCells) {
+      const tile = buf.base.getTileAt(c.x, c.y);
+      if (!tile) continue;
+      // Phase-offset sine per cell → a travelling shimmer rather than a global blink.
+      const s = 0.5 + 0.5 * Math.sin(t + (c.x + c.y) * 0.6);
+      const v = Math.round(185 + 70 * s); // 185..255 grayscale multiplier
+      tile.tint = (v << 16) | (v << 8) | v;
+    }
+  }
+
   /** Nearest POI of a given kind to `from` (squared tile distance); null if none. */
   private nearestPoiOfKind(
     from: RoutablePOI,
@@ -1070,6 +1133,10 @@ export class OverworldScene extends Phaser.Scene {
     this.maybeTriggerNpcTalk(time);
     this.maybeEnterInterior();
     this.maybeRefreshChunk(time);
+
+    // V3 atmosphere: ground actors with blob shadows + shimmer the water.
+    this.drawShadows();
+    this.updateWaterShimmer(time);
 
     // 2) Tick roaming enemy AI; collide → trigger encounter (client-side).
     const hitId = this.enemies.update(

@@ -260,6 +260,11 @@ export class EnemyManager {
     return collided;
   }
 
+  /** Visit each live enemy's world position (used to draw blob shadows). */
+  forEach(cb: (x: number, y: number) => void): void {
+    for (const enemy of this.enemies.values()) cb(enemy.x, enemy.y);
+  }
+
   /** Remove an enemy + its sprite (e.g. after it triggers an encounter). */
   remove(id: string): void {
     const spr = this.sprites.get(id);
