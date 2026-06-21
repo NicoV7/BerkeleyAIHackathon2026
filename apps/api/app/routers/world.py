@@ -531,6 +531,20 @@ def _find_npc_anchor(npc_id: str) -> tuple[NPCAnchor, Region | None] | None:
     return None
 
 
+def _iter_quest_giver_anchors() -> list[NPCAnchor]:
+    """Return unique canonical NPC anchors that can offer dungeon-clear quests."""
+    anchors: list[NPCAnchor] = []
+    seen: set[str] = set()
+    for _key, spec in _iter_canonical_specs():
+        for poi in spec.pois:
+            for anchor in poi.npc_anchors:
+                if anchor.archetype != "quest_giver" or anchor.npc_id in seen:
+                    continue
+                anchors.append(anchor)
+                seen.add(anchor.npc_id)
+    return anchors
+
+
 def _poi_xy_from_key(key: str) -> tuple[int, int] | None:
     """Parse a positional POI key like ``den:166:532`` into coordinates."""
     parts = key.split(":")
@@ -818,7 +832,7 @@ async def accept_quest(
         raise HTTPException(status_code=404, detail="NPC not found")
 
     anchor, region = match
-    if anchor.archetype not in {"merchant", "quest_giver"}:
+    if anchor.archetype != "quest_giver":
         raise HTTPException(status_code=409, detail="NPC does not offer quests")
 
     quest = await quests.offer_quest(
@@ -827,6 +841,26 @@ async def accept_quest(
     if quest is not None:
         quest = await quests.personalize_quest_copy(run_id, quest, anchor, region)
     return {"quest": quest.to_dict() if quest is not None else None}
+
+
+@router.get("/runs/{run_id}/quests/available")
+async def list_available_quest_offers(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Return quest-givers with active or available uncleared-dungeon offers."""
+    await _get_run_or_404(run_id, session)
+    offers: list[dict[str, Any]] = []
+    events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
+    for anchor in _iter_quest_giver_anchors():
+        offer = quests.preview_offer_from_events(
+            anchor.npc_id,
+            _candidate_dungeons(anchor),
+            events,
+        )
+        if offer is not None:
+            offers.append(offer.to_dict())
+    return {"offers": offers}
 
 
 @router.get("/runs/{run_id}/quests")

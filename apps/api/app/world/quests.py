@@ -93,6 +93,27 @@ def _reward_blurb(spec: dict[str, Any]) -> str:
     return " + ".join(parts) if parts else "a reward"
 
 
+@dataclass(frozen=True)
+class QuestOffer:
+    """Side-effect-free preview of the quest an NPC can currently show."""
+
+    npc_id: str
+    quest_id: str
+    status: str
+    target: str
+    target_name: str
+    objective: str = "clear_dungeon"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "npc_id": self.npc_id,
+            "quest_id": self.quest_id,
+            "status": self.status,
+            "target": self.target,
+            "target_name": self.target_name,
+        }
+
+
 def _quest_id(npc_id: str, objective: str, target: str) -> str:
     """Stable id — accepting the same quest twice is a no-op."""
     h = hashlib.md5(f"{npc_id}|{objective}|{target}".encode("utf-8")).hexdigest()
@@ -118,37 +139,41 @@ async def offer_quest(
     uncleared dungeon becomes the quest target; if all are cleared, no quest is
     offered (the FE shows a "no work today" message).
     """
-    candidates = candidate_dungeons or []
-    names_by_target = dict(candidates)
-    for evt in await event_log.recent(run_id, limit=event_log.MAX_EVENTS):
-        if evt.kind != "quest_accepted" or evt.data.get("npc_id") != npc_id:
-            continue
-        qid = evt.data.get("quest_id")
-        target = evt.data.get("target")
-        objective = evt.data.get("objective")
-        if not qid or not target or not objective:
-            continue
-        if await is_active(run_id, str(qid)):
-            return _build_quest_obj(
-                str(qid),
-                npc_id,
-                str(objective),
-                str(target),
-                names_by_target.get(str(target), str(target)),
-            )
-
-    uncleared = [
-        (poi_key, name)
-        for poi_key, name in candidates
-        if not await event_log.has(run_id, "dungeon_cleared", poi=poi_key)
-    ]
-    for poi_key, name in _ordered_candidates_for_npc(npc_id, uncleared):
-        objective = "clear_dungeon"
-        target = poi_key
-        qid = _quest_id(npc_id, objective, target)
-        quest = _build_quest_obj(qid, npc_id, objective, target, name)
+    offer = await preview_offer(
+        run_id, npc_id, candidate_dungeons=candidate_dungeons
+    )
+    if offer is None:
+        return None
+    quest = _build_quest_obj(
+        offer.quest_id,
+        npc_id,
+        offer.objective,
+        offer.target,
+        offer.target_name,
+    )
+    if offer.status == "available":
         return await _accept(run_id, quest)
-    return None
+    return quest
+
+
+async def preview_offer(
+    run_id: str,
+    npc_id: str,
+    *,
+    candidate_dungeons: list[tuple[str, str]] | None = None,
+) -> QuestOffer | None:
+    """Return the active or next available clear-dungeon quest without accepting it."""
+    events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
+    return _preview_offer_from_events(npc_id, candidate_dungeons or [], events)
+
+
+def preview_offer_from_events(
+    npc_id: str,
+    candidate_dungeons: list[tuple[str, str]],
+    events: list[event_log.Event],
+) -> QuestOffer | None:
+    """Preview an NPC offer from a caller-provided event-log snapshot."""
+    return _preview_offer_from_events(npc_id, candidate_dungeons, events)
 
 
 def _ordered_candidates_for_npc(
@@ -158,9 +183,66 @@ def _ordered_candidates_for_npc(
     if not candidates:
         return []
     nearby = candidates[: min(3, len(candidates))]
-    distant = candidates[len(nearby):]
     start = int(hashlib.md5(npc_id.encode("utf-8")).hexdigest(), 16) % len(nearby)
-    return nearby[start:] + nearby[:start] + distant
+    return nearby[start:] + nearby[:start]
+
+
+def _preview_offer_from_events(
+    npc_id: str,
+    candidates: list[tuple[str, str]],
+    events: list[event_log.Event],
+) -> QuestOffer | None:
+    names_by_target = dict(candidates)
+    cleared = {
+        str(evt.data.get("poi"))
+        for evt in events
+        if evt.kind == "dungeon_cleared" and evt.data.get("poi")
+    }
+    completed = {
+        str(evt.data.get("quest_id"))
+        for evt in events
+        if evt.kind == "quest_completed" and evt.data.get("quest_id")
+    }
+    for evt in events:
+        if evt.kind != "quest_accepted" or evt.data.get("npc_id") != npc_id:
+            continue
+        qid = str(evt.data.get("quest_id") or "")
+        target = str(evt.data.get("target") or "")
+        objective = str(evt.data.get("objective") or "")
+        if not qid or not target or not objective:
+            continue
+        if qid in completed:
+            continue
+        if objective == "clear_dungeon" and target in cleared:
+            continue
+        return QuestOffer(
+            npc_id=npc_id,
+            quest_id=qid,
+            status="active",
+            target=target,
+            target_name=names_by_target.get(target, target),
+            objective=objective,
+        )
+
+    nearby = candidates[: min(3, len(candidates))]
+    uncleared = [
+        (poi_key, name)
+        for poi_key, name in nearby
+        if poi_key not in cleared
+    ]
+    ordered = _ordered_candidates_for_npc(npc_id, uncleared)
+    if not ordered:
+        return None
+    target, name = ordered[0]
+    objective = "clear_dungeon"
+    return QuestOffer(
+        npc_id=npc_id,
+        quest_id=_quest_id(npc_id, objective, target),
+        status="available",
+        target=target,
+        target_name=name,
+        objective=objective,
+    )
 
 
 async def offer_typed_quest(

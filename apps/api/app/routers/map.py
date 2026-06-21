@@ -49,7 +49,7 @@ router = APIRouter(prefix="/api", tags=["map"])
 MAP_WIDTH = 20
 MAP_HEIGHT = 15
 MAP_CHUNK_SIZE = 96
-WILD_COUNT = 80  # wild enemies placed globally per run
+WILD_COUNT = 64  # wild enemies placed globally per run
 
 
 # ---------------------------------------------------------------------------
