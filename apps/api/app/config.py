@@ -78,7 +78,23 @@ class Settings(BaseSettings):
     judge_model_fast: str = "gemma3:1b"
     llm_call_timeout_s: int = 28
     first_token_timeout_s: int = 15  # cold gemma3:1b first token can take >8s; 15 avoids premature fallback
-    actor_max_tokens: int = 64
+    actor_max_tokens: int = 96  # ~70 words: room to name the opponent's point AND rebut it
+
+    # --- Enemy NPC rebuttal model (engagement fix) ---------------------------
+    # The enemy ALWAYS rebuts the player's just-typed argument (no canned
+    # opening). We route that turn to a sharp, fast hosted model so the rebuttal
+    # actually engages the player's specific point, then fall back through free
+    # hosted providers and finally the local model so keyless/offline dev still
+    # works. The chain is tried in order (first non-empty wins) via
+    # app.gateway.candidates.run_candidates; reaching gemma3:1b means no hosted
+    # key was present. The first entry (Claude Haiku 4.5) is the primary:
+    # fastest/cheapest Claude, ideal for a 1-2 sentence real-time turn.
+    enemy_actor_candidates: str = (
+        "anthropic/claude-haiku-4-5,"
+        "groq/llama-3.1-8b-instant,"
+        "cerebras/llama-3.3-70b,"
+        "ollama/gemma3:1b"
+    )
     prewarm_enabled: bool = True
     # WS-4 warm-path latency. Once the actor model is confirmed WARM (a prewarm
     # ping at encounter create succeeded, so the model is resident in Ollama and
