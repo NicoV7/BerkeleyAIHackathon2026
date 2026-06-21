@@ -219,8 +219,8 @@ export class SceneRouter {
     this.cfg.onExitInterior?.(tile);
 
     if (activeScenePlugin) {
+      this.cfg.scenePlugin.resume(OVERWORLD_SCENE_KEY, { returnTile: tile });
       activeScenePlugin.stop();
-      activeScenePlugin.resume(OVERWORLD_SCENE_KEY, { returnTile: tile });
       return;
     }
 
