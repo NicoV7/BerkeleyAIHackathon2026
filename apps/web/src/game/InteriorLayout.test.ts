@@ -111,6 +111,32 @@ describe("buildInteriorGrid", () => {
     expect(npcReachable).toBe(true);
   });
 
+  it.each(kinds)("%s keeps every anchor reachable from the entrance", (kind) => {
+    // Deeper interiors (hollow town houses, chambers-and-corridors dungeons) must
+    // never strand the player or an anchor behind walls.
+    const s = spec({
+      width: 20,
+      height: 16,
+      pois: [
+        {
+          kind: "landmark",
+          x: 15,
+          y: 12,
+          name: "Loot",
+          npc_anchors: [
+            { npc_id: "n1", archetype: "merchant", x: 4, y: 3, name: "Sella" },
+            { npc_id: "n2", archetype: "innkeeper", x: 17, y: 4, name: "Bram" },
+          ],
+        },
+      ],
+    });
+    const g = buildInteriorGrid(s, kind);
+    for (const t of [{ x: 15, y: 12 }, { x: 4, y: 3 }, { x: 17, y: 4 }]) {
+      const p = clampInside(t, g.width, g.height);
+      expect(reachable(g.tiles, g.entrance, p)).toBe(true);
+    }
+  });
+
   it("emits a navigable room even for a degenerate (tiny/empty) spec", () => {
     const g = buildInteriorGrid(spec({ width: 1, height: 1, pois: [] }), "cave");
     // Clamped up to the minimum dims so it is still a real room.

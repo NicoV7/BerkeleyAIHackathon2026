@@ -125,38 +125,77 @@ function buildCave(seed: number, w: number, h: number): number[][] {
   return tiles;
 }
 
-/** Structured town: open plaza with a grid of building (wall) footprints. */
+/**
+ * Structured village (C2): an open plaza with a grid of HOLLOW house footprints —
+ * a wall ring with a floor interior and a doorway gap facing the plaza, so the
+ * town reads as buildings you can step into rather than solid blocks. The first
+ * couple of houses get a FEATURE tile inside (a shop counter / inn hearth). Stays
+ * fully connected: the plaza gutters are open floor and every house has a doorway.
+ */
 function buildTown(seed: number, w: number, h: number): number[][] {
   const rand = mulberry32(seed ^ 0x7041);
   const tiles = borderedRoom(w, h, INTERIOR_TILE.FLOOR);
-  const BUILD_W = 3;
-  const BUILD_H = 2;
+  const BW = 4;
+  const BH = 3;
   const GUTTER = 2;
-  for (let by = 2; by + BUILD_H < h - 1; by += BUILD_H + GUTTER) {
-    for (let bx = 2; bx + BUILD_W < w - 1; bx += BUILD_W + GUTTER) {
-      // Skip ~1 in 5 footprints for organic gaps (deterministic via seed).
-      if (rand() < 0.2) continue;
-      for (let yy = by; yy < by + BUILD_H; yy++) {
-        for (let xx = bx; xx < bx + BUILD_W; xx++) {
-          tiles[yy][xx] = INTERIOR_TILE.WALL;
+  let idx = 0;
+  for (let by = 2; by + BH < h - 1; by += BH + GUTTER) {
+    for (let bx = 2; bx + BW < w - 1; bx += BW + GUTTER) {
+      // Skip ~1 in 6 footprints for organic gaps (deterministic via seed).
+      if (rand() < 0.18) continue;
+      for (let yy = by; yy <= by + BH; yy++) {
+        for (let xx = bx; xx <= bx + BW; xx++) {
+          const edge = yy === by || yy === by + BH || xx === bx || xx === bx + BW;
+          tiles[yy][xx] = edge ? INTERIOR_TILE.WALL : INTERIOR_TILE.FLOOR;
         }
       }
+      // Doorway in the bottom wall (faces the plaza) so the house is enterable.
+      tiles[by + BH][bx + 1 + Math.floor(rand() * (BW - 1))] = INTERIOR_TILE.FLOOR;
+      // First two houses become shop / inn nooks: a FEATURE inside.
+      if (idx < 2) tiles[by + 1][bx + 1] = INTERIOR_TILE.FEATURE;
+      idx++;
     }
   }
   return tiles;
 }
 
-/** BSP-ish dungeon: a single bordered hall with a couple of inner pillars. */
+/**
+ * Chambers-and-corridors dungeon (C4): an open base (so the layout is always
+ * connected) overlaid with hollow rectangular chambers — each a wall ring with a
+ * doorway gap and an occasional inner pillar. Reads as a real multi-room dungeon
+ * while guaranteeing reachability: the gutters between chambers are open
+ * corridors, and every chamber connects to them through its doorway.
+ */
 function buildDungeon(seed: number, w: number, h: number): number[][] {
   const rand = mulberry32(seed ^ 0xb59);
   const tiles = borderedRoom(w, h, INTERIOR_TILE.FLOOR);
-  // Scatter a few solid pillars for a room-and-corridor feel; keep edges clear.
-  const pillars = 2 + Math.floor(rand() * 3);
-  for (let i = 0; i < pillars; i++) {
-    const px = 2 + Math.floor(rand() * (w - 4));
-    const py = 2 + Math.floor(rand() * (h - 4));
-    tiles[py][px] = INTERIOR_TILE.WALL;
-    if (px + 1 < w - 1) tiles[py][px + 1] = INTERIOR_TILE.WALL;
+  const CW = 4;
+  const CH = 3;
+  const GUTTER = 2;
+  for (let by = 2; by + CH < h - 1; by += CH + GUTTER) {
+    for (let bx = 2; bx + CW < w - 1; bx += CW + GUTTER) {
+      if (rand() < 0.25) continue; // organic gaps
+      for (let xx = bx; xx <= bx + CW; xx++) {
+        tiles[by][xx] = INTERIOR_TILE.WALL;
+        tiles[by + CH][xx] = INTERIOR_TILE.WALL;
+      }
+      for (let yy = by; yy <= by + CH; yy++) {
+        tiles[yy][bx] = INTERIOR_TILE.WALL;
+        tiles[yy][bx + CW] = INTERIOR_TILE.WALL;
+      }
+      // Doorway on a deterministic side so the chamber interior stays reachable.
+      const side = Math.floor(rand() * 4);
+      if (side === 0) tiles[by][bx + 1 + Math.floor(rand() * (CW - 1))] = INTERIOR_TILE.FLOOR;
+      else if (side === 1)
+        tiles[by + CH][bx + 1 + Math.floor(rand() * (CW - 1))] = INTERIOR_TILE.FLOOR;
+      else if (side === 2) tiles[by + 1 + Math.floor(rand() * (CH - 1))][bx] = INTERIOR_TILE.FLOOR;
+      else tiles[by + 1 + Math.floor(rand() * (CH - 1))][bx + CW] = INTERIOR_TILE.FLOOR;
+      // Occasional inner pillar for cover/flavour.
+      if (rand() < 0.5) {
+        tiles[by + 1 + Math.floor(rand() * (CH - 1))][bx + 1 + Math.floor(rand() * (CW - 1))] =
+          INTERIOR_TILE.WALL;
+      }
+    }
   }
   return tiles;
 }
