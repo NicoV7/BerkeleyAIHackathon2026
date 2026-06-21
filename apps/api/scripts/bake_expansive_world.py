@@ -64,12 +64,17 @@ def build_overworld() -> tuple[dict[str, Any], list[list[int]]]:
     tiles = build_tiles()
 
     roads = [
-        [(80, 656), (208, 560), (300, 600), (464, 496), (608, 384), (784, 320), (848, 128), (944, 96)],
+        [(208, 563), (208, 560), (300, 600), (464, 496), (608, 384), (784, 320), (848, 128), (944, 96)],
+        [(208, 560), (166, 532), (160, 480)],
+        [(208, 560), (236, 628), (300, 600)],
+        [(208, 560), (292, 552), (342, 590)],
         [(208, 560), (160, 480), (256, 288), (384, 192), (620, 130), (656, 160), (848, 128)],
         [(208, 560), (132, 792), (246, 880), (360, 740), (760, 780), (880, 760), (900, 620), (824, 470), (608, 384)],
         [(256, 288), (112, 160), (64, 96)],
         [(608, 384), (680, 520), (566, 620), (540, 900)],
         [(760, 780), (700, 600), (680, 520), (824, 470), (930, 420)],
+        [(360, 740), (448, 840), (570, 910)],
+        [(132, 792), (88, 874), (84, 880)],
     ]
     for route in roads:
         carve_route(tiles, route)
@@ -157,46 +162,92 @@ def overworld_pois() -> list[dict[str, Any]]:
             ("aldermere_innkeeper", "innkeeper", "Marin the Innkeeper", None),
             ("aldermere_merchant", "merchant", "Talia the Apothecary", None),
             ("aldermere_captain", "quest_giver", "Captain Veyl", None),
+            ("aldermere_cellar_guard", "quest_giver", "Bram Cellarwatch", None),
+            ("aldermere_willow_warden", "quest_giver", "Edda Willowward", None),
+            ("aldermere_road_scout", "quest_giver", "Lysa Road-Eye", None),
+            ("aldermere_gossip", "villager", "Pip of the Pump", None),
+            ("aldermere_farmer", "villager", "Noll Greenacre", None),
             ("socrates_anchor", "figure", "Socrates", "socrates"),
             ("curie_anchor", "figure", "Marie Curie", "curie"),
         ]),
         town(256, 288, "Reedmarket", [
             ("reedmarket_innkeeper", "innkeeper", "Oren of the Lamps", None),
             ("reedmarket_merchant", "merchant", "Sable the Ferryman", None),
+            ("reedmarket_reeve", "quest_giver", "Reeve Anik", None),
             ("reedmarket_villager", "villager", "Nessa of the Reeds", None),
+            ("reedmarket_netmaker", "villager", "Toma Netmaker", None),
         ]),
         town(608, 384, "Quarrycross", [
             ("quarrycross_smith", "merchant", "Berrin the Smith", None),
             ("quarrycross_guard", "quest_giver", "Ser Hale", None),
+            ("quarrycross_foreman", "quest_giver", "Foreman Pell", None),
+            ("quarrycross_mender", "innkeeper", "Dessa Flintrest", None),
             ("mlk_anchor", "figure", "Martin Luther King Jr.", "mlk"),
         ]),
         town(132, 792, "Brightmill", [
             ("brightmill_innkeeper", "innkeeper", "Pella Bright", None),
             ("brightmill_miller", "merchant", "Garron Millhand", None),
+            ("brightmill_watch", "quest_giver", "Watchman Cale", None),
             ("brightmill_scholar", "villager", "Ives the Listener", None),
+            ("brightmill_baker", "villager", "Ora Hearthloaf", None),
         ]),
         town(360, 740, "Lakehaven", [
             ("lakehaven_keeper", "innkeeper", "Mira of the Blue Porch", None),
             ("lakehaven_cartographer", "merchant", "Tovin Mapthread", None),
             ("lakehaven_warden", "quest_giver", "Warden Sol", None),
+            ("lakehaven_boatwright", "villager", "Cera Keelhand", None),
+            ("lakehaven_sentinel", "quest_giver", "Sentinel Odrin", None),
         ]),
         town(656, 160, "Northwatch", [
             ("northwatch_keeper", "innkeeper", "Helka Snowbell", None),
             ("northwatch_scout", "quest_giver", "Scout Ren", None),
             ("northwatch_trader", "merchant", "Orsik Coldpack", None),
+            ("northwatch_beacon", "villager", "Yara Beaconhand", None),
+            ("northwatch_marshal", "quest_giver", "Marshal Vonn", None),
         ]),
         town(824, 470, "Ironroot Hold", [
             ("ironroot_warden", "quest_giver", "Mael Ironroot", None),
             ("ironroot_smith", "merchant", "Vessa Anvil", None),
             ("ironroot_miner", "villager", "Tarn Deepcut", None),
+            ("ironroot_innkeeper", "innkeeper", "Boro Underbeam", None),
+            ("ironroot_pathfinder", "quest_giver", "Pathfinder Keir", None),
         ]),
         town(760, 780, "Starfall Abbey", [
             ("starfall_prior", "quest_giver", "Prior Ansel", None),
             ("starfall_keeper", "innkeeper", "Lio of the Bells", None),
             ("starfall_archivist", "merchant", "Archivist Fen", None),
+            ("starfall_novice", "villager", "Novice Mara", None),
+            ("starfall_sentinel", "quest_giver", "Sentinel Vael", None),
+        ]),
+        town(88, 874, "Emberfen Ferry", [
+            ("emberfen_ferryman", "merchant", "Harl the Ferryman", None),
+            ("emberfen_watch", "quest_giver", "Watch-Captain Iri", None),
+            ("emberfen_keeper", "innkeeper", "Sola Warmwater", None),
+            ("emberfen_reedcutter", "villager", "Bex Reedcutter", None),
+        ]),
+        town(452, 846, "Mirror Orchard", [
+            ("mirror_orchard_keeper", "innkeeper", "Enna Glassleaf", None),
+            ("mirror_orchard_grower", "merchant", "Vintner Olan", None),
+            ("mirror_orchard_watcher", "quest_giver", "Watcher Sel", None),
+            ("mirror_orchard_child", "villager", "Tess of the Rows", None),
+        ]),
+        town(574, 904, "Southwatch", [
+            ("southwatch_keeper", "innkeeper", "Moro Southgate", None),
+            ("southwatch_trader", "merchant", "Kella Farpack", None),
+            ("southwatch_spear", "quest_giver", "Spear-Captain Jorn", None),
+            ("southwatch_lamplighter", "villager", "Pavi Lamplighter", None),
+        ]),
+        town(924, 424, "Stormroad Market", [
+            ("stormroad_host", "innkeeper", "Vera Stormporch", None),
+            ("stormroad_merchant", "merchant", "Quill Roadshare", None),
+            ("stormroad_bailiff", "quest_giver", "Bailiff Orren", None),
+            ("stormroad_mason", "villager", "Hask the Mason", None),
         ]),
     ]
     dens = [
+        den(166, 532, "Old Mill Cellar", "dungeon"),
+        den(236, 628, "Willowdeep Shrine", "dungeon"),
+        den(292, 552, "King's Road Catacomb", "dungeon"),
         den(464, 496, "Glassroot Cave", "cave"),
         den(384, 192, "The Sunless Halls", "dungeon"),
         den(784, 320, "Drystone Keep", "dungeon"),
@@ -225,7 +276,7 @@ def overworld_pois() -> list[dict[str, Any]]:
         camp(64, 96, "Mire Edge Camp"),
     ]
     landmarks = [
-        landmark(80, 656, "Greenward Trailhead", "start"),
+        landmark(208, 563, "Aldermere Commons", "start"),
         landmark(174, 604, "King's Road Shrine"),
         landmark(342, 590, "Old Stone Bridge"),
         landmark(225, 342, "Moonwell"),
@@ -257,7 +308,18 @@ def overworld_pois() -> list[dict[str, Any]]:
 
 
 def town(x: int, y: int, name: str, npc_defs: list[tuple[str, str, str, str | None]]) -> dict[str, Any]:
-    offsets = [(-1, 0), (1, -1), (0, 2), (-2, 1), (2, 1)]
+    offsets = [
+        (-1, 0),
+        (1, -1),
+        (0, 3),
+        (-2, 1),
+        (2, 1),
+        (-3, 2),
+        (3, 2),
+        (-1, -2),
+        (1, -2),
+        (0, -3),
+    ]
     anchors = []
     for i, (npc_id, archetype, npc_name, figure_id) in enumerate(npc_defs):
         ox, oy = offsets[i % len(offsets)]
@@ -297,7 +359,18 @@ def build_interiors() -> dict[str, dict[str, Any]]:
 
 
 def interior_anchors_for(poi_data: dict[str, Any]) -> list[dict[str, Any]]:
-    spots = [(4, 5), (12, 5), (10, 9), (6, 8), (14, 9)]
+    spots = [
+        (4, 5),
+        (12, 5),
+        (10, 9),
+        (6, 8),
+        (14, 9),
+        (4, 10),
+        (16, 8),
+        (8, 5),
+        (11, 11),
+        (15, 5),
+    ]
     anchors = []
     for i, anchor in enumerate(poi_data.get("npc_anchors") or []):
         x, y = spots[i % len(spots)]

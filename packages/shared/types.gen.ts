@@ -1410,6 +1410,8 @@ export interface components {
             text: string;
             /** Ts */
             ts: number;
+            /** Reaction State */
+            reaction_state?: string | null;
         };
         /** ValidationError */
         ValidationError: {

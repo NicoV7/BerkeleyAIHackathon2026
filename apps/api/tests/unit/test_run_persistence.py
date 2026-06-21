@@ -112,7 +112,11 @@ def test_split_party_captured_maps_all_summary_fields() -> None:
         2,
     )
     assert s.type == "LOGOS"
-    assert s.skills == [{"name": "Logical Thrust", "type": "LOGOS"}]
+    assert s.skills[0]["name"] == "Logical Thrust"
+    assert s.skills[0]["type"] == "LOGOS"
+    assert s.skills[0]["effect_kind"] == "agent_argument"
+    assert s.skills[0]["mp_cost"] == 20
+    assert "prompt_fragment" not in s.skills[0]
 
 
 def test_split_party_captured_orders_by_created_at_then_id() -> None:

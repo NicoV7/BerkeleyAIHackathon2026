@@ -184,7 +184,7 @@
       8,
       8,
       8,
-      8,
+      4,
       8,
       8,
       8,
@@ -214,7 +214,7 @@
       8,
       8,
       1,
-      1,
+      4,
       1,
       1,
       1,
@@ -368,11 +368,27 @@
             "y": 5
           },
           {
+            "archetype": "quest_giver",
+            "figure_id": null,
+            "name": "Foreman Pell",
+            "npc_id": "town_608_384__2",
+            "x": 10,
+            "y": 9
+          },
+          {
+            "archetype": "innkeeper",
+            "figure_id": null,
+            "name": "Dessa Flintrest",
+            "npc_id": "town_608_384__3",
+            "x": 6,
+            "y": 8
+          },
+          {
             "archetype": "figure",
             "figure_id": "mlk",
             "name": "Martin Luther King Jr.",
-            "npc_id": "town_608_384__2",
-            "x": 10,
+            "npc_id": "town_608_384__4",
+            "x": 14,
             "y": 9
           }
         ],

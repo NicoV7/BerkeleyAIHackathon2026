@@ -1,4 +1,4 @@
-"""npcs.py — NPC dialogue generation (Wave 4 living layer).
+"""npcs.py - NPC dialogue generation (Wave 4 living layer).
 
 NPCs are anchored on FEATURE tiles inside canonical interiors (see schemas:
 ``POI.npc_anchors``). When the player triggers a talk action, the runtime:
@@ -7,18 +7,17 @@ NPCs are anchored on FEATURE tiles inside canonical interiors (see schemas:
   2. Builds a dialogue prompt blending: anchor archetype + region lore +
      recent events + the player's recruited-figure roster.
   3. Calls ``hosted_adapter.complete()`` to get text from a free-tier provider.
-  4. Caches the result in Redis for ``CACHE_TTL_S`` seconds, keyed by a hash
-     of (npc_id, archetype, recent-event-tail, figure-count). Cache invalidates
-     when the event tail changes, so a freshly cleared dungeon updates the
-     greeting without a manual purge.
+  4. Caches one-shot greetings in Redis for ``CACHE_TTL_S`` seconds, keyed by a
+     hash of (npc_id, archetype, recent-event-tail, figure-count).
 
-Pure-function helpers (``build_prompt``, ``cache_key``) are extracted so they
-can be unit-tested without Redis or HTTP.
+Conversation turns use a short-lived Redis list keyed by conversation id. If the
+hosted provider is unavailable or returns the configured stub, NPCs still answer
+with deterministic personality-aware dialogue instead of a silent path.
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,6 +32,15 @@ EVENT_TAIL = 6  # recent events included in the prompt + cache key
 CONVERSATION_TTL_S = 15 * 60
 MAX_CONVERSATION_TURNS = 8
 
+_PERSONALITY_MODES = (
+    "warm",
+    "wry",
+    "guarded",
+    "earnest",
+    "brisk",
+    "curious",
+)
+
 
 def cache_key(npc_id: str, archetype: str, events_tail_hash: str, figure_count: int) -> str:
     """Stable Redis key. Tail-hash means a new event invalidates the entry."""
@@ -45,15 +53,10 @@ def conversation_key(run_id: str, npc_id: str, conversation_id: str) -> str:
 
 
 def events_tail_hash(events: list[event_log.Event]) -> str:
-    """Hash the kind+filtered-data of the recent events tail (ignoring timestamps).
-
-    Timestamps would defeat caching across requests — we WANT two talks within
-    30s to hit the cache if the event history hasn't materially changed.
-    """
+    """Hash the kind+filtered-data of the recent events tail, ignoring timestamps."""
     h = hashlib.md5()
     for evt in events[-EVENT_TAIL:]:
         h.update(evt.kind.encode("utf-8"))
-        # Sort data keys for determinism across dict orderings.
         for k in sorted(evt.data):
             h.update(k.encode("utf-8"))
             h.update(str(evt.data[k]).encode("utf-8"))
@@ -114,27 +117,28 @@ def build_prompt(
             "Speak briefly, like a townsfolk. Comment on the recent events naturally."
         ),
         "merchant": (
-            "Speak as a shopkeeper. Mention wares if appropriate; reference "
-            "quests you might offer."
+            "Speak as a shopkeeper. Mention wares, prices, road supplies, or "
+            "local rumors if appropriate. Do not offer dungeon-clearing quests."
         ),
         "quest_giver": (
-            "Speak as a guard or captain. Offer or update a quest if the events "
-            "suggest one."
+            "Speak as a guard or captain. Offer or update a nearby "
+            "dungeon-clearing quest if the player asks for work."
         ),
         "innkeeper": (
-            "Speak warmly, like an innkeeper who knows everyone. Reference "
-            "returning travellers."
+            "Speak warmly, like an innkeeper who knows everyone. Mention rest "
+            "or making camp if appropriate."
         ),
         "figure": (
             "Speak in the voice of a famous historical figure. The player has "
             "not yet recruited you."
         ),
     }
-    archetype = anchor.archetype
-    archetype_hint = archetype_hints.get(archetype, "Speak briefly and in character.")
+    archetype_hint = archetype_hints.get(
+        anchor.archetype, "Speak briefly and in character."
+    )
 
     return (
-        f"You are {anchor.name or 'an NPC'} ({archetype}). {region_blurb}\n\n"
+        f"You are {anchor.name or 'an NPC'} ({anchor.archetype}). {region_blurb}\n\n"
         f"{events_blurb}\n\n"
         f"{roster_blurb}\n\n"
         f"{history_blurb}\n\n"
@@ -159,11 +163,73 @@ def _event_label(evt: event_log.Event) -> str:
     return evt.kind.replace("_", " ")
 
 
+def scripted_greeting(
+    anchor: NPCAnchor,
+    region: Region | None,
+    events: list[event_log.Event] | None = None,
+    recruited: list[figures.Figure] | None = None,
+) -> str:
+    """Generate a deterministic in-character greeting without network access."""
+    events = events or []
+    recruited = recruited or []
+    name = anchor.name or "traveller"
+    place = region.name if region is not None else "these roads"
+    personality = _personality_for(anchor)
+    roster_line = ""
+    if recruited:
+        roster_line = f" I see {recruited[0].name} travels in your company."
+    event_line = _event_greeting_fragment(events)
+
+    templates = {
+        "villager": (
+            f"{name} gives you a {personality} nod. Welcome to {place}; "
+            f"keep your eyes open and your claims sharper than your boots.{event_line}"
+        ),
+        "merchant": (
+            f"{name} greets you with a {personality} smile. My counter is open "
+            f"if you need potions, camp tokens, or a sharper edge for the road.{event_line}"
+        ),
+        "quest_giver": (
+            f"{name} studies your stance with a {personality} look. If you can "
+            f"carry an argument, I have work that needs doing near {place}.{event_line}"
+        ),
+        "innkeeper": (
+            f"{name} waves you toward the hearth with a {personality} welcome. "
+            f"Make camp here and I will see your party rested before dawn.{event_line}"
+        ),
+        "figure": (
+            f"{name} regards you with a {personality} patience. Speak carefully; "
+            f"a mind is recruited by reasons, not noise.{roster_line}{event_line}"
+        ),
+    }
+    return templates.get(anchor.archetype, templates["villager"])
+
+
+def _personality_for(anchor: NPCAnchor) -> str:
+    basis = f"{anchor.npc_id}:{anchor.name}:{anchor.archetype}"
+    idx = int(hashlib.md5(basis.encode("utf-8")).hexdigest(), 16)
+    return _PERSONALITY_MODES[idx % len(_PERSONALITY_MODES)]
+
+
+def _event_greeting_fragment(events: list[event_log.Event]) -> str:
+    for evt in reversed(events[-EVENT_TAIL:]):
+        if evt.kind == "dungeon_cleared":
+            name = evt.data.get("name") or evt.data.get("poi") or "the old den"
+            return f" Word of {name} being cleared has already reached us."
+        if evt.kind == "boss_defeated":
+            boss = evt.data.get("boss_id") or "that tyrant"
+            return f" People are still repeating how {boss} fell."
+        if evt.kind == "battle_won":
+            return " The town has heard you can win a debate when it counts."
+    return ""
+
+
 def _fallback_dialogue(
     anchor: NPCAnchor,
     region: Region | None,
     events: list[event_log.Event],
     player_message: str = "",
+    recruited: list[figures.Figure] | None = None,
 ) -> str:
     """Event-aware local dialogue when no hosted NPC provider is configured."""
     place = region.name if region is not None else "this village"
@@ -184,11 +250,13 @@ def _fallback_dialogue(
 
     if "quest" in message or "work" in message or anchor.archetype == "quest_giver":
         return f"Start close to {place}: clear one nearby den, then come back for your reward."
-    if anchor.archetype == "merchant":
-        return f"Keep a potion handy before you leave {place}; the nearest dens test more than courage."
-    if anchor.archetype == "innkeeper":
-        return f"Welcome to {place}. Rest, listen, and ask the guards what has been stirring outside."
-    return f"{place} has been waiting for someone willing to listen before charging off."
+    return scripted_greeting(anchor, region, events, recruited)
+
+
+def _is_stub_dialogue(text: str) -> bool:
+    """True for adapter/cache placeholders that should become scripted lines."""
+    normalized = text.strip().lower()
+    return not normalized or normalized == STUB_RESPONSE.lower()
 
 
 def _normalize_dialogue_text(
@@ -197,11 +265,12 @@ def _normalize_dialogue_text(
     region: Region | None,
     events: list[event_log.Event],
     player_message: str = "",
+    recruited: list[figures.Figure] | None = None,
 ) -> str:
     """Replace empty/static provider output with deterministic world-aware text."""
     stripped = (text or "").strip()
-    if not stripped or stripped == STUB_RESPONSE:
-        return _fallback_dialogue(anchor, region, events, player_message)
+    if _is_stub_dialogue(stripped):
+        return _fallback_dialogue(anchor, region, events, player_message, recruited)
     return stripped
 
 
@@ -256,8 +325,14 @@ async def generate_dialogue(
     adapter: HostedAdapter = default_adapter,
 ) -> DialogueResult:
     """Top-level entry: cache-first NPC dialogue. Never raises."""
-    events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
-    recruited = await figures.recruited_list(run_id)
+    try:
+        events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
+    except Exception:  # noqa: BLE001 - dialogue must always have a fallback
+        events = []
+    try:
+        recruited = await figures.recruited_list(run_id)
+    except Exception:  # noqa: BLE001 - roster flavor is optional
+        recruited = []
     tail = events_tail_hash(events)
     key = cache_key(anchor.npc_id, anchor.archetype, tail, len(recruited))
 
@@ -266,7 +341,10 @@ async def generate_dialogue(
     if conversation_id is not None or message:
         conv_id = conversation_id or f"{anchor.npc_id}:{tail}"
         conv_key = conversation_key(run_id, anchor.npc_id, conv_id)
-        history = await _load_history(r, conv_key)
+        try:
+            history = await _load_history(r, conv_key)
+        except Exception:  # noqa: BLE001 - conversations should degrade to stateless
+            history = []
         prompt = build_prompt(
             anchor,
             region,
@@ -276,16 +354,27 @@ async def generate_dialogue(
             player_message=message,
         )
         if message:
-            await _append_turn(r, conv_key, "player", message)
+            try:
+                await _append_turn(r, conv_key, "player", message)
+            except Exception:  # noqa: BLE001
+                pass
             history = [*history, {"role": "player", "text": message}]
-        text = _normalize_dialogue_text(
-            await adapter.complete(prompt, max_tokens=220, temperature=0.82),
-            anchor,
-            region,
-            events,
-            message,
-        )
-        await _append_turn(r, conv_key, "npc", text)
+        try:
+            text = await adapter.complete(prompt, max_tokens=220, temperature=0.82)
+            text = _normalize_dialogue_text(
+                text,
+                anchor,
+                region,
+                events,
+                message,
+                recruited,
+            )
+        except Exception:  # noqa: BLE001 - scripted fallback is part of the contract
+            text = _fallback_dialogue(anchor, region, events, message, recruited)
+        try:
+            await _append_turn(r, conv_key, "npc", text)
+        except Exception:  # noqa: BLE001
+            pass
         history = [*history, {"role": "npc", "text": text}]
         return DialogueResult(
             text=text,
@@ -295,18 +384,25 @@ async def generate_dialogue(
             history=history[-MAX_CONVERSATION_TURNS * 2:],
         )
 
-    cached = await r.get(key)
+    cached = None
+    try:
+        cached = await r.get(key)
+    except Exception:  # noqa: BLE001 - cache misses should degrade to dialogue
+        cached = None
     if cached is not None:
         if isinstance(cached, bytes):
             cached = cached.decode("utf-8")
-        return DialogueResult(text=cached, cached=True, cache_key=key)
+        if not _is_stub_dialogue(cached):
+            return DialogueResult(text=cached, cached=True, cache_key=key)
 
     prompt = build_prompt(anchor, region, events, recruited)
-    text = _normalize_dialogue_text(
-        await adapter.complete(prompt, max_tokens=160, temperature=0.8),
-        anchor,
-        region,
-        events,
-    )
-    await r.set(key, text, ex=CACHE_TTL_S)
+    try:
+        text = await adapter.complete(prompt, max_tokens=160, temperature=0.8)
+        text = _normalize_dialogue_text(text, anchor, region, events, recruited=recruited)
+    except Exception:  # noqa: BLE001 - scripted fallback is part of the contract
+        text = scripted_greeting(anchor, region, events, recruited)
+    try:
+        await r.set(key, text, ex=CACHE_TTL_S)
+    except Exception:  # noqa: BLE001 - returning dialogue matters more than cache
+        pass
     return DialogueResult(text=text, cached=False, cache_key=key)

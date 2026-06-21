@@ -285,6 +285,7 @@ def _combatant_utterances(result: dict[str, Any]) -> list[dict[str, Any]]:
         u
         for u in result.get("transcript", [])
         if u.get("actor_role") in ("party", "enemy") and isinstance(u.get("text"), str)
+        and not u.get("reaction_state")
     ]
 
 

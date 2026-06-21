@@ -531,8 +531,40 @@ def _find_npc_anchor(npc_id: str) -> tuple[NPCAnchor, Region | None] | None:
     return None
 
 
-def _candidate_dungeons() -> list[tuple[str, str]]:
-    """Dungeon candidates for dynamic quests, derived from canonical content."""
+def _iter_quest_giver_anchors() -> list[NPCAnchor]:
+    """Return unique canonical NPC anchors that can offer dungeon-clear quests."""
+    anchors: list[NPCAnchor] = []
+    seen: set[str] = set()
+    for _key, spec in _iter_canonical_specs():
+        for poi in spec.pois:
+            for anchor in poi.npc_anchors:
+                if anchor.archetype != "quest_giver" or anchor.npc_id in seen:
+                    continue
+                anchors.append(anchor)
+                seen.add(anchor.npc_id)
+    return anchors
+
+
+def _poi_xy_from_key(key: str) -> tuple[int, int] | None:
+    """Parse a positional POI key like ``den:166:532`` into coordinates."""
+    parts = key.split(":")
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    return int(parts[1]), int(parts[2])
+
+
+def _quest_origin_for_anchor(anchor: NPCAnchor) -> tuple[int, int]:
+    """Return overworld coordinates for an NPC, including town-interior anchors."""
+    prefix = anchor.npc_id.split("__", 1)[0]
+    parts = prefix.split("_")
+    if len(parts) == 3 and parts[0] in {"town", "den"}:
+        if parts[1].isdigit() and parts[2].isdigit():
+            return int(parts[1]), int(parts[2])
+    return anchor.x, anchor.y
+
+
+def _candidate_dungeons(anchor: NPCAnchor | None = None) -> list[tuple[str, str]]:
+    """Dungeon candidates for dynamic quests, optionally nearest to an NPC."""
     seen: dict[str, str] = {}
     for key, spec in _iter_canonical_specs():
         if key.startswith("den:"):
@@ -541,7 +573,20 @@ def _candidate_dungeons() -> list[tuple[str, str]]:
         for poi in spec.pois:
             if poi.kind == "den" or poi.interior_kind in {"cave", "dungeon"}:
                 seen.setdefault(poi_id(poi), poi.name or poi_id(poi))
-    return list(seen.items())
+    candidates = list(seen.items())
+    if anchor is None:
+        return candidates
+    origin_x, origin_y = _quest_origin_for_anchor(anchor)
+
+    def distance_to_anchor(item: tuple[str, str]) -> tuple[float, str]:
+        xy = _poi_xy_from_key(item[0])
+        if xy is None:
+            return (float("inf"), item[0])
+        dx = xy[0] - origin_x
+        dy = xy[1] - origin_y
+        return (dx * dx + dy * dy, item[0])
+
+    return sorted(candidates, key=distance_to_anchor)
 
 
 def _figure_summary(fig: figures.Figure, recruited: bool = False) -> dict[str, Any]:
@@ -787,15 +832,35 @@ async def accept_quest(
         raise HTTPException(status_code=404, detail="NPC not found")
 
     anchor, region = match
-    if anchor.archetype not in {"merchant", "quest_giver"}:
+    if anchor.archetype != "quest_giver":
         raise HTTPException(status_code=409, detail="NPC does not offer quests")
 
     quest = await quests.offer_quest(
-        run_id, body.npc_id, candidate_dungeons=_candidate_dungeons()
+        run_id, body.npc_id, candidate_dungeons=_candidate_dungeons(anchor)
     )
     if quest is not None:
         quest = await quests.personalize_quest_copy(run_id, quest, anchor, region)
     return {"quest": quest.to_dict() if quest is not None else None}
+
+
+@router.get("/runs/{run_id}/quests/available")
+async def list_available_quest_offers(
+    run_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Return quest-givers with active or available uncleared-dungeon offers."""
+    await _get_run_or_404(run_id, session)
+    offers: list[dict[str, Any]] = []
+    events = await event_log.recent(run_id, limit=event_log.MAX_EVENTS)
+    for anchor in _iter_quest_giver_anchors():
+        offer = quests.preview_offer_from_events(
+            anchor.npc_id,
+            _candidate_dungeons(anchor),
+            events,
+        )
+        if offer is not None:
+            offers.append(offer.to_dict())
+    return {"offers": offers}
 
 
 @router.get("/runs/{run_id}/quests")

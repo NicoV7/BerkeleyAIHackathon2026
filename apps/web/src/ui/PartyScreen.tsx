@@ -11,7 +11,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useGame } from "../state/store";
 import { api } from "../api/client";
-import { parseSkills, typeColor } from "../lib/skills";
+import { effectLabel, parseSkills, typeColor } from "../lib/skills";
 import { EMPTY_PARTY_COPY } from "../content/introScript";
 
 // ---- Types (mirrors app/schemas.py MonsterSummary) ----
@@ -83,9 +83,10 @@ function SkillChip({ skill }: { skill: ReturnType<typeof parseSkills>[number] })
           </span>
         )}
       </div>
-      {skill.type && (
+      {(skill.type || skill.mp_cost > 0) && (
         <span className="font-hud text-[8px]" style={{ color: typeColor(skill.type) }}>
-          {skill.type}
+          {skill.type || "—"} · {effectLabel(skill.effect_kind)}
+          {skill.mp_cost > 0 ? ` · ${skill.mp_cost} MP` : ""}
         </span>
       )}
       {skill.description && (
