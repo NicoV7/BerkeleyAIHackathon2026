@@ -473,6 +473,9 @@ class Combatant:
     def_: int = 10
     max_mp: int = 50
     domain: str = "GENERAL"
+    # True for the player's chosen-avatar monster — the permanent "main character"
+    # the lead-selection prefers over level/HP. Always False for enemies.
+    is_avatar: bool = False
 
     @property
     def alive(self) -> bool:
@@ -1284,11 +1287,17 @@ async def get_transcript_safe(eid: str) -> list[dict[str, Any]]:
 
 
 def _lead(combatants: list[Combatant], role: str) -> Optional[Combatant]:
-    """Highest-initiative alive combatant on a side (level desc, then name)."""
+    """Highest-initiative alive combatant on a side.
+
+    The player's chosen avatar is always the party lead while it is alive (it is
+    the run's permanent "main character"); otherwise fall back to level desc,
+    then name. Enemies never carry the avatar flag, so the enemy lead is
+    unchanged.
+    """
     alive = [c for c in combatants if c.role == role and c.alive]
     if not alive:
         return None
-    return sorted(alive, key=lambda c: (-c.level, c.name))[0]
+    return sorted(alive, key=lambda c: (not c.is_avatar, -c.level, c.name))[0]
 
 
 def _resolve_skill(actor: Combatant, skill_id: str | None) -> tuple[Optional[str], str, float]:

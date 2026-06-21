@@ -230,6 +230,7 @@ async def create_run(
     run = Run(
         debate_topic=debate_topic,
         theme=body.theme,
+        avatar_type=body.avatar_type,
         player_name=player_name,
         seed=body.seed,
         player_x=start_x,
@@ -248,7 +249,9 @@ async def create_run(
     if settings.empty_start_enabled:
         party: list[Monster] = []
     else:
-        party = await roll_starter_party(session, run.id, seed=body.seed)
+        party = await roll_starter_party(
+            session, run.id, seed=body.seed, avatar_type=body.avatar_type
+        )
     # Always seed wild enemies (so they exist in DB for map queries)
     await generate_wild(session, run.id, n=WILD_COUNT, seed=body.seed)
 
@@ -256,6 +259,7 @@ async def create_run(
         id=run.id,
         debate_topic=run.debate_topic,
         theme=run.theme,
+        avatar_type=getattr(run, "avatar_type", None),
         player_name=run.player_name,
         player_x=run.player_x,
         player_y=run.player_y,

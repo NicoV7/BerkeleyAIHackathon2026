@@ -34,6 +34,7 @@ interface MonsterSummary {
   max_mp?: number;
   domain?: string;
   wiki_hydrated?: boolean;
+  is_avatar?: boolean;
 }
 
 function TypeBadge({ type }: { type: string }) {
@@ -136,7 +137,17 @@ function MonsterCard({ monster }: { monster: MonsterSummary }) {
     <div className="pixel-panel p-4 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <span className="font-hud text-sm">{monster.name}</span>
-        <TypeBadge type={monster.type} />
+        <div className="flex items-center gap-1.5">
+          {monster.is_avatar && (
+            <span
+              className="font-hud text-[9px] px-1.5 py-0.5"
+              style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}
+            >
+              ★ Avatar
+            </span>
+          )}
+          <TypeBadge type={monster.type} />
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2">

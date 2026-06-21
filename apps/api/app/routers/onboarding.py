@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Monster, MonsterOwner, Run
 from app.db.session import get_session
+from app.party.generator import apply_avatar_traits
 from app.schemas import GachaPullRequest, MonsterSummary
 from app.serializers import monster_summary
 
@@ -66,6 +67,17 @@ async def _player_monsters(session: AsyncSession, run_id: str) -> list[Monster]:
     return list(res.scalars().all())
 
 
+async def _apply_run_avatar(
+    session: AsyncSession, run: Run, monster: Monster
+) -> Monster:
+    """Force the first onboarding monster to the run's selected avatar type."""
+    if apply_avatar_traits(monster, getattr(run, "avatar_type", None)):
+        session.add(monster)
+        await session.commit()
+        await session.refresh(monster)
+    return monster
+
+
 @router.post(
     "/runs/{run_id}/onboarding/first-pull", response_model=FirstPullResponse
 )
@@ -87,7 +99,7 @@ async def first_pull(
 
     existing = await _player_monsters(session, run_id)
     if existing:
-        first = existing[0]
+        first = await _apply_run_avatar(session, run, existing[0])
         return FirstPullResponse(
             monster=monster_summary(first),
             granted=False,
@@ -103,6 +115,9 @@ async def first_pull(
     )
 
     party = await _player_monsters(session, run_id)
+    if party:
+        first = await _apply_run_avatar(session, run, party[0])
+        result.monster = monster_summary(first)
     return FirstPullResponse(
         monster=result.monster,
         granted=True,
