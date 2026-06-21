@@ -160,7 +160,15 @@ export default function Overworld() {
         Arrow keys / WASD to move · Walk into a red enemy to battle
       </div>
       <OverworldHud map={hudMap} player={playerPos} runId={runId} />
-      <NPCDialogue runId={runId} npc={activeNpc} onClose={() => setActiveNpc(null)} />
+      <NPCDialogue
+        runId={runId}
+        npc={activeNpc}
+        onClose={() => setActiveNpc(null)}
+        onQuestSettled={() => {
+          const scene = gameRef.current?.scene.getScene("OverworldScene");
+          void (scene as OverworldScene | undefined)?.refreshQuestOffers();
+        }}
+      />
     </div>
   );
 }

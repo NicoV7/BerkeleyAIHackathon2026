@@ -2,11 +2,10 @@ import Phaser from "phaser";
 import { TILE_SIZE } from "./constants";
 
 const DEFAULT_INTERACTION_DISTANCE = 20.8;
+export const QUEST_MARKER_OFFSET = 18;
 
-// C3 — wandering NPCs. Cosmetic, client-seeded (per NPC), non-authoritative: the
-// server never sees these positions, so they never touch replay determinism or
-// add latency. NPCs amble within a small radius of their home anchor, pausing
-// between strolls, and refuse to step onto blocked tiles.
+// C3 - wandering NPCs. Cosmetic, client-seeded (per NPC), non-authoritative:
+// the server never sees these positions, so they never touch replay determinism.
 const NPC_WANDER_RADIUS_PX = TILE_SIZE * 2.5;
 const NPC_SPEED_PX_S = 22;
 const NPC_PAUSE_MIN_MS = 900;
@@ -25,8 +24,10 @@ export interface NPCAnchorView {
 interface NPCActor {
   anchor: NPCAnchorView;
   sprite: Phaser.GameObjects.Sprite;
-  /** Optional floating name tag that follows the sprite (from the #24 stack). */
+  /** Optional floating name tag that follows the sprite. */
   label: Phaser.GameObjects.Text | null;
+  /** Optional red quest marker shown for active/available quest offers. */
+  questMarker: Phaser.GameObjects.Text | null;
   homeX: number;
   homeY: number;
   curX: number;
@@ -63,12 +64,14 @@ export class NPCBehaviorManager {
   add(
     anchor: NPCAnchorView,
     sprite: Phaser.GameObjects.Sprite,
-    label?: Phaser.GameObjects.Text
+    label?: Phaser.GameObjects.Text | null,
+    questMarker?: Phaser.GameObjects.Text | null
   ): void {
     this.actors.push({
       anchor,
       sprite,
       label: label ?? null,
+      questMarker: questMarker ?? null,
       homeX: sprite.x,
       homeY: sprite.y,
       curX: sprite.x,
@@ -81,9 +84,9 @@ export class NPCBehaviorManager {
   }
 
   /**
-   * Step each NPC's wander + bob. `isBlocked(tileX, tileY)` (global tile coords)
-   * keeps cosmetic wander on walkable ground. NPCs face their movement while
-   * strolling and the player while paused; any name-tag label follows along.
+   * Step each NPC's wander + bob. `isBlocked(tileX, tileY)` keeps cosmetic wander
+   * on walkable ground. NPCs face their movement while strolling and the player
+   * while paused; name tags and quest markers follow the sprite.
    */
   update(
     time: number,
@@ -101,7 +104,6 @@ export class NPCBehaviorManager {
 
       if (time >= actor.pauseUntilMs) {
         if (dist <= ARRIVE_EPS_PX) {
-          // Arrived → pause, then choose a fresh target near home.
           actor.pauseUntilMs =
             time + NPC_PAUSE_MIN_MS + actor.rng() * (NPC_PAUSE_MAX_MS - NPC_PAUSE_MIN_MS);
           actor.targetX = actor.homeX + (actor.rng() * 2 - 1) * NPC_WANDER_RADIUS_PX;
@@ -111,7 +113,6 @@ export class NPCBehaviorManager {
           const nx = actor.curX + (dxT / dist) * step;
           const ny = actor.curY + (dyT / dist) * step;
           if (isBlocked(Math.floor(nx / TILE_SIZE), Math.floor(ny / TILE_SIZE))) {
-            // Blocked → drop this target and pause briefly before re-picking.
             actor.pauseUntilMs = time + 300;
             actor.targetX = actor.curX;
             actor.targetY = actor.curY;
@@ -133,6 +134,10 @@ export class NPCBehaviorManager {
         actor.label.setPosition(actor.sprite.x, actor.sprite.y - TILE_SIZE * 0.65);
         actor.label.setDepth(depth + 1);
       }
+      if (actor.questMarker) {
+        actor.questMarker.setPosition(actor.sprite.x, actor.sprite.y - QUEST_MARKER_OFFSET);
+        actor.questMarker.setDepth(depth + 6);
+      }
     }
   }
 
@@ -148,7 +153,7 @@ export class NPCBehaviorManager {
   ): NPCAnchorView | null {
     let best: { anchor: NPCAnchorView; distance: number } | null = null;
     for (const actor of this.actors) {
-      const distance = Phaser.Math.Distance.Between(playerX, playerY, actor.sprite.x, actor.sprite.y);
+      const distance = Math.hypot(playerX - actor.sprite.x, playerY - actor.sprite.y);
       if (distance > maxDistance) continue;
       if (!best || distance < best.distance) best = { anchor: actor.anchor, distance };
     }
@@ -159,6 +164,7 @@ export class NPCBehaviorManager {
     for (const actor of this.actors) {
       actor.sprite.destroy();
       actor.label?.destroy();
+      actor.questMarker?.destroy();
     }
     this.actors = [];
   }

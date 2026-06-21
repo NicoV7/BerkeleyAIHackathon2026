@@ -18,7 +18,11 @@
 
 import Phaser from "phaser";
 import { EnemyManager, type Enemy, type EnemySpawn } from "./EnemyAI";
-import { NPCBehaviorManager, type NPCAnchorView } from "./NPCBehavior";
+import {
+  NPCBehaviorManager,
+  QUEST_MARKER_OFFSET,
+  type NPCAnchorView,
+} from "./NPCBehavior";
 import {
   createPlayerTextures,
   PlayerSpriteAnimator,
@@ -236,12 +240,25 @@ interface TerrainBuffer {
   originY: number;
 }
 
+interface QuestOffer {
+  npc_id: string;
+  status: "active" | "available";
+  target: string;
+  target_name: string;
+  quest_id: string;
+}
+
+interface QuestOffersState {
+  offers: QuestOffer[];
+}
+
 export class OverworldScene extends Phaser.Scene {
   private cfg!: OverworldConfig;
 
   // Map data (loaded once per scene start)
   private mapData: MapState | null = null;
   private worldData: WorldState | null = null;
+  private questOfferNpcIds = new Set<string>();
 
   // Terrain renders via Phaser TILEMAP layers (Wave 0) — DOUBLE BUFFERED.
   // Two terrain buffers (front = visible, back = hidden), each a Tilemap with a
@@ -349,6 +366,7 @@ export class OverworldScene extends Phaser.Scene {
     this.encounterFired = false;
     this.encounterPending = false;
     this.lastHudTile = { x: -1, y: -1 };
+    this.questOfferNpcIds = new Set();
   }
 
   preload() {
@@ -694,6 +712,7 @@ export class OverworldScene extends Phaser.Scene {
     // we fire GET /api/runs/undefined/map → 404.
     if (!this.cfg?.runId) return;
     try {
+      const questOffersPromise = this.fetchQuestOfferIds();
       // Use a warm prefetched chunk if the desired window is already cached so the
       // swap is instant (no in-flight gap at all). Otherwise fetch on demand.
       let data: MapState | null = centerTile
@@ -720,6 +739,7 @@ export class OverworldScene extends Phaser.Scene {
           ? ((await worldRes.json()) as WorldState)
           : null;
       }
+      this.questOfferNpcIds = await questOffersPromise;
       // The scene may have been destroyed (React StrictMode double-mount, HMR,
       // navigation away) while the fetch was in flight; bail before touching
       // `this.add`, which would null-deref through the dead game object factory.
@@ -823,6 +843,24 @@ export class OverworldScene extends Phaser.Scene {
     this.setBufferVisible(this.frontBuffer, false);
     this.setBufferVisible(back, true);
     this.frontBuffer = back;
+  }
+
+  async refreshQuestOffers(): Promise<void> {
+    if (!this.cfg?.runId) return;
+    this.questOfferNpcIds = await this.fetchQuestOfferIds();
+    if (this.sys?.isActive() && this.worldData) this.spawnNpcs();
+  }
+
+  private async fetchQuestOfferIds(): Promise<Set<string>> {
+    try {
+      const res = await fetch(`/api/runs/${this.cfg.runId}/quests/available`);
+      if (!res.ok) return new Set();
+      const data = (await res.json()) as QuestOffersState;
+      return new Set(data.offers.map((offer) => offer.npc_id));
+    } catch (e) {
+      console.error("Failed to fetch quest offers:", e);
+      return new Set();
+    }
   }
 
   /** Push one buffer slot's layers to the [front=0|back=1] depth band. */
@@ -1376,7 +1414,19 @@ export class OverworldScene extends Phaser.Scene {
       );
       lbl.setOrigin(0.5, 1);
       lbl.setDepth(8);
-      this.npcs.add(anchor, spr, lbl);
+      const marker = this.questOfferNpcIds.has(anchor.npc_id)
+        ? this.add
+            .text(spr.x, spr.y - QUEST_MARKER_OFFSET, "✓", {
+              fontFamily: "monospace",
+              fontSize: "14px",
+              color: "#ff5d6c",
+              stroke: "#0e1018",
+              strokeThickness: 3,
+            })
+            .setOrigin(0.5)
+            .setDepth(13)
+        : undefined;
+      this.npcs.add(anchor, spr, lbl, marker);
     }
   }
 

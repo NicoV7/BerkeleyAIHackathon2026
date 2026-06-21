@@ -97,10 +97,11 @@ def test_canonical_world_is_expansive_and_explorable():
     assert sum(1 for poi in spec.pois if poi.kind == "landmark") >= 18
 
     anchors = [anchor for poi in spec.pois for anchor in poi.npc_anchors]
-    assert len(anchors) >= 10
+    assert len(anchors) >= 150
     assert any(anchor.archetype == "merchant" for anchor in anchors)
     assert any(anchor.archetype == "quest_giver" for anchor in anchors)
     assert any(anchor.archetype == "figure" for anchor in anchors)
+    assert all(len(poi.npc_anchors) >= 12 for poi in spec.pois if poi.kind == "town")
 
     assert spec.start is not None and spec.start.name == "Aldermere Commons"
     starter_village = min(
@@ -109,7 +110,7 @@ def test_canonical_world_is_expansive_and_explorable():
     )
     assert starter_village.name == "Aldermere Village"
     assert math.hypot(starter_village.x - spec.start.x, starter_village.y - spec.start.y) <= 4
-    assert len(starter_village.npc_anchors) >= 8
+    assert len(starter_village.npc_anchors) >= 24
     assert sum(1 for anchor in starter_village.npc_anchors if anchor.archetype == "quest_giver") >= 3
 
     nearby_dungeons = [
@@ -205,6 +206,8 @@ async def test_get_map_returns_chunked_canonical_window():
     """The map route pages nearby terrain instead of returning the whole world."""
     from app.routers import map as map_router
 
+    assert map_router.WILD_COUNT == 64
+
     out = await map_router.get_map(
         "run-id",
         _FakeSession(_make_run(seed=42)),
@@ -275,6 +278,8 @@ async def test_get_interior_returns_canonical_for_known_key():
     # The first region carries the curated lore.
     assert out.regions[0].lore is not None
     assert "innkeeper" in (out.regions[0].lore or "").lower() or out.regions[0].name
+    anchors = [anchor for poi in out.pois for anchor in poi.npc_anchors]
+    assert len(anchors) >= 24
 
 
 async def test_get_interior_falls_back_when_canonical_key_unknown(monkeypatch):

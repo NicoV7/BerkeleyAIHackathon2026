@@ -1,35 +1,13 @@
 /**
- * NPCDialogue (WS-3, issues #13 + #5; living-world LLM NPCs) — the overworld NPC
- * talk surface, now a multi-turn conversation drawer. Presents as a HUD drawer
- * anchored to the bottom of the overworld (z-40), per UI_CONTRACT.md
- * §Presentation.
+ * NPCDialogue - overworld NPC talk surface.
  *
- * Two modes:
- *  1. Scripted intro / onboarding (issue #5). When the NPC is the intro
- *     quest-giver (content/introScript.ts), it plays INTRO_SCRIPT.lines one at a
- *     time, then renders INTRO_SCRIPT.choices via <ListMenu>. The
- *     "accept_quest_and_pull" choice grants the first quest
- *     (POST onboarding/first-quest) and triggers the first pull
- *     (POST onboarding/first-pull) — the EXISTING gacha funnel, not a competing
- *     one — via the optional `onOnboarded` hook so App can leave the gacha gate.
- *  2. Generic talk (issue #13 + living-world). For other NPCs it opens a
- *     multi-turn LLM conversation: the first POST seeds a greeting, and the
- *     player can type follow-up messages that POST to
- *     /api/runs/{runId}/npc/{npc_id}/talk with a conversation_id so the server
- *     keeps Redis-backed history. Merchants / innkeepers also offer a diegetic
- *     action choice (Browse wares → openShop; Make camp → openCamp), and
- *     merchants / quest_givers can hand out a quest (POST quest/accept).
- *
- * Self-contained (fetch on mount, clean up on unmount). It deliberately does NOT
- * import App; the onboarding handoff is via the optional `onOnboarded` callback
- * so the dialogue can be reused both in the overworld and on the gacha gate.
+ * Intro NPCs use the scripted onboarding flow. All other NPCs open a short
+ * multi-turn conversation backed by the NPC talk API. Merchants expose inline
+ * shop controls, innkeepers expose inline rest controls, and only quest_giver
+ * NPCs can accept dungeon-clear quests.
  */
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import { useGame } from "../state/store";
-import type { NPCAnchorView } from "./NPCBehavior";
-import { ListMenu, ErrorState } from "../ui/shell";
-import type { ListMenuItem } from "../ui/shell";
 import {
   INTRO_SCRIPT,
   FIRST_QUEST_ID,
@@ -37,6 +15,9 @@ import {
   INNKEEPER_DIALOGUE,
   type IntroChoice,
 } from "../content/introScript";
+import { ListMenu, ErrorState } from "../ui/shell";
+import type { ListMenuItem } from "../ui/shell";
+import type { NPCAnchorView } from "./NPCBehavior";
 
 interface TalkTurn {
   role: "player" | "npc";
@@ -62,32 +43,48 @@ interface QuestResponse {
   } | null;
 }
 
-interface QuestResponse {
-  quest: {
-    title: string;
-    description: string;
-    reward: string;
-    target: string;
-  } | null;
+interface ShopItem {
+  item_key: string;
+  name: string;
+  kind: string;
+  price: number;
+  qty: number;
+  effect: Record<string, unknown>;
+}
+
+interface ShopState {
+  npc_id: string;
+  items: ShopItem[];
+}
+
+interface BuyResponse {
+  item_key: string;
+  qty: number;
+  coins: number;
+  owned_qty: number;
+}
+
+interface RestResponse {
+  message: string;
+  day: number;
+  healed: unknown[];
 }
 
 interface NPCDialogueProps {
   runId: string | null;
   npc: NPCAnchorView | null;
   onClose: () => void;
-  /** Fired after the intro NPC's accept-and-pull onboarding succeeds, so the
-   *  host (App) can clear the gacha gate and enter the overworld. */
   onOnboarded?: () => void;
+  onQuestSettled?: () => void;
 }
 
-type GenericAction = { kind: "shop" } | { kind: "camp" } | null;
-
-export function NPCDialogue({ runId, npc, onClose, onOnboarded }: NPCDialogueProps) {
-  const openShop = useGame((s) => s.openShop);
-  const openCamp = useGame((s) => s.openCamp);
-
-  // Is this the scripted intro NPC? If so we drive the onboarding script instead
-  // of the generic talk endpoint.
+export function NPCDialogue({
+  runId,
+  npc,
+  onClose,
+  onOnboarded,
+  onQuestSettled,
+}: NPCDialogueProps) {
   const isIntro = npc?.npc_id === INTRO_SCRIPT.npcId;
 
   if (!npc) return null;
@@ -98,15 +95,10 @@ export function NPCDialogue({ runId, npc, onClose, onOnboarded }: NPCDialoguePro
       runId={runId}
       npc={npc}
       onClose={onClose}
-      openShop={openShop}
-      openCamp={openCamp}
+      onQuestSettled={onQuestSettled}
     />
   );
 }
-
-// ---------------------------------------------------------------------------
-// Shared HUD drawer chrome (bottom-anchored, z-40, pointer-events scoped).
-// ---------------------------------------------------------------------------
 
 function DialogueDrawer({
   name,
@@ -117,9 +109,8 @@ function DialogueDrawer({
   name: string;
   archetype?: string;
   onClose: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
-  // Esc closes the drawer; stopPropagation so it doesn't also drive Phaser.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -144,7 +135,7 @@ function DialogueDrawer({
             </span>
           ) : null}
           <button className="pixel-btn text-[9px] py-0.5 ml-auto" onClick={onClose}>
-            ✕ Close
+            Close
           </button>
         </div>
         {children}
@@ -152,10 +143,6 @@ function DialogueDrawer({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Intro / onboarding dialogue (#5)
-// ---------------------------------------------------------------------------
 
 function IntroDialogue({
   runId,
@@ -166,7 +153,6 @@ function IntroDialogue({
   onClose: () => void;
   onOnboarded?: () => void;
 }) {
-  // Line cursor; when it passes the last line we show the choice list.
   const [lineIdx, setLineIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,7 +165,6 @@ function IntroDialogue({
     setLineIdx((i) => Math.min(i + 1, lines.length));
   }, [lines.length]);
 
-  // Click / Enter advances the lines (until the choices show).
   useEffect(() => {
     if (atChoices) return;
     const onKey = (e: KeyboardEvent) => {
@@ -196,7 +181,6 @@ function IntroDialogue({
   const onChoice = useCallback(
     async (choice: IntroChoice) => {
       if (choice.effect === "repeat_explanation") {
-        // Re-show the explanation lines (the "reasoning is the weapon" beats).
         setLineIdx(1);
         return;
       }
@@ -204,9 +188,6 @@ function IntroDialogue({
         onClose();
         return;
       }
-      // accept_quest_and_pull — grant the first quest, then the first pull. This
-      // is the EXISTING onboarding gacha funnel (onboarding/first-pull), NOT a
-      // competing gacha/pull cinematic.
       if (!runId) return;
       setBusy(true);
       setError(null);
@@ -235,7 +216,11 @@ function IntroDialogue({
   }));
 
   return (
-    <DialogueDrawer name={INTRO_SCRIPT.npcName} archetype={INTRO_SCRIPT.npcArchetype} onClose={onClose}>
+    <DialogueDrawer
+      name={INTRO_SCRIPT.npcName}
+      archetype={INTRO_SCRIPT.npcArchetype}
+      onClose={onClose}
+    >
       {error ? (
         <ErrorState message="The path is silent." detail={error} onRetry={() => setError(null)} />
       ) : !atChoices ? (
@@ -252,7 +237,7 @@ function IntroDialogue({
             {current.speaker === "narration" ? <em>{current.text}</em> : current.text}
           </p>
           <p className="font-hud text-[9px] mt-1" style={{ color: "var(--muted)" }}>
-            ▸ click / Enter to continue ({lineIdx + 1}/{lines.length})
+            click / Enter to continue ({lineIdx + 1}/{lines.length})
           </p>
         </button>
       ) : (
@@ -267,7 +252,7 @@ function IntroDialogue({
           />
           {busy ? (
             <p className="font-hud text-[9px]" style={{ color: "var(--muted)" }}>
-              Summoning your first Speaker…
+              Summoning your first Speaker...
             </p>
           ) : null}
         </div>
@@ -276,23 +261,16 @@ function IntroDialogue({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Generic talk dialogue (#13 + living-world) — multi-turn LLM conversation with
-// optional diegetic action choice and quest offer.
-// ---------------------------------------------------------------------------
-
 function GenericDialogue({
   runId,
   npc,
   onClose,
-  openShop,
-  openCamp,
+  onQuestSettled,
 }: {
   runId: string | null;
   npc: NPCAnchorView;
   onClose: () => void;
-  openShop: (npcId: string) => void;
-  openCamp: () => void;
+  onQuestSettled?: () => void;
 }) {
   const [messages, setMessages] = useState<TalkTurn[]>([]);
   const [draft, setDraft] = useState("");
@@ -302,19 +280,19 @@ function GenericDialogue({
   const [quest, setQuest] = useState<QuestResponse["quest"]>(null);
   const [questLoading, setQuestLoading] = useState(false);
   const [questError, setQuestError] = useState<string | null>(null);
+  const [shop, setShop] = useState<ShopState | null>(null);
+  const [shopLoading, setShopLoading] = useState(false);
+  const [shopError, setShopError] = useState<string | null>(null);
+  const [shopMessage, setShopMessage] = useState<string | null>(null);
+  const [buyingItem, setBuyingItem] = useState<string | null>(null);
+  const [restLoading, setRestLoading] = useState(false);
+  const [restMessage, setRestMessage] = useState<string | null>(null);
+  const [restError, setRestError] = useState<string | null>(null);
 
-  // The diegetic action this NPC offers, by archetype.
-  const action: GenericAction = useMemo(() => {
-    if (npc.archetype === "merchant") return { kind: "shop" };
-    if (npc.archetype === "innkeeper") return { kind: "camp" };
-    return null;
-  }, [npc.archetype]);
+  const canOfferQuest = npc.archetype === "quest_giver";
+  const canShop = npc.archetype === "merchant";
+  const canRest = npc.archetype === "innkeeper";
 
-  const canOfferQuest =
-    npc.archetype === "merchant" || npc.archetype === "quest_giver";
-
-  // Open the conversation: seed a greeting (and any persisted history) from the
-  // talk endpoint, opening a fresh conversation_id.
   useEffect(() => {
     if (!runId) return;
     let cancelled = false;
@@ -327,6 +305,14 @@ function GenericDialogue({
     setQuest(null);
     setQuestError(null);
     setQuestLoading(false);
+    setShop(null);
+    setShopError(null);
+    setShopMessage(null);
+    setShopLoading(false);
+    setBuyingItem(null);
+    setRestMessage(null);
+    setRestError(null);
+    setRestLoading(false);
 
     api
       .post<TalkResponse>(`/api/runs/${runId}/npc/${npc.npc_id}/talk`, {
@@ -339,12 +325,8 @@ function GenericDialogue({
       })
       .catch(() => {
         if (cancelled) return;
-        // Fall back to the canned greeting for shop/camp NPCs so the action is
-        // still reachable even if the talk endpoint is unavailable.
-        if (action?.kind === "shop")
-          setMessages([{ role: "npc", text: MERCHANT_DIALOGUE.greeting }]);
-        else if (action?.kind === "camp")
-          setMessages([{ role: "npc", text: INNKEEPER_DIALOGUE.greeting }]);
+        if (canShop) setMessages([{ role: "npc", text: MERCHANT_DIALOGUE.greeting }]);
+        else if (canRest) setMessages([{ role: "npc", text: INNKEEPER_DIALOGUE.greeting }]);
         else setError("The path is silent.");
       })
       .finally(() => {
@@ -354,9 +336,8 @@ function GenericDialogue({
     return () => {
       cancelled = true;
     };
-  }, [runId, npc.npc_id, action]);
+  }, [runId, npc.npc_id, canShop, canRest]);
 
-  // Record that the player talked to this NPC (best-effort; fire-and-forget).
   useEffect(() => {
     if (!runId) return;
     api.post(`/api/runs/${runId}/npc/${npc.npc_id}/debated`).catch(() => {});
@@ -365,7 +346,7 @@ function GenericDialogue({
   const sendMessage = (event: FormEvent) => {
     event.preventDefault();
     const text = draft.trim();
-    if (!runId || !npc || !text || loading) return;
+    if (!runId || !text || loading) return;
     const nextConversationId =
       conversationId ?? `${npc.npc_id}-${Date.now().toString(36)}`;
 
@@ -393,7 +374,7 @@ function GenericDialogue({
   };
 
   const acceptQuest = () => {
-    if (!runId || !npc || questLoading) return;
+    if (!runId || questLoading) return;
     setQuestLoading(true);
     setQuestError(null);
     api
@@ -403,26 +384,84 @@ function GenericDialogue({
         if (!res.quest) setQuestError("No work nearby.");
       })
       .catch(() => setQuestError("The notice board is blank."))
-      .finally(() => setQuestLoading(false));
+      .finally(() => {
+        setQuestLoading(false);
+        onQuestSettled?.();
+      });
   };
 
-  // Diegetic action rows (shop / camp / leave) shown beneath the conversation.
-  const rows: ListMenuItem<"shop" | "camp" | "leave">[] = [];
-  if (action?.kind === "shop")
-    rows.push({ id: "shop", label: MERCHANT_DIALOGUE.actionLabel, value: "shop" });
-  if (action?.kind === "camp")
-    rows.push({ id: "camp", label: INNKEEPER_DIALOGUE.actionLabel, value: "camp" });
-  rows.push({ id: "leave", label: "Farewell.", value: "leave" });
+  const openShop = () => {
+    if (shopLoading) return;
+    setShopLoading(true);
+    setShopError(null);
+    setShopMessage(null);
+    api
+      .get<ShopState>(`/api/shop/${npc.npc_id}`)
+      .then((res) => setShop(res))
+      .catch(() => setShopError("The merchant turns you away."))
+      .finally(() => setShopLoading(false));
+  };
+
+  const buyItem = (item: ShopItem) => {
+    if (!runId || buyingItem) return;
+    setBuyingItem(item.item_key);
+    setShopError(null);
+    setShopMessage(null);
+    api
+      .post<BuyResponse>(
+        `/api/shop/${npc.npc_id}/buy?run_id=${encodeURIComponent(runId)}`,
+        { item_key: item.item_key, qty: 1 }
+      )
+      .then((res) => {
+        setShop((current) =>
+          current
+            ? {
+                ...current,
+                items: current.items.map((cur) =>
+                  cur.item_key === res.item_key
+                    ? { ...cur, qty: Math.max(0, cur.qty - res.qty) }
+                    : cur
+                ),
+              }
+            : current
+        );
+        setShopMessage(`Bought ${item.name}. Coins: ${res.coins}. Owned: ${res.owned_qty}.`);
+      })
+      .catch(() => setShopError("The merchant turns you away."))
+      .finally(() => setBuyingItem(null));
+  };
+
+  const makeCamp = () => {
+    if (!runId || restLoading) return;
+    setRestLoading(true);
+    setRestError(null);
+    setRestMessage(null);
+    api
+      .post<RestResponse>(`/api/runs/${runId}/rest`)
+      .then((res) => setRestMessage(`${res.message} Day ${res.day}.`))
+      .catch(() => setRestError("You can't make camp here."))
+      .finally(() => setRestLoading(false));
+  };
+
+  const shopItems: ListMenuItem<ShopItem>[] =
+    shop?.items.map((item) => ({
+      id: item.item_key,
+      label: item.name,
+      hint: `${item.kind.replaceAll("_", " ")} - stock ${item.qty}`,
+      trailing: `${item.price}c`,
+      disabled: item.qty <= 0 || buyingItem === item.item_key,
+      value: item,
+    })) ?? [];
 
   return (
     <DialogueDrawer name={npc.name || npc.npc_id} archetype={npc.archetype} onClose={onClose}>
       {error && messages.length === 0 ? (
-        <ErrorState message="The path is silent." />
+        <ErrorState message="The path is silent." detail={error} />
       ) : (
         <div className="space-y-2">
           {messages.length === 0 && loading ? (
             <p className="font-body text-sm min-h-10 leading-relaxed" style={{ color: "var(--ink)" }}>
-              …
+              ...
             </p>
           ) : null}
           {messages.length ? (
@@ -452,67 +491,80 @@ function GenericDialogue({
               onChange={(event) => setDraft(event.target.value)}
               disabled={loading}
               maxLength={800}
-              placeholder="Say something…"
+              placeholder="Say something..."
             />
             <button
               className="pixel-btn pixel-btn--accent text-[9px] py-1"
               type="submit"
               disabled={loading || !draft.trim()}
             >
-              {loading ? "…" : "Say"}
+              {loading ? "..." : "Say"}
             </button>
           </form>
 
-          {/* Diegetic action(s): Browse wares / Make camp / Farewell. */}
-          <ListMenu
-            items={rows}
-            ariaLabel="Your reply"
-            onSelect={(row) => {
-              if (row.value === "shop") {
-                openShop(npc.npc_id);
-                onClose();
-              } else if (row.value === "camp") {
-                openCamp();
-                onClose();
-              } else {
-                onClose();
-              }
-            }}
-          />
-
-          {canOfferQuest ? (
+          {canShop ? (
             <div
               className="mt-3 border-t pt-3"
               style={{ borderColor: "rgba(232,230,216,0.16)" }}
             >
-              {quest ? (
-                <div className="font-body text-xs leading-relaxed" style={{ color: "var(--ink)" }}>
-                  <div className="font-hud text-[9px] mb-1" style={{ color: "var(--accent)" }}>
-                    {quest.title}
-                  </div>
-                  <div>{quest.description}</div>
-                  <div className="mt-1" style={{ color: "var(--muted)" }}>
-                    Reward: {quest.reward}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <button
-                    className="pixel-btn pixel-btn--accent text-[9px] py-1"
-                    onClick={acceptQuest}
-                    disabled={questLoading}
-                  >
-                    {questLoading ? "Checking…" : "Take quest"}
-                  </button>
-                  {questError ? (
-                    <span className="font-body text-xs" style={{ color: "var(--muted)" }}>
-                      {questError}
-                    </span>
-                  ) : null}
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  className="pixel-btn pixel-btn--accent text-[9px] py-1"
+                  onClick={openShop}
+                  disabled={shopLoading}
+                >
+                  {shopLoading ? "Opening..." : shop ? "Refresh shop" : "Shop"}
+                </button>
+                {shopMessage ? (
+                  <span className="font-body text-xs" style={{ color: "var(--muted)" }}>
+                    {shopMessage}
+                  </span>
+                ) : null}
+                {shopError ? (
+                  <span className="font-body text-xs" style={{ color: "var(--danger)" }}>
+                    {shopError}
+                  </span>
+                ) : null}
+              </div>
+              {shop ? (
+                <ListMenu
+                  items={shopItems}
+                  onSelect={(item) => item.value && buyItem(item.value)}
+                  autoFocus={false}
+                  ariaLabel={`${npc.name || npc.npc_id} shop`}
+                  className="mt-2 max-h-44 overflow-auto"
+                />
+              ) : null}
             </div>
           ) : null}
+
+          {canRest ? (
+            <div
+              className="mt-3 border-t pt-3"
+              style={{ borderColor: "rgba(232,230,216,0.16)" }}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  className="pixel-btn pixel-btn--accent text-[9px] py-1"
+                  onClick={makeCamp}
+                  disabled={restLoading}
+                >
+                  {restLoading ? "Resting..." : "Make camp"}
+                </button>
+                {restMessage ? (
+                  <span className="font-body text-xs" style={{ color: "var(--muted)" }}>
+                    {restMessage}
+                  </span>
+                ) : null}
+                {restError ? (
+                  <span className="font-body text-xs" style={{ color: "var(--danger)" }}>
+                    {restError}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           {canOfferQuest ? (
             <div
               className="mt-3 border-t pt-3"

@@ -74,6 +74,20 @@ class _SilentAdapter:
         return STUB_RESPONSE
 
 
+class _FailingAdapter:
+    """Adapter double that simulates provider/network failure."""
+
+    async def complete(self, prompt: str, **_kwargs: Any) -> str:
+        raise RuntimeError(f"provider failed for {prompt[:12]}")
+
+
+class _StubAdapter:
+    """Adapter double matching the no-hosted-key production path."""
+
+    async def complete(self, prompt: str, **_kwargs: Any) -> str:
+        return STUB_RESPONSE
+
+
 @pytest.fixture
 def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
     redis = _FakeRedis()
@@ -224,6 +238,30 @@ async def test_silent_provider_falls_back_to_world_event_dialogue(
     assert result.text != STUB_RESPONSE
     assert "Cellar of Bad Premises" in result.text
     assert "breathe easier" in result.text
+
+
+async def test_dialogue_falls_back_to_scripted_greeting_when_adapter_fails(
+    fake_redis: _FakeRedis,
+) -> None:
+    result = await npcs.generate_dialogue(
+        "run-fallback", _anchor("merchant"), _region(), adapter=_FailingAdapter()
+    )
+
+    assert result.cached is False
+    assert "Marin the Innkeeper" in result.text
+    assert "counter is open" in result.text
+    assert fake_redis.strings[result.cache_key] == result.text
+
+
+async def test_dialogue_replaces_adapter_stub_with_scripted_greeting(
+    fake_redis: _FakeRedis,
+) -> None:
+    result = await npcs.generate_dialogue(
+        "run-stub", _anchor("innkeeper"), _region(), adapter=_StubAdapter()
+    )
+
+    assert result.text != STUB_RESPONSE
+    assert "Make camp here" in result.text
 
 
 def test_events_tail_hash_ignores_timestamps() -> None:

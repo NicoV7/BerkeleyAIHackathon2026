@@ -145,8 +145,14 @@ class FakeSession:
         self.inventory = dict(snap.get("inventory", {}))
         self.shop = {k: dict(v) for k, v in snap.get("shop", {}).items()}
 
-    def add(self, obj: Any) -> None:  # not used by the SQL paths
-        pass
+    def add(self, obj: Any) -> None:
+        if isinstance(obj, Item):
+            self.items[obj.key] = obj
+        elif isinstance(obj, ShopStock):
+            self.shop[(obj.npc_id, obj.item_key)] = {
+                "price": obj.price,
+                "qty": obj.qty,
+            }
 
     async def execute(self, stmt: Any, params: dict | None = None) -> Any:
         params = params or {}
@@ -203,10 +209,29 @@ class FakeSession:
             self.inventory[key] = self.inventory.get(key, 0) + params["n"]
             return _Result(rowcount=1)
 
+        # ---- SELECT ... FROM shop_stock JOIN items (shop listing) ----
+        if "shop_stock" in s and "join items" in s and s.startswith("select"):
+            rows = []
+            for k, v in self.shop.items():
+                item = self.items.get(k[1])
+                if item is None:
+                    continue
+                rows.append(
+                    (
+                        ShopStock(
+                            npc_id=k[0],
+                            item_key=k[1],
+                            price=v["price"],
+                            qty=v["qty"],
+                        ),
+                        item,
+                    )
+                )
+            return _ScalarsResult(rows)
+
         # ---- SELECT ... FROM shop_stock (resolve a shop row) ----
         if "shop_stock" in s and s.startswith("select"):
             # buy(): single row for (npc, item)
-            npc = params.get("npc_id_1") or params.get("npc_id")
             # SQLAlchemy compiles bound params; resolve from the in-memory shop by
             # scanning instead of relying on param names.
             rows = [
@@ -348,6 +373,19 @@ def test_upsert_shop_does_not_refill_depleted_stock() -> None:
     assert s.shop[key].qty == 0  # rerun never refills a live (depleted) shop
 
 
+def _seed_starter_items(s: FakeSession) -> None:
+    for row in STARTER_ITEMS:
+        s.seed_item(
+            Item(
+                key=row["key"],
+                name=row["name"],
+                kind=row["kind"],
+                effect=row["effect"],
+                price=row["price"],
+            )
+        )
+
+
 # =========================================================================== #
 # ATOMICITY: buy + double-spend + use-decrement (always-on, real router code)
 # =========================================================================== #
@@ -373,6 +411,50 @@ def test_buy_succeeds_and_debits_coins_and_stock() -> None:
     assert s.runs["r1"].coins == 50
     assert s.shop[("merchant", "potion_hp_small")]["qty"] == 3
     assert s.inventory[("r1", "potion_hp_small")] == 2
+
+
+def test_known_merchant_shop_materializes_default_stock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = FakeSession()
+    _seed_starter_items(s)
+    monkeypatch.setattr(
+        economy,
+        "_is_known_merchant",
+        lambda npc_id: npc_id == "reedmarket_merchant",
+    )
+
+    shop = asyncio.run(economy.get_shop("reedmarket_merchant", s))
+
+    assert shop.npc_id == "reedmarket_merchant"
+    assert len(shop.items) == len(DEFAULT_SHOP)
+    assert ("reedmarket_merchant", "camp_token") in s.shop
+
+
+def test_direct_buy_from_known_merchant_materializes_stock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = FakeSession()
+    s.seed_run(Run(id="r1", debate_topic="t", coins=100))
+    _seed_starter_items(s)
+    monkeypatch.setattr(
+        economy,
+        "_is_known_merchant",
+        lambda npc_id: npc_id == "reedmarket_merchant",
+    )
+
+    res = asyncio.run(
+        economy.buy_item(
+            "reedmarket_merchant",
+            "r1",
+            BuyItemRequest(item_key="potion_hp_small"),
+            s,
+        )
+    )
+
+    assert res.npc_id == "reedmarket_merchant"
+    assert res.coins == 75
+    assert s.shop[("reedmarket_merchant", "potion_hp_small")]["qty"] == 98
 
 
 def test_buy_rejects_insufficient_coins_without_mutation() -> None:
