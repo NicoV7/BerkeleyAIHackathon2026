@@ -641,7 +641,9 @@ async def run_round_stream(
 
     for c in combatants:
         await set_hp(eid, c.monster_id, c.hp)
-    yield Event("hp", {c.monster_id: c.hp for c in combatants})
+        # Emit ONE HpUpdate per combatant ({monster_id, hp, max_hp}) — the frontend
+        # patches combatants by monster_id, so a {id: hp} map silently no-ops (HP bug).
+        yield Event("hp", {"monster_id": c.monster_id, "hp": c.hp, "max_hp": c.max_hp})
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
@@ -828,7 +830,9 @@ async def run_human_round_stream(
 
     for c in combatants:
         await set_hp(eid, c.monster_id, c.hp)
-    yield Event("hp", {c.monster_id: c.hp for c in combatants})
+        # Emit ONE HpUpdate per combatant ({monster_id, hp, max_hp}) — the frontend
+        # patches combatants by monster_id, so a {id: hp} map silently no-ops (HP bug).
+        yield Event("hp", {"monster_id": c.monster_id, "hp": c.hp, "max_hp": c.max_hp})
 
     phase, capturable = _phase_for(combatants)
     yield Event("phase", {"phase": phase, "capturable_ids": capturable, "turn_no": turn_no})
