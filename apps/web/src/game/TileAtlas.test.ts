@@ -73,11 +73,13 @@ describe("baseFrameFor", () => {
 });
 
 describe("overlayFor", () => {
-  it("adds trees, campfires, and rock obstacles without generic town structures", () => {
+  it("adds a tree on forest, a campfire on camp, a rock on blocked", () => {
     expect(overlayFor(TILE.FOREST, 0)?.frame).toBe(FRAME.TREE);
     expect(overlayFor(TILE.FOREST, 0x40)?.frame).toBe(FRAME.TREE_DARK);
     expect(overlayFor(TILE.CAMP, 0)?.frame).toBe(FRAME.CAMPFIRE);
+    // BLOCKED renders a grey rock obstacle (not the old dark cave-floor tile).
     expect(overlayFor(TILE.BLOCKED, 0)?.frame).toBe(FRAME.STONE);
+    // TOWN buildings are drawn by the #24 detail overlay now, not here.
     expect(overlayFor(TILE.TOWN, 0)).toBeNull();
   });
 

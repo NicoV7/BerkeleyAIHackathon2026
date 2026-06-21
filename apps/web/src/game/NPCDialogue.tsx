@@ -1,7 +1,8 @@
 /**
- * NPCDialogue (WS-3, issues #13 + #5) — the overworld NPC talk surface, now a
- * choice MENU (was a single floating line). Presents as a HUD drawer anchored to
- * the bottom of the overworld (z-40), per UI_CONTRACT.md §Presentation.
+ * NPCDialogue (WS-3, issues #13 + #5; living-world LLM NPCs) — the overworld NPC
+ * talk surface, now a multi-turn conversation drawer. Presents as a HUD drawer
+ * anchored to the bottom of the overworld (z-40), per UI_CONTRACT.md
+ * §Presentation.
  *
  * Two modes:
  *  1. Scripted intro / onboarding (issue #5). When the NPC is the intro
@@ -11,15 +12,19 @@
  *     (POST onboarding/first-quest) and triggers the first pull
  *     (POST onboarding/first-pull) — the EXISTING gacha funnel, not a competing
  *     one — via the optional `onOnboarded` hook so App can leave the gacha gate.
- *  2. Generic talk (issue #13). For other NPCs it fetches the talk line and, for
- *     merchants / innkeepers, offers a diegetic action choice (Browse wares →
- *     openShop; Make camp → openCamp). Plain villagers just get a Close.
+ *  2. Generic talk (issue #13 + living-world). For other NPCs it opens a
+ *     multi-turn LLM conversation: the first POST seeds a greeting, and the
+ *     player can type follow-up messages that POST to
+ *     /api/runs/{runId}/npc/{npc_id}/talk with a conversation_id so the server
+ *     keeps Redis-backed history. Merchants / innkeepers also offer a diegetic
+ *     action choice (Browse wares → openShop; Make camp → openCamp), and
+ *     merchants / quest_givers can hand out a quest (POST quest/accept).
  *
  * Self-contained (fetch on mount, clean up on unmount). It deliberately does NOT
  * import App; the onboarding handoff is via the optional `onOnboarded` callback
  * so the dialogue can be reused both in the overworld and on the gacha gate.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useGame } from "../state/store";
 import type { NPCAnchorView } from "./NPCBehavior";
@@ -33,12 +38,28 @@ import {
   type IntroChoice,
 } from "../content/introScript";
 
+interface TalkTurn {
+  role: "player" | "npc";
+  text: string;
+}
+
 interface TalkResponse {
   npc_id: string;
   name: string;
   archetype: string;
   text: string;
   cached: boolean;
+  conversation_id?: string | null;
+  history?: TalkTurn[];
+}
+
+interface QuestResponse {
+  quest: {
+    title: string;
+    description: string;
+    reward: string;
+    target: string;
+  } | null;
 }
 
 interface NPCDialogueProps {
@@ -247,7 +268,8 @@ function IntroDialogue({
 }
 
 // ---------------------------------------------------------------------------
-// Generic talk dialogue (#13) — line + optional diegetic action choice.
+// Generic talk dialogue (#13 + living-world) — multi-turn LLM conversation with
+// optional diegetic action choice and quest offer.
 // ---------------------------------------------------------------------------
 
 function GenericDialogue({
@@ -263,9 +285,14 @@ function GenericDialogue({
   openShop: (npcId: string) => void;
   openCamp: () => void;
 }) {
-  const [line, setLine] = useState("");
+  const [messages, setMessages] = useState<TalkTurn[]>([]);
+  const [draft, setDraft] = useState("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [quest, setQuest] = useState<QuestResponse["quest"]>(null);
+  const [questLoading, setQuestLoading] = useState(false);
+  const [questError, setQuestError] = useState<string | null>(null);
 
   // The diegetic action this NPC offers, by archetype.
   const action: GenericAction = useMemo(() => {
@@ -274,25 +301,41 @@ function GenericDialogue({
     return null;
   }, [npc.archetype]);
 
+  const canOfferQuest =
+    npc.archetype === "merchant" || npc.archetype === "quest_giver";
+
+  // Open the conversation: seed a greeting (and any persisted history) from the
+  // talk endpoint, opening a fresh conversation_id.
   useEffect(() => {
     if (!runId) return;
     let cancelled = false;
+    const initialConversationId = `${npc.npc_id}-${Date.now().toString(36)}`;
     setLoading(true);
     setError(null);
-    setLine("");
+    setMessages([]);
+    setDraft("");
+    setConversationId(initialConversationId);
+    setQuest(null);
+    setQuestError(null);
+    setQuestLoading(false);
 
     api
-      .post<TalkResponse>(`/api/runs/${runId}/npc/${npc.npc_id}/talk`)
+      .post<TalkResponse>(`/api/runs/${runId}/npc/${npc.npc_id}/talk`, {
+        conversation_id: initialConversationId,
+      })
       .then((res) => {
         if (cancelled) return;
-        setLine(res.text);
+        setConversationId(res.conversation_id ?? initialConversationId);
+        setMessages(res.history?.length ? res.history : [{ role: "npc", text: res.text }]);
       })
       .catch(() => {
         if (cancelled) return;
         // Fall back to the canned greeting for shop/camp NPCs so the action is
         // still reachable even if the talk endpoint is unavailable.
-        if (action?.kind === "shop") setLine(MERCHANT_DIALOGUE.greeting);
-        else if (action?.kind === "camp") setLine(INNKEEPER_DIALOGUE.greeting);
+        if (action?.kind === "shop")
+          setMessages([{ role: "npc", text: MERCHANT_DIALOGUE.greeting }]);
+        else if (action?.kind === "camp")
+          setMessages([{ role: "npc", text: INNKEEPER_DIALOGUE.greeting }]);
         else setError("The path is silent.");
       })
       .finally(() => {
@@ -310,6 +353,51 @@ function GenericDialogue({
     api.post(`/api/runs/${runId}/npc/${npc.npc_id}/debated`).catch(() => {});
   }, [runId, npc.npc_id]);
 
+  const sendMessage = (event: FormEvent) => {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!runId || !npc || !text || loading) return;
+    const nextConversationId =
+      conversationId ?? `${npc.npc_id}-${Date.now().toString(36)}`;
+
+    setDraft("");
+    setError(null);
+    setLoading(true);
+    setConversationId(nextConversationId);
+    setMessages((current) => [...current, { role: "player", text }]);
+
+    api
+      .post<TalkResponse>(`/api/runs/${runId}/npc/${npc.npc_id}/talk`, {
+        message: text,
+        conversation_id: nextConversationId,
+      })
+      .then((res) => {
+        setConversationId(res.conversation_id ?? nextConversationId);
+        if (res.history?.length) {
+          setMessages(res.history);
+        } else {
+          setMessages((current) => [...current, { role: "npc", text: res.text }]);
+        }
+      })
+      .catch(() => setError("The path is silent."))
+      .finally(() => setLoading(false));
+  };
+
+  const acceptQuest = () => {
+    if (!runId || !npc || questLoading) return;
+    setQuestLoading(true);
+    setQuestError(null);
+    api
+      .post<QuestResponse>(`/api/runs/${runId}/quest/accept`, { npc_id: npc.npc_id })
+      .then((res) => {
+        setQuest(res.quest);
+        if (!res.quest) setQuestError("No work nearby.");
+      })
+      .catch(() => setQuestError("The notice board is blank."))
+      .finally(() => setQuestLoading(false));
+  };
+
+  // Diegetic action rows (shop / camp / leave) shown beneath the conversation.
   const rows: ListMenuItem<"shop" | "camp" | "leave">[] = [];
   if (action?.kind === "shop")
     rows.push({ id: "shop", label: MERCHANT_DIALOGUE.actionLabel, value: "shop" });
@@ -319,29 +407,102 @@ function GenericDialogue({
 
   return (
     <DialogueDrawer name={npc.name || npc.npc_id} archetype={npc.archetype} onClose={onClose}>
-      {error ? (
+      {error && messages.length === 0 ? (
         <ErrorState message="The path is silent." />
       ) : (
         <div className="space-y-2">
-          <p className="font-body text-sm min-h-10 leading-relaxed" style={{ color: "var(--ink)" }}>
-            {loading ? "…" : line}
-          </p>
-          {!loading ? (
-            <ListMenu
-              items={rows}
-              ariaLabel="Your reply"
-              onSelect={(row) => {
-                if (row.value === "shop") {
-                  openShop(npc.npc_id);
-                  onClose();
-                } else if (row.value === "camp") {
-                  openCamp();
-                  onClose();
-                } else {
-                  onClose();
-                }
-              }}
+          {messages.length === 0 && loading ? (
+            <p className="font-body text-sm min-h-10 leading-relaxed" style={{ color: "var(--ink)" }}>
+              …
+            </p>
+          ) : null}
+          {messages.length ? (
+            <div className="space-y-2">
+              {messages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}-${message.text.slice(0, 12)}`}
+                  className={message.role === "player" ? "text-right" : "text-left"}
+                >
+                  <span
+                    className="font-body text-sm leading-relaxed inline-block max-w-[92%]"
+                    style={{
+                      color: message.role === "player" ? "var(--accent)" : "var(--ink)",
+                    }}
+                  >
+                    {message.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <form className="mt-3 flex items-center gap-2" onSubmit={sendMessage}>
+            <input
+              className="pixel-field font-body text-sm flex-1 min-w-0"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              disabled={loading}
+              maxLength={800}
+              placeholder="Say something…"
             />
+            <button
+              className="pixel-btn pixel-btn--accent text-[9px] py-1"
+              type="submit"
+              disabled={loading || !draft.trim()}
+            >
+              {loading ? "…" : "Say"}
+            </button>
+          </form>
+
+          {/* Diegetic action(s): Browse wares / Make camp / Farewell. */}
+          <ListMenu
+            items={rows}
+            ariaLabel="Your reply"
+            onSelect={(row) => {
+              if (row.value === "shop") {
+                openShop(npc.npc_id);
+                onClose();
+              } else if (row.value === "camp") {
+                openCamp();
+                onClose();
+              } else {
+                onClose();
+              }
+            }}
+          />
+
+          {canOfferQuest ? (
+            <div
+              className="mt-3 border-t pt-3"
+              style={{ borderColor: "rgba(232,230,216,0.16)" }}
+            >
+              {quest ? (
+                <div className="font-body text-xs leading-relaxed" style={{ color: "var(--ink)" }}>
+                  <div className="font-hud text-[9px] mb-1" style={{ color: "var(--accent)" }}>
+                    {quest.title}
+                  </div>
+                  <div>{quest.description}</div>
+                  <div className="mt-1" style={{ color: "var(--muted)" }}>
+                    Reward: {quest.reward}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    className="pixel-btn pixel-btn--accent text-[9px] py-1"
+                    onClick={acceptQuest}
+                    disabled={questLoading}
+                  >
+                    {questLoading ? "Checking…" : "Take quest"}
+                  </button>
+                  {questError ? (
+                    <span className="font-body text-xs" style={{ color: "var(--muted)" }}>
+                      {questError}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </div>
           ) : null}
         </div>
       )}

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from app.schemas import NPCAnchor, Region
+from app.llm.hosted_adapter import STUB_RESPONSE
 from app.world import event_log, figures, npcs
 
 
@@ -64,6 +65,13 @@ class _FakeAdapter:
     async def complete(self, prompt: str, **_kwargs: Any) -> str:
         self.prompts.append(prompt)
         return f"dialogue-{len(self.prompts)}"
+
+
+class _SilentAdapter:
+    """Simulates a local run with no hosted NPC provider configured."""
+
+    async def complete(self, _prompt: str, **_kwargs: Any) -> str:
+        return STUB_RESPONSE
 
 
 @pytest.fixture
@@ -161,6 +169,61 @@ async def test_dialogue_cache_invalidates_when_recruited_figure_count_changes(
     assert after.text == "dialogue-2"
     assert len(adapter.prompts) == 2
     assert "Socrates" in adapter.prompts[-1]
+
+
+async def test_conversation_keeps_history_and_player_message(
+    fake_redis: _FakeRedis,
+) -> None:
+    adapter = _FakeAdapter()
+
+    greeting = await npcs.generate_dialogue(
+        "run-chat",
+        _anchor("quest_giver"),
+        _region(),
+        conversation_id="chat-1",
+        adapter=adapter,
+    )
+    reply = await npcs.generate_dialogue(
+        "run-chat",
+        _anchor("quest_giver"),
+        _region(),
+        player_message="What work is nearby?",
+        conversation_id="chat-1",
+        adapter=adapter,
+    )
+
+    assert greeting.cached is False
+    assert reply.cached is False
+    assert reply.conversation_id == "chat-1"
+    assert [turn["role"] for turn in reply.history] == ["npc", "player", "npc"]
+    assert reply.history[1]["text"] == "What work is nearby?"
+    assert "Conversation so far:" in adapter.prompts[-1]
+    assert "dialogue-1" in adapter.prompts[-1]
+    assert "The player says: What work is nearby?" in adapter.prompts[-1]
+
+
+async def test_silent_provider_falls_back_to_world_event_dialogue(
+    fake_redis: _FakeRedis,
+) -> None:
+    await event_log.append(
+        "run-offline",
+        "dungeon_cleared",
+        poi="den:166:532",
+        name="Cellar of Bad Premises",
+    )
+
+    result = await npcs.generate_dialogue(
+        "run-offline",
+        _anchor("innkeeper"),
+        _region(),
+        player_message="Did you hear what happened?",
+        conversation_id="offline-1",
+        adapter=_SilentAdapter(),
+    )
+
+    assert result.text != STUB_RESPONSE
+    assert "Cellar of Bad Premises" in result.text
+    assert "breathe easier" in result.text
 
 
 def test_events_tail_hash_ignores_timestamps() -> None:

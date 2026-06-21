@@ -32,6 +32,7 @@ from app.schemas import (
     MonsterSummary,
     MoveRequest,
     MoveResult,
+    POI,
     RestResult,
     RunState,
     TileEnemy,
@@ -121,6 +122,70 @@ def _world_dims_for(seed: int) -> tuple[int, int]:
     if canonical is not None:
         return canonical.spec.width, canonical.spec.height
     return _tile_dims(_generate_tiles(seed))
+
+
+def _nearest_walkable_world(seed: int, x: int, y: int) -> tuple[int, int]:
+    """Return the nearest walkable global tile to the requested world coord."""
+    world_width, world_height = _world_dims_for(seed)
+    start_x = max(0, min(world_width - 1, x))
+    start_y = max(0, min(world_height - 1, y))
+    if not _is_world_blocked(seed, start_x, start_y):
+        return start_x, start_y
+
+    max_radius = max(world_width, world_height)
+    for radius in range(1, max_radius + 1):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if abs(dx) != radius and abs(dy) != radius:
+                    continue
+                nx = start_x + dx
+                ny = start_y + dy
+                if not (0 <= nx < world_width and 0 <= ny < world_height):
+                    continue
+                if not _is_world_blocked(seed, nx, ny):
+                    return nx, ny
+    return start_x, start_y
+
+
+def _starter_town_poi(pois: list[POI], start: POI | None = None) -> POI | None:
+    """Pick the town/village that should act as the player's home spawn."""
+    towns = [p for p in pois if p.kind == "town"]
+    if not towns:
+        return None
+
+    def score(poi: POI) -> tuple[int, int, int, str]:
+        has_npcs = 0 if poi.npc_anchors else 1
+        if start is None:
+            distance = 0
+        else:
+            dx = poi.x - start.x
+            dy = poi.y - start.y
+            distance = dx * dx + dy * dy
+        return (has_npcs, distance, poi.x + poi.y, poi.name)
+
+    return min(towns, key=score)
+
+
+def _spawn_tile_for(seed: int) -> tuple[int, int]:
+    """Return the run's initial tile, preferring a populated town/village."""
+    from app.world.canonical import get_canonical_world
+
+    canonical = get_canonical_world()
+    if canonical is not None:
+        spawn_poi = _starter_town_poi(canonical.spec.pois, canonical.spec.start)
+        if spawn_poi is None:
+            spawn_poi = canonical.spec.start
+        if spawn_poi is not None:
+            return _nearest_walkable_world(seed, spawn_poi.x, spawn_poi.y)
+
+    tiles = _generate_tiles(seed)
+    width, height = _tile_dims(tiles)
+    pois = place_pois(seed, tiles, width, height)
+    start = next((p for p in pois if p.kind == "start"), None)
+    spawn_poi = _starter_town_poi(pois, start) or start
+    if spawn_poi is None:
+        return _nearest_walkable_world(seed, 1, 1)
+    return _nearest_walkable_world(seed, spawn_poi.x, spawn_poi.y)
 
 
 def _canonical_tile_window(
@@ -257,21 +322,9 @@ async def create_run(
     """
     debate_topic = body.topic or body.theme or ""
     player_name = (body.player_name or "").strip() or "Player"
-    # New runs spawn at the canonical trailhead when a baked world is present;
-    # otherwise keep the legacy fallback spawn.
-    from app.world.canonical import get_canonical_world
-
-    canonical = get_canonical_world()
-    start_x = (
-        canonical.spec.start.x
-        if canonical is not None and canonical.spec.start
-        else 1
-    )
-    start_y = (
-        canonical.spec.start.y
-        if canonical is not None and canonical.spec.start
-        else 1
-    )
+    # New runs start in the nearest populated village/town so the first
+    # interaction is with NPCs and quests, not an empty trailhead.
+    start_x, start_y = _spawn_tile_for(body.seed)
     run = Run(
         debate_topic=debate_topic,
         theme=body.theme,
@@ -339,8 +392,13 @@ async def get_map(
 
     canonical = get_canonical_world()
     world_width, world_height = _world_dims_for(run.seed)
-    center_x = run.player_x if center_x is None else center_x
-    center_y = run.player_y if center_y is None else center_y
+    player_x = max(0, min(world_width - 1, run.player_x))
+    player_y = max(0, min(world_height - 1, run.player_y))
+    if _is_world_blocked(run.seed, player_x, player_y):
+        player_x, player_y = _spawn_tile_for(run.seed)
+
+    center_x = player_x if center_x is None else center_x
+    center_y = player_y if center_y is None else center_y
     center_x = max(0, min(world_width - 1, center_x))
     center_y = max(0, min(world_height - 1, center_y))
 
@@ -381,9 +439,7 @@ async def get_map(
     player_x = max(0, min(world_width - 1, run.player_x))
     player_y = max(0, min(world_height - 1, run.player_y))
     if _is_world_blocked(run.seed, player_x, player_y):
-        start = canonical.spec.start if canonical is not None else None
-        player_x = start.x if start is not None else 1
-        player_y = start.y if start is not None else 1
+        player_x, player_y = _spawn_tile_for(run.seed)
 
     return MapState(
         width=width,

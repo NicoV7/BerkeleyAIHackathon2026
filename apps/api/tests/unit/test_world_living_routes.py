@@ -112,6 +112,43 @@ async def test_talk_to_canonical_npc_returns_anchor_payload(
     assert out["text"] == "Welcome back to Aldermere."
 
 
+async def test_talk_to_canonical_npc_accepts_conversation_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Dialogue:
+        text = "The cellars need a steady hand."
+        cached = False
+        cache_key = "npcchat:test"
+        conversation_id = "thread-1"
+        history = [
+            {"role": "player", "text": "Any work nearby?"},
+            {"role": "npc", "text": text},
+        ]
+
+    async def fake_dialogue(run_id, anchor, region, **kwargs):
+        assert run_id == "living-route-run"
+        assert anchor.name == "Marin the Innkeeper"
+        assert region is not None and region.name == "Aldermere Village"
+        assert kwargs["player_message"] == "Any work nearby?"
+        assert kwargs["conversation_id"] == "thread-1"
+        return Dialogue()
+
+    monkeypatch.setattr(world_router.npcs, "generate_dialogue", fake_dialogue)
+
+    out = await world_router.talk_to_npc(
+        "living-route-run",
+        "town_208_560__0",
+        _FakeSession(_run()),
+        world_router.NPCTalkRequest(
+            message="Any work nearby?",
+            conversation_id="thread-1",
+        ),
+    )
+
+    assert out["conversation_id"] == "thread-1"
+    assert out["history"][0]["role"] == "player"
+
+
 async def test_list_figures_marks_recruited_state(fake_redis: _FakeRedis) -> None:
     assert await figures.recruit("living-route-run", "socrates") is True
 
