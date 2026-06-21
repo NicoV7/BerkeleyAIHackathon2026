@@ -25,6 +25,11 @@ class HealthResponse(BaseModel):
 class CreateRunRequest(BaseModel):
     topic: str = Field(..., description="The debate topic for this entire run")
     seed: int = 0
+    # Theme picked at run start; each battle draws a random topic within it.
+    # Optional/additive — when absent, battles fall back to the full catalog.
+    theme: Optional[str] = Field(
+        default=None, description="Theme for this run; battles draw a random topic within it"
+    )
 
 
 class MonsterSummary(BaseModel):
@@ -42,6 +47,8 @@ class MonsterSummary(BaseModel):
 class RunState(BaseModel):
     id: str
     debate_topic: str
+    # Theme chosen at run start (additive/Optional for backward compat).
+    theme: Optional[str] = None
     player_x: int
     player_y: int
     status: str

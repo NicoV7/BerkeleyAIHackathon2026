@@ -33,6 +33,11 @@ export interface paths {
         /**
          * Create Run
          * @description Create a new run row, roll a starter party, return RunState.
+         *
+         *     THEME topics: the player picks a ``theme`` at run start; each battle draws a
+         *     random topic within it (resolved at encounter creation). ``debate_topic``
+         *     stays populated (NOT NULL) — when a theme is given but no explicit topic, we
+         *     label it with the theme so existing readers (runs.py, RunState) never break.
          */
         post: operations["create_run_api_runs_post"];
         delete?: never;
@@ -668,6 +673,11 @@ export interface components {
              * @default 0
              */
             seed: number;
+            /**
+             * Theme
+             * @description Theme for this run; battles draw a random topic within it
+             */
+            theme?: string | null;
         };
         /** EncounterState */
         EncounterState: {
@@ -1041,6 +1051,8 @@ export interface components {
             id: string;
             /** Debate Topic */
             debate_topic: string;
+            /** Theme */
+            theme?: string | null;
             /** Player X */
             player_x: number;
             /** Player Y */

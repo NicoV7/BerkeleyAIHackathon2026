@@ -37,8 +37,12 @@ JUDGE_MODEL = os.environ.get("JUDGE_MODEL") or getattr(settings, "judge_model_fa
 
 
 def _judge_timeout() -> float:
-    """Short per-call budget for a judge scoring call (seconds)."""
-    return float(getattr(settings, "llm_call_timeout_s", 20) or 20)
+    """Per-call budget for a judge scoring call (seconds).
+
+    Uses the larger NON-streaming `llm_call_timeout_s` (~28s) — judging is a
+    single completion, not a streamed turn, so it gets the full actor budget.
+    """
+    return float(getattr(settings, "llm_call_timeout_s", 28) or 28)
 
 _RUBRIC = (
     "You are a strict but fair debate judge. Score each argument 0-100 on how "

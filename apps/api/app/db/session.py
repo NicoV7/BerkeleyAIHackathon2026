@@ -33,6 +33,9 @@ async def init_db() -> None:
             # WS-A persistence: run save/resume marker. TIMESTAMP WITHOUT TIME
             # ZONE to match the other naive-UTC timestamp columns.
             "ALTER TABLE runs ADD COLUMN IF NOT EXISTS saved_at TIMESTAMP",
+            # THEME topics: per-run theme chosen at run start (battles draw a
+            # random topic within it). Nullable/additive; debate_topic stays set.
+            "ALTER TABLE runs ADD COLUMN IF NOT EXISTS theme VARCHAR",
         ):
             await conn.execute(text(stmt))
 

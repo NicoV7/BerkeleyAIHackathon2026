@@ -29,14 +29,37 @@ class Settings(BaseSettings):
     #
     #   actor_model       — fast model for combatant turns / enemy rebuttals.
     #   judge_model_fast  — fast model for scoring (defaults to actor_model).
-    #   llm_call_timeout_s— per-call wall-clock budget for a single completion.
+    #   llm_call_timeout_s— per-call wall-clock budget for a single NON-streaming
+    #                       completion (actor `complete`, judge). RAISED to ~28s so
+    #                       a real argument has room to finish instead of failing
+    #                       over to templated text under contention. The streaming
+    #                       path does NOT use this — see first_token_timeout_s.
+    #   first_token_timeout_s — SMALL guard on the live streaming path: how long we
+    #                       wait for the model's FIRST token before failing this one
+    #                       utterance over to a templated fallback. Keeping it small
+    #                       (~8s) means "first token <= 6-8s" holds and a
+    #                       slow-to-start model never hangs the WS round. Tokens
+    #                       AFTER the first stream freely (the round wall-clock is
+    #                       bounded by ROUND_TIMEOUT_S + actor_max_tokens).
+    #   actor_max_tokens  — cap on an actor turn's length. Small (~64) keeps turns
+    #                       to a punchy 1-2 sentences and bounds generation time.
     #   prewarm_enabled   — fire a tiny throwaway call on encounter creation so
     #                       the first real turn isn't paying the cold-load tax.
+    #
+    # Latency budget vs ROUND_TIMEOUT_S (routers/debate.py == 120s):
+    #   * The live auto/human rounds STREAM, so per-actor first-token is capped at
+    #     first_token_timeout_s (~8s) and total length is bounded by
+    #     actor_max_tokens (~64) — a 1-party + N-enemy round stays well under 120s.
+    #   * The non-streaming `complete` (headless self-play: 2 combatants) is capped
+    #     at llm_call_timeout_s. We keep it at ~28s so even a hypothetical N=4 actor
+    #     round of complete() calls (4 * 28 = 112s) stays under ROUND_TIMEOUT_S.
     # Installed Ollama models, fastest-first-ish: gemma3:1b, llama3.2:3b,
     # qwen2.5:3b, phi3:mini, gemma3:4b.
     actor_model: str = "llama3.2:3b"
     judge_model_fast: str = "llama3.2:3b"
-    llm_call_timeout_s: int = 20
+    llm_call_timeout_s: int = 28
+    first_token_timeout_s: int = 8
+    actor_max_tokens: int = 64
     prewarm_enabled: bool = True
     ollama_base_url: str = "http://ollama:11434"
     anthropic_api_key: str = ""

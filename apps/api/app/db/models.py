@@ -85,6 +85,9 @@ class Run(SQLModel, table=True):
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     debate_topic: str
+    # Theme chosen at run start; each battle draws a random topic within it.
+    # Nullable/additive alongside debate_topic (which stays populated).
+    theme: Optional[str] = Field(default=None)
     seed: int = 0
     player_x: int = 0
     player_y: int = 0

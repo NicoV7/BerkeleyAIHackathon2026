@@ -111,9 +111,17 @@ async def create_run(
     body: CreateRunRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RunState:
-    """Create a new run row, roll a starter party, return RunState."""
+    """Create a new run row, roll a starter party, return RunState.
+
+    THEME topics: the player picks a ``theme`` at run start; each battle draws a
+    random topic within it (resolved at encounter creation). ``debate_topic``
+    stays populated (NOT NULL) — when a theme is given but no explicit topic, we
+    label it with the theme so existing readers (runs.py, RunState) never break.
+    """
+    debate_topic = body.topic or body.theme or ""
     run = Run(
-        debate_topic=body.topic,
+        debate_topic=debate_topic,
+        theme=body.theme,
         seed=body.seed,
         player_x=1,
         player_y=1,
@@ -132,6 +140,7 @@ async def create_run(
     return RunState(
         id=run.id,
         debate_topic=run.debate_topic,
+        theme=run.theme,
         player_x=run.player_x,
         player_y=run.player_y,
         status=run.status.value,

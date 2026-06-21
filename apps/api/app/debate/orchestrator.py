@@ -74,8 +74,18 @@ def _actor_model(actor: "Combatant") -> str:
 
 
 def _actor_timeout() -> float:
-    """Short per-call budget for a single actor turn (seconds)."""
-    return float(getattr(settings, "llm_call_timeout_s", 20) or 20)
+    """Per-call budget for a single NON-streaming actor `complete` (seconds).
+
+    Uses the larger `llm_call_timeout_s` (~28s) so a real argument has room to
+    finish. The live STREAMING path does NOT use this — it is guarded by the
+    small `first_token_timeout_s` (see `_first_token_timeout`).
+    """
+    return float(getattr(settings, "llm_call_timeout_s", 28) or 28)
+
+
+def _actor_max_tokens() -> int:
+    """Token cap for an actor turn — small for punchy 1-2 sentence arguments."""
+    return int(getattr(settings, "actor_max_tokens", 64) or 64)
 
 
 # Real, side-taking fallback arguments. When the model fails/stalls we still want
@@ -346,11 +356,17 @@ def _build_actor_messages(
     sys_parts = [
         f"You are {actor.name}, a debate combatant of type {actor.type}, on {team}.",
         f"The debate topic is: {topic}",
-        # Crystal-clear stance: argue the assigned side of the CONCRETE topic.
-        f"YOUR SIDE: you argue {stance_verb} the topic. Take that side explicitly and "
-        f"make a concrete claim about {topic} — state plainly why you are {stance_verb} it.",
+        # UNMISTAKABLE stance anchor: name the side, name the topic, and forbid
+        # conceding or flipping. Playtest bug: an AGAINST enemy argued FOR — this
+        # block (used by BOTH the streaming and non-streaming builders) makes the
+        # assigned side impossible to misread.
+        f"YOUR ASSIGNED SIDE: {stance_verb}. You argue {stance_verb} the topic "
+        f'"{topic}". Argue ONLY for the {stance_verb} side. Make a concrete claim '
+        f"about {topic} and state plainly why you are {stance_verb} it. Do NOT "
+        f"concede, do NOT switch sides, and do NOT argue the other side — even to "
+        f"steelman it. Every sentence must support the {stance_verb} position.",
         "Make ONE sharp, persuasive argument that advances your side and rebuts the "
-        "latest opposing point. Be vivid and concise (2-4 sentences). Speak in-character. "
+        "latest opposing point. Be vivid and concise (1-2 sentences). Speak in-character. "
         "Do NOT narrate, use stage directions, or hedge with vague meta-talk about "
         "debate strategy — argue the actual topic with a concrete claim.",
     ]
@@ -406,7 +422,7 @@ async def _generate_utterance(
             messages,
             model=_actor_model(actor),
             temperature=0.8,
-            max_tokens=96,
+            max_tokens=_actor_max_tokens(),
             timeout=_actor_timeout(),
         )
         text = (text or "").strip()
@@ -426,9 +442,14 @@ def _sanitize(text: str) -> str:
 # First-token wall-clock guard for the live streaming path. On a contended CPU
 # the dominant risk is a stalled model that never emits a first token; we'd rather
 # fail this one utterance (and fall back to a REAL templated argument) than hang
-# the whole WS round. Bounded by the configured per-call timeout so it can't sit
-# anywhere near the old 120s ceiling.
-STREAM_FIRST_TOKEN_TIMEOUT_S = float(getattr(settings, "llm_call_timeout_s", 18) or 18)
+# the whole WS round. This uses the SMALL `first_token_timeout_s` (~8s) — NOT the
+# larger non-streaming `llm_call_timeout_s` — so "first token <= 6-8s" holds and a
+# slow-to-start model falls back fast. Tokens after the first stream freely.
+def _first_token_timeout() -> float:
+    return float(getattr(settings, "first_token_timeout_s", 8) or 8)
+
+
+STREAM_FIRST_TOKEN_TIMEOUT_S = _first_token_timeout()
 
 
 async def _stream_utterance(
@@ -450,8 +471,9 @@ async def _stream_utterance(
         carrying the canonical assembled utterance (with the same templated
         fallback as `_generate_utterance` if the stream produced nothing).
 
-    A first-token timeout (`STREAM_FIRST_TOKEN_TIMEOUT_S`) guards a stalled CPU
-    model: if no token arrives in time the utterance fails over to the fallback
+    A first-token timeout (`_first_token_timeout()`, the small
+    `settings.first_token_timeout_s`) guards a stalled CPU model: if no token
+    arrives in time the utterance fails over to the fallback
     line instead of hanging the round. `_generate_utterance` is intentionally
     left untouched so the headless/REST paths keep their determinism.
     """
@@ -459,14 +481,15 @@ async def _stream_utterance(
     parts: list[str] = []
     try:
         agen = gateway.stream(
-            messages, model=_actor_model(actor), temperature=0.8, max_tokens=96
+            messages, model=_actor_model(actor), temperature=0.8,
+            max_tokens=_actor_max_tokens(),
         )
         first = True
         while True:
             try:
                 if first:
                     chunk = await asyncio.wait_for(
-                        agen.__anext__(), timeout=STREAM_FIRST_TOKEN_TIMEOUT_S
+                        agen.__anext__(), timeout=_first_token_timeout()
                     )
                     first = False
                 else:

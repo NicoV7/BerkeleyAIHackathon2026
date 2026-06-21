@@ -12,10 +12,37 @@ import TrainingScreen from "./ui/TrainingScreen";
 //   encounter -> WS-B/WS-C (BattleDebateView)
 //   party     -> WS-E (PartyScreen) + WS-C GambitEditor via #gambits/{id} hash
 //   training  -> WS-F (TrainingScreen)
+// THEME topics: the player picks a THEME at run start; each battle then draws a
+// random topic WITHIN that theme (resolved server-side at encounter creation).
+// Mirrors apps/api/app/debate/topics.py TOPICS_BY_THEME (examples shown to set
+// expectations — the server is the source of truth for the actual draw).
+const THEMES: { name: string; examples: string[] }[] = [
+  {
+    name: "Ethics",
+    examples: ["Money can buy happiness.", "Free will is an illusion.", "Humans are inherently selfish."],
+  },
+  {
+    name: "Technology",
+    examples: ["AI should be open-sourced.", "Self-driving cars are safer.", "Privacy is dead and that's okay."],
+  },
+  {
+    name: "Society",
+    examples: ["Social media does more harm than good.", "A four-day work week.", "Tipping should be abolished."],
+  },
+  {
+    name: "Science",
+    examples: ["Nuclear energy fights climate change.", "We'll colonize Mars in 50 years.", "Aliens have visited Earth."],
+  },
+  {
+    name: "Culture",
+    examples: ["Pineapple belongs on pizza.", "Cats beat dogs.", "A hot dog is a sandwich."],
+  },
+];
+
 export default function App() {
-  const { runId, screen, topic, battleLocked, setRun, setScreen } = useGame();
+  const { runId, screen, topic, theme: runTheme, battleLocked, setRun, setScreen } = useGame();
   const [health, setHealth] = useState<string>("…");
-  const [topicInput, setTopicInput] = useState("Pineapple belongs on pizza");
+  const [themeInput, setThemeInput] = useState(THEMES[0].name);
 
   useEffect(() => {
     api
@@ -26,21 +53,18 @@ export default function App() {
 
   async function startRun() {
     try {
-      const run = await api.post<{ id: string; debate_topic: string }>("/api/runs", {
-        topic: topicInput,
-      });
-      setRun(run.id, run.debate_topic);
+      const run = await api.post<{ id: string; debate_topic: string; theme?: string }>(
+        "/api/runs",
+        // topic kept for the NOT-NULL column; server labels the run by theme and
+        // draws a random topic within the theme per battle.
+        { topic: themeInput, theme: themeInput },
+      );
+      setRun(run.id, run.debate_topic, run.theme ?? themeInput);
     } catch {
       // /api/runs lands in WS-A; until then just enter the overworld locally.
-      setRun("local-dev", topicInput);
+      setRun("local-dev", themeInput, themeInput);
     }
   }
-
-  const SUGGESTED = [
-    "Pineapple belongs on pizza",
-    "AI should be open source",
-    "Cats are better than dogs",
-  ];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -56,7 +80,7 @@ export default function App() {
           </span>
           {runId && (
             <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
-              topic: {topic}
+              theme: {runTheme || topic}
             </span>
           )}
         </div>
@@ -69,26 +93,30 @@ export default function App() {
               DEBATE RPG
             </div>
             <p className="font-body text-sm" style={{ color: "var(--muted)" }}>
-              Choose the topic every enemy in this run will debate.
+              Pick a THEME. Each battle draws a random topic from it.
             </p>
-            <input
-              className="pixel-field w-full text-sm"
-              value={topicInput}
-              onChange={(e) => setTopicInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") startRun();
-              }}
-            />
-            <div className="flex gap-1.5 flex-wrap justify-center">
-              {SUGGESTED.map((t) => (
-                <button
-                  key={t}
-                  className="pixel-btn text-[9px] py-1"
-                  onClick={() => setTopicInput(t)}
-                >
-                  {t}
-                </button>
-              ))}
+            <div className="grid grid-cols-1 gap-1.5 text-left">
+              {THEMES.map((th) => {
+                const selected = th.name === themeInput;
+                return (
+                  <button
+                    key={th.name}
+                    className={`pixel-btn w-full text-left px-3 py-2 ${
+                      selected ? "pixel-btn--accent" : ""
+                    }`}
+                    onClick={() => setThemeInput(th.name)}
+                    aria-pressed={selected}
+                  >
+                    <div className="font-display text-[11px]">{th.name}</div>
+                    <div
+                      className="font-body text-[8px] mt-0.5 leading-snug"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      e.g. {th.examples.join("  ·  ")}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
             <button className="pixel-btn pixel-btn--accent w-full" onClick={startRun}>
               Start Run

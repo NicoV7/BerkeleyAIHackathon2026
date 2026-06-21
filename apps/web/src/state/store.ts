@@ -7,6 +7,8 @@ export type Screen = "menu" | "overworld" | "encounter" | "party" | "training" |
 interface GameState {
   runId: string | null;
   topic: string;
+  /** Theme picked at run start; each battle draws a random topic within it. */
+  theme: string;
   screen: Screen;
   activeEncounterId: string | null;
   /** Player's per-round reasoning scores from the latest battle (for the dual
@@ -16,7 +18,7 @@ interface GameState {
    *  set, the global nav is locked so the only way out is Flee / win / lose.
    *  BattleDebateView owns this flag (sets on mount, clears on over/flee). */
   battleLocked: boolean;
-  setRun: (runId: string, topic: string) => void;
+  setRun: (runId: string, topic: string, theme?: string) => void;
   setScreen: (screen: Screen) => void;
   setEncounter: (id: string | null) => void;
   setYouScores: (scores: number[]) => void;
@@ -26,11 +28,12 @@ interface GameState {
 export const useGame = create<GameState>((set) => ({
   runId: null,
   topic: "",
+  theme: "",
   screen: "menu",
   activeEncounterId: null,
   lastYouScores: [],
   battleLocked: false,
-  setRun: (runId, topic) => set({ runId, topic, screen: "overworld" }),
+  setRun: (runId, topic, theme = "") => set({ runId, topic, theme, screen: "overworld" }),
   setScreen: (screen) => set({ screen }),
   setEncounter: (activeEncounterId) =>
     set({
