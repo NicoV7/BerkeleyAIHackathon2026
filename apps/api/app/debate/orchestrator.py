@@ -845,7 +845,25 @@ def _build_actor_messages(
             "that no opponent has spoken."
         )
 
-    user = history + "\n\nNow give your argument."
+    # Make the opponent's most recent line an UNMISSABLE rebuttal target. The
+    # transcript blob alone buries it; a small model (or any model) reliably
+    # rebuts a specific quoted claim far better than a vague "rebut the latest
+    # point" instruction. `_last_enemy_line` is a pure in-memory scan already
+    # used by the counter-skill. When there is no opposing line (auto/self-play
+    # round 1 only — never the human round, where the player always speaks
+    # first) we fall through to the plain prompt.
+    opponent_line = _last_enemy_line(transcript, actor)
+    if opponent_line:
+        if len(opponent_line) > 600:
+            opponent_line = opponent_line[:600].rstrip() + "…"
+        user = (
+            f'{history}\n\nYour opponent just argued: "{opponent_line}"\n\n'
+            f"Directly rebut THAT specific claim first — name the weak point in "
+            f"what they actually said — then drive your own {stance_verb} case. "
+            f"Do not ignore their argument or just restate your side."
+        )
+    else:
+        user = history + "\n\nNow give your argument."
     return [
         {"role": "system", "content": " ".join(sys_parts)},
         {"role": "user", "content": user},
@@ -1934,61 +1952,45 @@ async def run_human_round_stream(
         enemy, action.get("skill"), transcript, topic, combatants
     )
 
-    # A1/A2 — MATERIALIZED OPENING. On the FIRST round the enemy's line is its
-    # opening (arguing AGAINST the topic), which is player-independent and thus
-    # cacheable. Use the cached/pre-generated opening instead of a live stream so
-    # the first enemy turn is a pure retrieval (hit) or a single store-on-miss.
-    # Only the lead enemy uses a skill action; the opening ignores transcript, so
-    # the opening path is safe only on the very first round (no prior exchange to
-    # rebut). Later rounds fall through to the live streaming rebuttal below.
+    # ENEMY REBUTTAL (engagement fix). The enemy ALWAYS rebuts the player's
+    # just-typed argument — there is no canned "opening" anymore. The player
+    # always speaks first, so the enemy always has a concrete claim in
+    # `transcript` to engage (round 1 included); the old player-independent
+    # cached opening (which IGNORED the transcript and read like a pre-canned
+    # line) is gone — that was the root cause of the "bad engagement" feel.
+    #
+    # We generate the FULL rebuttal in one non-streaming call through the enemy
+    # candidate chain (Claude Haiku 4.5 -> Groq -> Cerebras -> local gemma3:1b;
+    # first non-empty wins, so a missing Anthropic key falls through to the free
+    # hosted providers and finally offline-local). We emit ONLY the canonical
+    # `utterance` (no per-token deltas): the WS client shows its "opponent is
+    # thinking…" indicator during the call, then typewriters the whole
+    # counter-argument — the natural pause-then-reply rhythm.
+    from app.gateway.candidates import parse_candidates, run_candidates
+
+    enemy_messages = _build_actor_messages(
+        enemy, topic, transcript, action, memories, name_lookup,
+        counter_context=enemy_counter_context,
+    )
     enemy_text = ""
     enemy_fallback = False
     enemy_fallback_reason: str | None = None
-    is_opening = start_turn == 0 and len(transcript) <= 1  # only the player's turn so far
     with rt.utterance(enemy.monster_id, enemy.role, enemy.side) as enemy_metric:
-        if is_opening:
-            from app.debate.materialize import get_or_create_opening
-
-            enemy_text, _hit = await get_or_create_opening(topic, enemy.model)
-            enemy_text = _finalize_actor_text(enemy_text, enemy)
-            # Emit the materialized opening as a single token so WS clients still get
-            # the streamed-text event shape (no per-token cadence, but instant).
-            yield Event(
-                "token",
-                {
-                    "turn": enemy_turn,
-                    "actor_id": enemy.monster_id,
-                    "side": enemy.side,
-                    "text": enemy_text,
-                    **_event_timing(enemy_started),
-                },
+        try:
+            result = await run_candidates(
+                parse_candidates(settings.enemy_actor_candidates),
+                enemy_messages,
+                temperature=0.8,
+                max_tokens=_actor_max_tokens(),
+                timeout=_actor_timeout(),
             )
-        else:
-            try:
-                async for chunk in _stream_utterance(
-                    enemy, topic, transcript, action, memories, name_lookup,
-                    counter_context=enemy_counter_context,
-                ):
-                    if chunk["kind"] == "token":
-                        yield Event(
-                            "token",
-                            {
-                                "turn": enemy_turn,
-                                "actor_id": enemy.monster_id,
-                                "side": enemy.side,
-                                "text": chunk["text"],
-                                **_event_timing(enemy_started),
-                            },
-                        )
-                    else:  # "done"
-                        enemy_text = chunk["text"]
-                        enemy_fallback = bool(chunk.get("fallback"))
-                        enemy_fallback_reason = chunk.get("fallback_reason")
-            except Exception:  # noqa: BLE001 — never let a stream error orphan the judge task
-                if not enemy_text:
-                    enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
-                    enemy_fallback = True
-                    enemy_fallback_reason = "empty"
+            enemy_text = _finalize_actor_text((result.text or "").strip(), enemy) if result.ok else ""
+        except Exception:  # noqa: BLE001 — never let a generation error orphan the judge task
+            enemy_text = ""
+        if not enemy_text:
+            enemy_text = _fallback_argument(enemy, topic, turn_seed=len(transcript))
+            enemy_fallback = True
+            enemy_fallback_reason = "empty"
         if enemy_fallback:
             enemy_metric.mark_fallback(enemy_fallback_reason or "empty")
 

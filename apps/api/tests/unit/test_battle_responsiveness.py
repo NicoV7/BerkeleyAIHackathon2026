@@ -2,14 +2,18 @@
 
 Two live-play P0s these tests lock in WITHOUT a real Ollama/Redis:
 
-  1. RESPONSIVENESS — the human-argue round must STREAM the enemy rebuttal token
-     by token (same mechanism as the auto round) so perceived latency is the
-     first token, not full generation; and the player-judge + enemy-generation
-     LLM calls must OVERLAP (asyncio), not run strictly back-to-back.
+  1. ENGAGEMENT — the human-argue round generates the enemy rebuttal in ONE
+     non-streaming call through the enemy candidate chain (Claude Haiku 4.5 ->
+     Groq -> Cerebras -> local gemma3:1b) and emits it as a single canonical
+     `utterance` (no per-token deltas). The WS client shows its "opponent is
+     thinking…" indicator during the call, then typewriters the whole reply —
+     the natural pause-then-counterargument rhythm. The enemy ALWAYS rebuts the
+     player's just-typed argument (no canned opening), since the player always
+     speaks first.
 
   2. CLEAR STANCES — the player's lead argues FOR the topic and the enemy lead
      argues AGAINST it (deterministic); the stance is threaded into the prompt
-     and carried on the emitted utterance/token events; and the model-failure
+     and carried on the emitted utterance events; and the model-failure
      fallback is a CONCRETE, side-taking sentence about the actual topic — never
      the old meta hedge "I take the side that survives the hardest question".
 
@@ -81,20 +85,35 @@ async def _drain(agen) -> list[orch.Event]:
     return [ev async for ev in agen]
 
 
+def _fake_candidates(text: str = "", ok: bool = True):
+    """A fake `run_candidates` returning `text` as the enemy's full rebuttal with
+    NO network. The human round now generates the enemy turn via the candidate
+    chain (Haiku -> Groq -> Cerebras -> local) in ONE non-streaming call and
+    emits only the canonical utterance — no token deltas. `ok=False` (or empty
+    text) simulates every candidate failing so the round falls back to a
+    concrete templated AGAINST line."""
+    from app.gateway.candidates import CandidateResult
+
+    async def fake_run_candidates(specs, messages, **k):
+        return CandidateResult(text=text, ok=ok and bool(text), attempts=1)
+
+    return fake_run_candidates
+
+
 # --------------------------------------------------------------------------- #
-# 1. STREAMING — the human round emits token events, not just one utterance
+# 1. ENGAGEMENT — the enemy rebuttal is one canonical utterance (no token deltas)
 # --------------------------------------------------------------------------- #
 
 
-async def test_human_round_streams_enemy_tokens(
+async def test_human_round_emits_enemy_utterance_no_token_stream(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    # Enemy rebuttal arrives as several streamed chunks.
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Animals ", "don't ", "deserve ", "human ", "rights."]:
-            yield tok
-
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    # Enemy rebuttal is generated in ONE call (pause -> typewriter on the client),
+    # so the round emits the canonical utterance and NO per-token deltas.
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates",
+        _fake_candidates("Animals don't deserve human rights."),
+    )
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
@@ -107,27 +126,22 @@ async def test_human_round_streams_enemy_tokens(
         _combatant("party", "p1", "Sage"),
         _combatant("enemy", "e1", "Brute"),
     ]
-    # start_turn>0 = a later round -> live STREAMING rebuttal (round 1 emits the
-    # materialized opening as a single token; that is a separate A1/A2 concern).
+    # start_turn=0 (round 1) — the enemy still rebuts the player's argument live;
+    # there is no canned opening anymore.
     events = await _drain(
         orch.run_human_round_stream(
-            "enc1", "animals deserve rights", combatants, None, 2,
+            "enc1", "animals deserve rights", combatants, None, 0,
             {"party": 1.0, "enemy": 1.0}, "Animals deserve rights because they feel pain.",
         )
     )
 
-    token_events = [e for e in events if e.kind == "token"]
-    # The enemy rebuttal streamed: more than one token event (not a single final blob).
-    assert len(token_events) >= 2
-    # Tokens reconstruct the enemy text and all carry the enemy's side.
-    streamed = "".join(e.data["text"] for e in token_events)
-    assert "rights" in streamed
-    assert all(e.data["side"] == "against" for e in token_events)
-    assert all("server_ts" in e.data and "elapsed_ms" in e.data for e in token_events)
+    # No token deltas: the enemy reply arrives as a single canonical utterance.
+    assert [e for e in events if e.kind == "token"] == []
 
-    # The canonical enemy utterance still emits with the full assembled text.
     enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
-    assert enemy_utt and enemy_utt[0].data["text"].strip() == streamed.strip()
+    assert enemy_utt
+    assert enemy_utt[0].data["text"].strip().startswith("Animals don't deserve human rights")
+    assert enemy_utt[0].data["side"] == "against"
     assert "server_ts" in enemy_utt[0].data and "elapsed_ms" in enemy_utt[0].data
 
 
@@ -146,10 +160,6 @@ async def test_human_round_judges_both_in_one_combined_call(
     """
     calls: list[list[str]] = []
 
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Rights ", "demand ", "duties."]:
-            yield tok
-
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
@@ -160,7 +170,9 @@ async def test_human_round_judges_both_in_one_combined_call(
             for it in items
         ]
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates", _fake_candidates("Rights demand duties.")
+    )
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [
@@ -186,35 +198,31 @@ async def test_human_round_judges_both_in_one_combined_call(
     assert by_actor["e1"]["damage"] == 0
 
 
-async def test_human_round_streams_enemy_tokens_carry_actor_id(
+async def test_human_round_enemy_utterance_carries_actor_id(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    """The enemy rebuttal must STREAM token events (perceived latency = first token)
-    and every token must carry the enemy's actor_id."""
-    async def fake_stream(messages, model=None, **k):
-        for tok in ["Coun", "ter", "point."]:
-            yield tok
+    """The enemy rebuttal is a single canonical utterance carrying the enemy's
+    actor_id (the round emits no per-token deltas — pause then typewriter)."""
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates", _fake_candidates("Counterpoint.")
+    )
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
         return [JudgeScore(actor_id=it["actor_id"], score=50.0, rationale="ok") for it in items]
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
-    # start_turn>0 = a LATER round, so the enemy rebuts via the live STREAMING path
-    # (the first round emits the cached/materialized opening as a single token, which
-    # is a separate A1/A2 concern; this test guards the streaming rebuttal).
     events = await _drain(
         orch.run_human_round_stream(
             "enc3", "topic", combatants, None, 2, {"party": 1.0, "enemy": 1.0}, "x"
         )
     )
-    token_events = [e for e in events if e.kind == "token"]
-    assert len(token_events) >= 2, "enemy rebuttal must stream multiple token events"
-    assert all(t.data.get("actor_id") == "e1" for t in token_events)
+    assert [e for e in events if e.kind == "token"] == []
+    enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
+    assert enemy_utt and enemy_utt[0].data.get("actor_id") == "e1"
 
 
 # --------------------------------------------------------------------------- #
@@ -225,15 +233,14 @@ async def test_human_round_streams_enemy_tokens_carry_actor_id(
 async def test_sides_assigned_for_player_against_enemy(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    async def fake_stream(messages, model=None, **k):
-        yield "Counterpoint."
-
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
         return [JudgeScore(actor_id=it["actor_id"], score=50.0, rationale="ok") for it in items]
 
-    monkeypatch.setattr(orch.gateway, "stream", fake_stream)
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates", _fake_candidates("Counterpoint.")
+    )
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     player = _combatant("party", "p1", "Sage")
@@ -253,6 +260,62 @@ async def test_sides_assigned_for_player_against_enemy(
     utts = {e.data["actor_role"]: e.data for e in events if e.kind == "utterance"}
     assert utts["party"]["side"] == "for"
     assert utts["enemy"]["side"] == "against"
+
+
+def test_actor_prompt_targets_opponents_last_line() -> None:
+    """The enemy prompt explicitly quotes the opponent's most recent line as a
+    rebuttal target so the model engages THAT claim instead of restating its own
+    side — the core engagement fix (vs. the old buried-in-a-transcript-blob prompt)."""
+    enemy = _combatant("enemy", "e1", "Brute")
+    enemy.side = "against"
+    transcript = [
+        {"actor_id": "p1", "actor_role": "party",
+         "text": "Sweetness balances the salt, so pineapple belongs on pizza."},
+    ]
+    name_lookup = {"p1": "Sage", "e1": "Brute"}
+    msgs = orch._build_actor_messages(
+        enemy, "pineapple on pizza", transcript, {}, [], name_lookup
+    )
+    user = msgs[1]["content"]
+    assert "Sweetness balances the salt" in user
+    assert "rebut" in user.lower()
+    # Still anchors the enemy's own stance.
+    assert "AGAINST" in user
+
+
+async def test_round1_enemy_never_uses_cached_opening(
+    monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
+) -> None:
+    """Round 1 (start_turn=0): the enemy rebuts live via the candidate chain. The
+    removed player-independent cached opening must NOT be reached — that canned
+    line (which ignored the player's argument) was the root cause of bad
+    engagement."""
+    import app.debate.materialize as mz
+
+    async def boom_opening(*a, **k):  # pragma: no cover — asserts it's never called
+        raise AssertionError("round 1 must NOT use the cached opening anymore")
+
+    monkeypatch.setattr(mz, "get_or_create_opening", boom_opening)
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates", _fake_candidates("That premise fails.")
+    )
+
+    async def fake_score(topic, items, fallback_model=None, **k):
+        from app.debate.judge import JudgeScore
+
+        return [JudgeScore(actor_id=it["actor_id"], score=55.0, rationale="ok") for it in items]
+
+    monkeypatch.setattr(orch, "score_round", fake_score)
+
+    combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
+    events = await _drain(
+        orch.run_human_round_stream(
+            "encR1", "pineapple on pizza", combatants, None, 0,
+            {"party": 1.0, "enemy": 1.0}, "Pineapple belongs on pizza.",
+        )
+    )
+    enemy_utt = [e for e in events if e.kind == "utterance" and e.data["actor_role"] == "enemy"]
+    assert enemy_utt and enemy_utt[0].data["text"].startswith("That premise fails")
 
 
 def test_prompt_states_explicit_side() -> None:
@@ -410,21 +473,21 @@ def test_fallback_varies_by_side_and_type() -> None:
     assert "AGAINST" in t1 and "FOR" in t3
 
 
-async def test_stream_failure_falls_back_to_concrete_side(
+async def test_generation_failure_falls_back_to_concrete_side(
     monkeypatch: pytest.MonkeyPatch, fake_redis: _FakeRedis
 ) -> None:
-    """If the enemy stream stalls/errors, the enemy utterance is a real AGAINST line."""
-
-    async def boom_stream(messages, model=None, **k):
-        raise RuntimeError("model stalled")
-        yield  # pragma: no cover — generator marker
+    """If every enemy candidate fails (no keys, errors), the enemy utterance is a
+    real AGAINST line — never empty, never the old meta hedge."""
 
     async def fake_score(topic, items, fallback_model=None, **k):
         from app.debate.judge import JudgeScore
 
         return [JudgeScore(actor_id=it["actor_id"], score=50.0, rationale="ok") for it in items]
 
-    monkeypatch.setattr(orch.gateway, "stream", boom_stream)
+    # ok=False -> the whole candidate chain produced nothing.
+    monkeypatch.setattr(
+        "app.gateway.candidates.run_candidates", _fake_candidates("", ok=False)
+    )
     monkeypatch.setattr(orch, "score_round", fake_score)
 
     combatants = [_combatant("party", "p1", "Sage"), _combatant("enemy", "e1", "Brute")]
