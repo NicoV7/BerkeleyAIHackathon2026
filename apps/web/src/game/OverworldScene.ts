@@ -1228,6 +1228,8 @@ export class OverworldScene extends Phaser.Scene {
     this.enemies.destroy();
     this.npcs.destroy();
     this.destroySigns();
+    this.detailGraphics?.destroy();
+    this.shadowGraphics?.destroy();
     this.playerLabel?.destroy();
     this.playerLabel = null;
   }
