@@ -28,9 +28,8 @@ import { PostFX } from "./PostFX";
 import {
   chunkKey,
   neighborPrefetchCentres,
-  nearChunkEdge,
+  windowCoversViewport,
   shouldSwapChunk,
-  windowsWithinRenderHalo,
   type ChunkWindow,
 } from "./ChunkStream";
 import {
@@ -44,10 +43,7 @@ import {
   SHEET_ROWS,
   baseFrameFor,
   bridgeFrameFor,
-  forestBorderEdges,
   overlayFor,
-  shorelineEdges,
-  type EdgeStamp,
   type Neighbors,
 } from "./TileAtlas";
 import { WorldSim, type MoveIntent } from "./WorldSim";
@@ -57,9 +53,13 @@ export { TILE_SIZE } from "./constants";
 /** How often (ms) to persist the player's absolute position to the server. */
 const SYNC_DEBOUNCE_MS = 1500;
 const CHUNK_FETCH_RADIUS_TILES = 48;
-const CHUNK_EDGE_MARGIN_TILES = 18;
+// Lead (in tiles) added around the ACTUAL viewport when deciding to re-centre.
+// Each buffer renders a single chunk window (no neighbour halo), so we must swap
+// before the visible area spills past the chunk edge. Triggering off the real
+// camera viewport (+ this lead) is gap-free on any display size; prefetch keeps
+// the swap instant.
+const CHUNK_VIEW_LEAD_TILES = 6;
 const CHUNK_FETCH_THROTTLE_MS = 450;
-const CHUNK_RENDER_HALO_TILES = 4;
 
 const TILE = {
   GRASS: 0,
@@ -84,8 +84,10 @@ const SHEET = "/tiles/roguelikeSheet_transparent.png";
 const CHAR_SHEET = "/sprites/roguelikeChar_transparent.png";
 const SHEET_TILE = 16;
 const ENEMY_FRAME = 7;
-/** Phaser texture key for the loaded Kenney roguelike terrain atlas. */
+/** Phaser texture key for the loaded Kenney roguelike terrain atlas (spritesheet). */
 const ATLAS_KEY = "rogue";
+/** Same sheet loaded as a plain image, used as the Tilemap tileset (Wave 0). */
+const TILESET_KEY = "rogue_tiles";
 /** Atlas frames are 16px; the world renders at TILE_SIZE → integer upscale. */
 const ATLAS_SCALE = TILE_SIZE / SHEET_TILE;
 
@@ -189,6 +191,15 @@ interface WorldState {
   goal?: RoutablePOI | null;
 }
 
+/** One double-buffer slot: a Tilemap with a base ground layer + feature overlay. */
+interface TerrainBuffer {
+  map: Phaser.Tilemaps.Tilemap;
+  base: Phaser.Tilemaps.TilemapLayer;
+  overlay: Phaser.Tilemaps.TilemapLayer;
+  widthTiles: number;
+  heightTiles: number;
+}
+
 export class OverworldScene extends Phaser.Scene {
   private cfg!: OverworldConfig;
 
@@ -196,30 +207,32 @@ export class OverworldScene extends Phaser.Scene {
   private mapData: MapState | null = null;
   private worldData: WorldState | null = null;
 
-  // Graphics objects — DOUBLE BUFFERED (WS-8).
-  // Two terrain RenderTextures (front = visible, back = hidden) plus two matching
-  // fallback Graphics layers. A new chunk is fully stamped into the BACK pair,
-  // then we swap depths so it becomes the front; the old terrain stays on screen
-  // the whole time the new chunk fetches + stamps, so there is never a black gap.
-  // The fallback Graphics draws unmapped tile-ints + POI markers on top of the
-  // atlas RT (so nothing renders blank).
-  private terrainRT: [
-    Phaser.GameObjects.RenderTexture | null,
-    Phaser.GameObjects.RenderTexture | null,
-  ] = [null, null];
+  // Terrain renders via Phaser TILEMAP layers (Wave 0) — DOUBLE BUFFERED.
+  // Two terrain buffers (front = visible, back = hidden), each a Tilemap with a
+  // base ground layer + a feature overlay layer. A new chunk is fully populated
+  // into the BACK buffer, then depths swap so it becomes the front; the old
+  // terrain stays on screen the whole time the new chunk fetches + populates, so
+  // there is never a black gap. This replaces the old RenderTexture.stamp path,
+  // which left terrain BLANK in Canvas (stamp is a no-op) and Phaser-4 WebGL
+  // (RenderTexture.stamp didn't composite). Tilemaps render the Kenney atlas
+  // correctly under BOTH renderers, so the foundation needs no renderer switch.
+  // The thin per-buffer Graphics layer draws POI markers (+ a procedural fallback
+  // for any unmapped tile-int) on top of the tilemap so nothing renders blank.
+  private terrain: [TerrainBuffer | null, TerrainBuffer | null] = [null, null];
   private tileGraphics!: [Phaser.GameObjects.Graphics, Phaser.GameObjects.Graphics];
   /** Index (0|1) of the buffer currently shown to the player. */
   private frontBuffer = 0;
   /** The chunk window currently displayed in the front buffer. */
   private liveWindow: ChunkWindow | null = null;
-  private atlasReady = false;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private playerAnimator!: PlayerSpriteAnimator;
 
-  // Depth bands for the two terrain layers. Front sits just under the actors;
-  // back sits below the front so the in-progress chunk is hidden until swapped.
-  private static readonly RT_DEPTH = [-2, -4] as const;
-  private static readonly G_DEPTH = [-1, -3] as const;
+  // Depth bands per buffer slot, indexed [front, back]. The whole front buffer
+  // (base + overlay + POI graphics) renders above the whole back buffer, and all
+  // terrain renders below the actors (enemy=5, npc=7, player=10).
+  private static readonly BASE_DEPTH = [-8, -16] as const;
+  private static readonly OVERLAY_DEPTH = [-7, -15] as const;
+  private static readonly G_DEPTH = [-6, -14] as const;
 
   // Client-side world simulation + roaming enemy runtime
   private sim: WorldSim | null = null;
@@ -295,6 +308,10 @@ export class OverworldScene extends Phaser.Scene {
       margin: 0,
       spacing: 1,
     });
+    // Also load the terrain sheet as a plain IMAGE for use as a Tilemap tileset
+    // (addTilesetImage needs an image texture). Same geometry as the spritesheet:
+    // 16px tiles, 1px spacing, 0 margin → 57×31, so frame index == tilemap index.
+    this.load.image(TILESET_KEY, SHEET);
     // Warn (don't crash) if the atlas geometry drifts from what TileAtlas maps —
     // an upgraded sheet with different dimensions would mis-key every frame.
     this.load.once(Phaser.Loader.Events.COMPLETE, () => {
@@ -386,18 +403,10 @@ export class OverworldScene extends Phaser.Scene {
   }
 
   async create() {
-    // Terrain atlas blits below the fallback graphics; both below actors.
-    // Double-buffered: a front (visible) + back (hidden) fallback Graphics layer,
-    // mirroring the two terrain RenderTextures created lazily in ensureTerrainRT.
-    // Terrain renders via the procedural Graphics path (colored tiles) for ALL
-    // renderers. The atlas RenderTexture path (drawAtlasTile/stamp) left the
-    // terrain BLANK in both Canvas (stamp is a no-op) and WebGL (Phaser 4
-    // RenderTexture.stamp did not composite as expected) — verified live in the
-    // browser. Graphics.fillRect is the original, known-good renderer that works
-    // everywhere, so it is the default. Re-enabling the pixel-art atlas needs a
-    // WebGL-correct path (Blitter/Tilemap) and is tracked as a follow-up.
-    this.atlasReady = false;
-    void this.textures.exists(ATLAS_KEY);
+    // Terrain renders via Phaser Tilemap layers, created lazily per buffer in
+    // ensureTerrainBuffer(). Two thin Graphics layers sit just above each
+    // buffer's tilemap for POI markers (+ a procedural fallback for any unmapped
+    // tile-int), and below the actors.
     const g0 = this.add.graphics();
     g0.setDepth(OverworldScene.G_DEPTH[0]);
     const g1 = this.add.graphics();
@@ -435,8 +444,17 @@ export class OverworldScene extends Phaser.Scene {
 
     // Flush the latest position to the server when the scene tears down
     // (navigation away / encounter transition) — the on-transition sync.
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.flushSync());
-    this.events.once(Phaser.Scenes.Events.DESTROY, () => this.flushSync());
+    // refreshMap() does scene.restart, which fires SHUTDOWN (NOT a Scene method
+    // named destroy()). Without cleaning up here, every encounter→battle→return
+    // loop orphans the prior life's tilemaps. Clean render objects + flush on both.
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.flushSync();
+      this.cleanupRender();
+    });
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => {
+      this.flushSync();
+      this.cleanupRender();
+    });
 
     // Atmosphere overlays (drawn ON TOP of everything via depth=999/1000).
     this.postFX.attach(this);
@@ -604,11 +622,17 @@ export class OverworldScene extends Phaser.Scene {
    */
   private swapBuffers() {
     const back = this.backIndex();
-    this.terrainRT[back]?.setDepth(OverworldScene.RT_DEPTH[0]);
-    this.terrainRT[this.frontBuffer]?.setDepth(OverworldScene.RT_DEPTH[1]);
-    this.tileGraphics[back].setDepth(OverworldScene.G_DEPTH[0]);
-    this.tileGraphics[this.frontBuffer].setDepth(OverworldScene.G_DEPTH[1]);
+    this.applyBufferDepths(back, 0); // back → front depth band
+    this.applyBufferDepths(this.frontBuffer, 1); // front → back depth band
     this.frontBuffer = back;
+  }
+
+  /** Push one buffer slot's layers to the [front=0|back=1] depth band. */
+  private applyBufferDepths(buffer: number, band: 0 | 1) {
+    const t = this.terrain[buffer];
+    t?.base.setDepth(OverworldScene.BASE_DEPTH[band]);
+    t?.overlay.setDepth(OverworldScene.OVERLAY_DEPTH[band]);
+    this.tileGraphics[buffer].setDepth(OverworldScene.G_DEPTH[band]);
   }
 
   private emitHudMap() {
@@ -672,41 +696,27 @@ export class OverworldScene extends Phaser.Scene {
 
     const originX = data.origin_x ?? 0;
     const originY = data.origin_y ?? 0;
-    const widthPx = data.width * TILE_SIZE;
-    const heightPx = data.height * TILE_SIZE;
+    const buf = this.ensureTerrainBuffer(buffer, data.width, data.height);
+    // Position both layers at the chunk's global pixel origin. setScale(ATLAS_SCALE)
+    // upscales the 16px source tiles to TILE_SIZE; position is added on top.
+    buf.base.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
+    buf.overlay.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
 
-    const rt = this.atlasReady
-      ? this.ensureTerrainRT(buffer, widthPx, heightPx)
-      : null;
-    if (rt) {
-      rt.setPosition(originX * TILE_SIZE, originY * TILE_SIZE);
-      rt.clear();
-    }
-
-    this.drawTerrainWindow(g, data, rt);
-    for (const cached of this.renderableCachedChunks(data)) {
-      this.drawTerrainWindow(g, cached, null);
-    }
-
+    this.drawTerrainWindow(g, buf, data);
     this.drawPois(g);
   }
 
-  private renderableCachedChunks(anchor: MapState): MapState[] {
-    const anchorWin = this.windowOf(anchor);
-    const anchorKey = chunkKey(anchorWin.originX, anchorWin.originY);
-    return [...this.prefetchedChunks.values()].filter((cached) => {
-      const win = this.windowOf(cached);
-      return (
-        chunkKey(win.originX, win.originY) !== anchorKey &&
-        windowsWithinRenderHalo(anchorWin, win, CHUNK_RENDER_HALO_TILES)
-      );
-    });
-  }
-
+  /**
+   * Populate one terrain buffer's tilemap layers from `data` (chunk-local tile
+   * coords). Every tile-int with an atlas frame writes its base ground frame
+   * (ROAD→bridge where it touches water) and, if applicable, a feature frame on
+   * the overlay layer. Tile-ints with no atlas frame clear both cells and fall
+   * back to the procedural Graphics renderer so nothing renders blank.
+   */
   private drawTerrainWindow(
     g: Phaser.GameObjects.Graphics,
-    data: MapState,
-    rt: Phaser.GameObjects.RenderTexture | null
+    buf: TerrainBuffer,
+    data: MapState
   ) {
     const originX = data.origin_x ?? 0;
     const originY = data.origin_y ?? 0;
@@ -714,99 +724,38 @@ export class OverworldScene extends Phaser.Scene {
     for (let y = 0; y < data.height; y++) {
       for (let x = 0; x < data.width; x++) {
         const tile = tiles[y][x];
-        const px = (originX + x) * TILE_SIZE;
-        const py = (originY + y) * TILE_SIZE;
         const jitter = tileJitter(originX + x, originY + y);
-
         const base = baseFrameFor(tile);
-        if (rt && base !== null) {
-          this.drawAtlasTile(rt, tiles, originX, originY, tile, x, y, px, py, jitter);
+
+        if (base !== null) {
+          const nb = this.neighborsOf(tiles, x, y, tile);
+          // recalculateFaces=false: collision is handled by WorldSim, not the
+          // tilemap, so per-tile face recalc (~9k/layer/swap) is pure waste.
+          buf.base.putTileAt(bridgeFrameFor(tile, nb) ?? base, x, y, false);
+
+          const overlay = overlayFor(tile, jitter);
+          if (overlay) {
+            const t = buf.overlay.putTileAt(overlay.frame, x, y, false);
+            // Set alpha/tint UNCONDITIONALLY: putTileAt over an already-occupied
+            // cell (buffer reuse) only updates .index, leaving a prior tile's
+            // alpha/tint stale otherwise.
+            if (t) {
+              t.alpha = overlay.alpha;
+              t.tint = overlay.tint ?? 0xffffff;
+            }
+          } else {
+            buf.overlay.removeTileAt(x, y, true, false);
+          }
         } else {
-          // Procedural fallback so unmapped tile-ints never render blank.
+          // Unmapped tile-int: clear tilemap cells + draw procedural fallback.
+          buf.base.removeTileAt(x, y, true, false);
+          buf.overlay.removeTileAt(x, y, true, false);
+          const px = (originX + x) * TILE_SIZE;
+          const py = (originY + y) * TILE_SIZE;
           this.drawFallbackTile(g, tile, px, py, jitter);
         }
       }
     }
-  }
-
-  /** Stamp one atlas-backed tile (+ overlay + autotile edges + bridge) into rt.
-   * Local-relative origin: rt is positioned at the chunk origin, so stamp at
-   * the tile's chunk-local pixel offset. */
-  private drawAtlasTile(
-    rt: Phaser.GameObjects.RenderTexture,
-    tiles: number[][],
-    originX: number,
-    originY: number,
-    tile: number,
-    x: number,
-    y: number,
-    px: number,
-    py: number,
-    jitter: number
-  ) {
-    const lx = px - originX * TILE_SIZE;
-    const ly = py - originY * TILE_SIZE;
-    const nb = this.neighborsOf(tiles, x, y, tile);
-
-    // Base ground frame (grass/water/road/stone/...). A ROAD touching WATER is
-    // swapped for the wooden bridge plank.
-    const bridge = bridgeFrameFor(tile, nb);
-    const base = bridge ?? baseFrameFor(tile)!;
-    this.stamp(rt, base, lx, ly);
-
-    // Edge autotiling: translucent sand shoreline where water meets land, and a
-    // faint darker-green seam where grass meets forest.
-    for (const edge of shorelineEdges(tile, nb)) this.stampEdge(rt, edge, lx, ly);
-    for (const edge of forestBorderEdges(tile, nb)) this.stampEdge(rt, edge, lx, ly);
-
-    // Feature overlay (tree / campfire / structure) drawn on top of the base.
-    const overlay = overlayFor(tile, jitter);
-    if (overlay) {
-      this.stamp(rt, overlay.frame, lx, ly, overlay.alpha, overlay.tint);
-    }
-  }
-
-  /** Stamp a 16px atlas frame upscaled to TILE_SIZE at local (lx,ly). */
-  private stamp(
-    rt: Phaser.GameObjects.RenderTexture,
-    frame: number,
-    lx: number,
-    ly: number,
-    alpha = 1,
-    tint?: number
-  ) {
-    rt.stamp(ATLAS_KEY, frame, lx, ly, {
-      originX: 0,
-      originY: 0,
-      scale: ATLAS_SCALE,
-      alpha,
-      ...(tint !== undefined ? { tint } : {}),
-    });
-  }
-
-  /** Stamp an edge accent frame clipped (by half-tile offset) to one side. */
-  private stampEdge(
-    rt: Phaser.GameObjects.RenderTexture,
-    edge: EdgeStamp,
-    lx: number,
-    ly: number
-  ) {
-    // Nudge the full-tile accent toward the relevant edge so it reads as a strip
-    // hugging that side rather than recolouring the whole tile.
-    const off = TILE_SIZE * 0.5;
-    let dx = 0;
-    let dy = 0;
-    if (edge.side === "n") dy = -off;
-    else if (edge.side === "s") dy = off;
-    else if (edge.side === "e") dx = off;
-    else dx = -off;
-    rt.stamp(ATLAS_KEY, edge.frame, lx + dx, ly + dy, {
-      originX: 0,
-      originY: 0,
-      scale: ATLAS_SCALE,
-      alpha: edge.alpha,
-      ...(edge.tint !== undefined ? { tint: edge.tint } : {}),
-    });
   }
 
   /**
@@ -878,30 +827,53 @@ export class OverworldScene extends Phaser.Scene {
     }
   }
 
-  /** Lazily create / resize the terrain RenderTexture for one buffer slot. */
-  private ensureTerrainRT(
+  /**
+   * Lazily create (or re-create on size change) the Tilemap terrain buffer for
+   * one slot. A buffer of the same tile dimensions is reused across chunk swaps —
+   * only edge-of-world chunks (different size) force a rebuild. The back buffer is
+   * created in the back depth band; swapBuffers raises it once fully populated.
+   */
+  private ensureTerrainBuffer(
     buffer: number,
-    widthPx: number,
-    heightPx: number
-  ): Phaser.GameObjects.RenderTexture {
-    const existing = this.terrainRT[buffer];
-    if (existing && (existing.width !== widthPx || existing.height !== heightPx)) {
-      existing.destroy();
-      this.terrainRT[buffer] = null;
+    widthTiles: number,
+    heightTiles: number
+  ): TerrainBuffer {
+    const existing = this.terrain[buffer];
+    if (
+      existing &&
+      (existing.widthTiles !== widthTiles || existing.heightTiles !== heightTiles)
+    ) {
+      existing.map.destroy();
+      this.terrain[buffer] = null;
     }
-    if (!this.terrainRT[buffer]) {
-      const rt = this.add.renderTexture(0, 0, widthPx, heightPx);
-      rt.setOrigin(0, 0);
-      // The back buffer is created hidden (behind the front); swapBuffers raises
-      // it to the front depth once the chunk is fully stamped.
-      rt.setDepth(
-        buffer === this.frontBuffer
-          ? OverworldScene.RT_DEPTH[0]
-          : OverworldScene.RT_DEPTH[1]
-      );
-      this.terrainRT[buffer] = rt;
+    if (!this.terrain[buffer]) {
+      const map = this.make.tilemap({
+        tileWidth: SHEET_TILE,
+        tileHeight: SHEET_TILE,
+        width: widthTiles,
+        height: heightTiles,
+      });
+      // 16px tiles, 1px spacing, 0 margin → tilemap tile index == atlas frame.
+      const tileset = map.addTilesetImage(
+        "rogue",
+        TILESET_KEY,
+        SHEET_TILE,
+        SHEET_TILE,
+        0,
+        1
+      )!;
+      const band = buffer === this.frontBuffer ? 0 : 1;
+      const base = map.createBlankLayer("base", tileset, 0, 0)!;
+      const overlay = map.createBlankLayer("overlay", tileset, 0, 0)!;
+      base.setOrigin(0, 0);
+      overlay.setOrigin(0, 0);
+      base.setScale(ATLAS_SCALE);
+      overlay.setScale(ATLAS_SCALE);
+      base.setDepth(OverworldScene.BASE_DEPTH[band]);
+      overlay.setDepth(OverworldScene.OVERLAY_DEPTH[band]);
+      this.terrain[buffer] = { map, base, overlay, widthTiles, heightTiles };
     }
-    return this.terrainRT[buffer]!;
+    return this.terrain[buffer]!;
   }
 
   private worldPois(): RoutablePOI[] {
@@ -1058,10 +1030,17 @@ export class OverworldScene extends Phaser.Scene {
     if (this.chunkFetchPending) return;
     if (time - this.lastChunkFetchAtMs < CHUNK_FETCH_THROTTLE_MS) return;
 
-    // Re-centre only when the player nears the live chunk's edge margin. Because
-    // the swap stamps into the BACK buffer first (the front stays visible), there
-    // is no black gap even if the fetch is slow.
-    if (!nearChunkEdge(this.liveWindow, tx, ty, CHUNK_EDGE_MARGIN_TILES)) return;
+    // Re-centre when the live chunk would stop covering the ACTUAL camera
+    // viewport (expanded by a small lead). The swap populates the BACK buffer
+    // first (front stays visible) and is instant when the target was prefetched,
+    // so the new chunk lands before any edge is exposed — gap-free on any display.
+    const view = this.cameras.main.worldView;
+    const lead = CHUNK_VIEW_LEAD_TILES;
+    const viewOX = Math.floor(view.x / TILE_SIZE) - lead;
+    const viewOY = Math.floor(view.y / TILE_SIZE) - lead;
+    const viewW = Math.ceil(view.width / TILE_SIZE) + lead * 2;
+    const viewH = Math.ceil(view.height / TILE_SIZE) + lead * 2;
+    if (windowCoversViewport(this.liveWindow, viewOX, viewOY, viewW, viewH)) return;
 
     this.chunkFetchPending = true;
     this.lastChunkFetchAtMs = time;
@@ -1104,8 +1083,10 @@ export class OverworldScene extends Phaser.Scene {
       const res = await fetch(this.mapUrl({ x: centerX, y: centerY }));
       if (!res.ok || !this.sys?.isActive()) return;
       const data = (await res.json()) as MapState;
+      // Cache only — the swap into the live buffer paints it (drawMapInto). Each
+      // tilemap buffer renders a single chunk window, so there is no in-buffer
+      // neighbour painting; prefetch keeps the eventual swap instant.
       this.rememberChunk(data);
-      this.paintCachedChunkIntoFront(data);
     } catch {
       // Best-effort warm-up; on-demand fetch covers any miss.
     } finally {
@@ -1117,15 +1098,6 @@ export class OverworldScene extends Phaser.Scene {
     const key = chunkKey(data.origin_x ?? 0, data.origin_y ?? 0);
     this.prefetchedChunks.set(key, data);
     this.evictPrefetchOverflow();
-  }
-
-  private paintCachedChunkIntoFront(data: MapState) {
-    if (!this.liveWindow || !this.sys?.isActive()) return;
-    const win = this.windowOf(data);
-    if (!windowsWithinRenderHalo(this.liveWindow, win, CHUNK_RENDER_HALO_TILES)) return;
-    const g = this.tileGraphics[this.frontBuffer];
-    this.drawTerrainWindow(g, data, null);
-    this.drawPois(g);
   }
 
   /**
@@ -1237,12 +1209,18 @@ export class OverworldScene extends Phaser.Scene {
     this.encounterPending = false;
   }
 
-  destroy() {
+  /**
+   * Release render objects + caches. Called on BOTH Scene SHUTDOWN (scene.restart,
+   * the encounter-return loop) and DESTROY, since Phaser does not auto-invoke a
+   * Scene method named destroy(). map.destroy() also destroys the layer
+   * GameObjects; idempotent via the null-out so a SHUTDOWN→DESTROY pair is safe.
+   */
+  private cleanupRender() {
     this.enemies.destroy();
     this.npcs.destroy();
-    this.terrainRT[0]?.destroy();
-    this.terrainRT[1]?.destroy();
-    this.terrainRT = [null, null];
+    this.terrain[0]?.map.destroy();
+    this.terrain[1]?.map.destroy();
+    this.terrain = [null, null];
     this.prefetchedChunks.clear();
     this.prefetchInFlight.clear();
   }
