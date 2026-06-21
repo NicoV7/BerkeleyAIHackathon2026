@@ -4,10 +4,12 @@
 set -euo pipefail
 
 SERVICE="${OLLAMA_SERVICE:-ollama}"
-COMPOSE="docker compose -f $(dirname "$0")/../docker-compose.yml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/../docker-compose.yml"
 
 models=(
-  "gemma3:4b"          # default debater / party
+  "gemma3:1b"          # default low-latency local debater / judge
+  "gemma3:4b"          # larger local debater / party option
   "qwen3:4b"           # alternate debater
   "nomic-embed-text"   # embeddings for hybrid RAG
 )
@@ -15,7 +17,7 @@ models=(
 echo "Pulling models into the '$SERVICE' container..."
 for m in "${models[@]}"; do
   echo "==> ollama pull $m"
-  $COMPOSE exec -T "$SERVICE" ollama pull "$m"
+  docker compose -f "$COMPOSE_FILE" exec -T "$SERVICE" ollama pull "$m"
 done
 echo "Done. Installed:"
-$COMPOSE exec -T "$SERVICE" ollama list
+docker compose -f "$COMPOSE_FILE" exec -T "$SERVICE" ollama list
