@@ -28,6 +28,19 @@ import {
 // generated OpenAPI schema so the request/response stay in lockstep with the API.
 type AssistResult = components["schemas"]["AssistResult"];
 type AssistSuggestion = components["schemas"]["AssistSuggestion"];
+// Memory Recall (Wave C: the headline ability). Hits POST /api/encounters/{eid}/memory-recall
+// and renders a 4-second full-screen overlay showing the raw Redis transcript key,
+// the highlighted enemy line, and the typewritten counter.
+type MemoryRecallResult = components["schemas"]["MemoryRecallResult"];
+
+// MP cost mirrors `mp_cost: 60` in apps/api/app/skills/memory_recall.md. The
+// button is greyed when current MP < this; the local fallback (when the MP map
+// is empty — e.g. before Wave B integrates) assumes max_mp so the demo plays.
+const MEMORY_RECALL_MP_COST = 60;
+// Wall-clock duration the overlay stays up. The backend caps the LLM call to
+// ~20s; 4s of theatre after the response is the headline-feature moment.
+const MEMORY_RECALL_OVERLAY_MS = 4000;
+const MEMORY_RECALL_TYPE_SPEED_MS = 22;
 import {
   sfxBlip,
   sfxSubmit,
@@ -356,6 +369,161 @@ function VerdictBadge({ v, fresh }: { v: JudgeVerdict; fresh: boolean }) {
 }
 
 // ---------------------------------------------------------------------------
+// Memory Recall overlay (Wave C: the headline ability)
+// ---------------------------------------------------------------------------
+//
+// Full-screen overlay shown for ~4 seconds after the player spends 60 MP on
+// Memory Recall. Three layers, top to bottom:
+//   * the literal Redis key `enc:{eid}:transcript` in monospace,
+//   * the 5 most-recent transcript lines scrolling in (the matched line glows),
+//   * the counter_text typed out letter-by-letter via a simple setInterval.
+//
+// Damage is delivered via the per-card `floatByTarget` damage-number animation
+// already wired into `CombatantCard` — this overlay does not have to render it.
+// ---------------------------------------------------------------------------
+
+function MemoryRecallOverlay({
+  encounterId,
+  result,
+  onClose,
+}: {
+  encounterId: string;
+  result: MemoryRecallResult;
+  onClose: () => void;
+}) {
+  // Typewriter for the counter text — simple setInterval, dies on unmount or
+  // when the text changes (so a back-to-back recall replays cleanly).
+  const [typed, setTyped] = useState("");
+  useEffect(() => {
+    setTyped("");
+    const text = result.counter_text ?? "";
+    if (!text) return;
+    let i = 0;
+    const id = setInterval(() => {
+      i++;
+      setTyped(text.slice(0, i));
+      if (i >= text.length) clearInterval(id);
+    }, MEMORY_RECALL_TYPE_SPEED_MS);
+    return () => clearInterval(id);
+  }, [result.counter_text]);
+
+  // Auto-dismiss after the overlay window. Player can also click to close.
+  useEffect(() => {
+    const id = setTimeout(onClose, MEMORY_RECALL_OVERLAY_MS);
+    return () => clearTimeout(id);
+  }, [onClose]);
+
+  const slice = result.transcript_slice ?? [];
+  const highlightedLine = result.highlighted_line ?? "";
+
+  return (
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.82)" }}
+      onClick={onClose}
+      role="dialog"
+      aria-label="Memory Recall"
+    >
+      <div
+        className="pixel-panel p-4 max-w-2xl w-[90%] space-y-3"
+        style={{ borderColor: "var(--accent)", boxShadow: "4px 4px 0 #000" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Top: the literal Redis key the cache was peeked from. */}
+        <div
+          className="font-mono text-[11px] px-2 py-1"
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            color: "var(--accent)",
+            borderLeft: "3px solid var(--accent)",
+          }}
+        >
+          GET enc:{encounterId}:transcript
+        </div>
+
+        {/* Middle: the 5 most-recent transcript lines, with the highlighted
+            one glowing. Lines scroll in via a CSS-cheap stagger. */}
+        <div className="space-y-1">
+          <div
+            className="font-hud text-[9px] uppercase tracking-wider"
+            style={{ color: "var(--muted)" }}
+          >
+            Transcript slice (last {slice.length})
+          </div>
+          {slice.length === 0 && (
+            <div
+              className="font-body text-[12px] italic"
+              style={{ color: "var(--muted)" }}
+            >
+              (cache miss — no transcript lines yet)
+            </div>
+          )}
+          {slice.map((line, i) => {
+            const isHighlighted =
+              !!highlightedLine && line.toLowerCase().includes(highlightedLine.toLowerCase());
+            return (
+              <div
+                key={`mr-line-${i}`}
+                className="font-mono text-[11px] px-2 py-1 transition-colors"
+                style={{
+                  background: isHighlighted ? "rgba(255,222,89,0.18)" : "transparent",
+                  color: isHighlighted ? "var(--accent)" : "var(--ink)",
+                  borderLeft: isHighlighted ? "3px solid var(--accent)" : "3px solid transparent",
+                  opacity: 0,
+                  animation: `mr-line-in 280ms ease-out ${i * 90}ms forwards`,
+                  textShadow: isHighlighted ? "0 0 8px var(--accent)" : undefined,
+                }}
+              >
+                {line}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Bottom: typewritten counter in the coach's voice. */}
+        <div className="pixel-inset p-2" style={{ borderColor: "var(--party)" }}>
+          <div
+            className="font-hud text-[9px] mb-1"
+            style={{ color: "var(--party)" }}
+          >
+            COUNTER
+          </div>
+          <p
+            className="font-body text-[13px] leading-relaxed"
+            style={{ color: "var(--ink)" }}
+          >
+            {typed}
+            {typed.length < (result.counter_text ?? "").length && (
+              <span className="caret-blink">▋</span>
+            )}
+          </p>
+        </div>
+
+        <div
+          className="flex items-center justify-between font-hud text-[9px] pt-1"
+          style={{ color: "var(--muted)" }}
+        >
+          <span>
+            -{result.mp_spent} MP &middot; {result.mp_remaining} MP left
+          </span>
+          <span style={{ color: result.damage > 0 ? "var(--danger)" : "var(--muted)" }}>
+            -{result.damage} HP
+          </span>
+        </div>
+      </div>
+
+      {/* Local keyframes for the line-in stagger; cheap, no CSS module needed. */}
+      <style>{`
+        @keyframes mr-line-in {
+          0% { opacity: 0; transform: translateX(-6px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main view
 // ---------------------------------------------------------------------------
 
@@ -389,6 +557,14 @@ export function BattleDebateView() {
   const [coaching, setCoaching] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<AssistSuggestion[]>([]);
+
+  // Memory Recall (Wave C). Tracks whether a recall request is in flight, the
+  // last result (drives the overlay), and a per-target damage float so the
+  // existing CombatantCard animation surfaces the recall's HP delta.
+  const [recalling, setRecalling] = useState(false);
+  const [recallError, setRecallError] = useState<string | null>(null);
+  const [recallResult, setRecallResult] = useState<MemoryRecallResult | null>(null);
+  const [recallFloat, setRecallFloat] = useState<{ targetId: string; dmg: number; key: number } | null>(null);
 
   // Retro SFX (spec §7 stretch) — mute toggle + edge-detection refs.
   const [sfxOn, setSfxOn] = useState(true);
@@ -447,15 +623,28 @@ export function BattleDebateView() {
     if (youSeries.points.length) setYouScores(youSeries.points);
   }, [youSeries, setYouScores]);
 
-  // Per-card floating damage: latest verdict's damage keyed by target id.
+  // Per-card floating damage: latest verdict's damage keyed by target id. A
+  // freshly-cast Memory Recall transiently overrides the verdict damage on the
+  // target it hit so the player sees the recall damage float without waiting
+  // for the next judge verdict.
   const lastVerdict = verdicts[verdicts.length - 1];
   const floatByTarget: Record<string, number> = {};
   if (lastVerdict) floatByTarget[lastVerdict.target] = lastVerdict.damage;
+  if (recallFloat) floatByTarget[recallFloat.targetId] = recallFloat.dmg;
+  const floatKey = recallFloat ? `recall-${recallFloat.key}` : lastVerdict?.turn;
 
   // Auto-scroll transcript
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript.length]);
+
+  // Clear the transient Memory Recall damage float after it finishes animating,
+  // so the next judge verdict isn't shadowed by a stale recall number.
+  useEffect(() => {
+    if (!recallFloat) return;
+    const id = setTimeout(() => setRecallFloat(null), 1800);
+    return () => clearTimeout(id);
+  }, [recallFloat]);
 
   // SFX: punchy "hit" whenever a NEW verdict lands (brighter on a good score).
   useEffect(() => {
@@ -540,6 +729,52 @@ export function BattleDebateView() {
     }
   }
 
+  // Memory Recall (Wave C): spend 60 MP, surface the Redis transcript on screen,
+  // and counter the highlighted enemy line in the lead party monster's voice.
+  // Damage is delivered through the existing per-card floating-damage animation
+  // by stashing it onto `recallFloat` so `floatByTarget` can pick it up.
+  async function castMemoryRecall() {
+    if (!activeEncounterId || recalling || isOver || running) return;
+    if (!leadEnemy || !leadParty) return;
+    setRecallError(null);
+    setRecalling(true);
+    sfxBlip();
+    try {
+      const result = await api.post<MemoryRecallResult>(
+        `/api/encounters/${activeEncounterId}/memory-recall`,
+        {}
+      );
+      setRecallResult(result);
+      if (result.damage > 0) {
+        sfxHit(true);
+        setRecallFloat({
+          targetId: leadEnemy.monster_id,
+          dmg: result.damage,
+          key: Date.now(),
+        });
+      }
+    } catch (e) {
+      setRecallError(e instanceof Error ? e.message : "Memory Recall failed");
+    } finally {
+      setRecalling(false);
+    }
+  }
+
+  // Local MP fallback until Wave B's MP map is wired into the WS state. We
+  // assume the coach has at least max_mp (60) so the button is enabled in the
+  // demo; once Wave B integrates, swap this for the real MP value.
+  // (Backend still enforces the actual MP gate, so a button click below the
+  // real threshold will surface as `recallError` rather than letting the
+  // player cheat.)
+  const coachMp = MEMORY_RECALL_MP_COST; // optimistic local fallback
+  const canRecall =
+    !!leadParty &&
+    !!leadEnemy &&
+    !isOver &&
+    !running &&
+    !recalling &&
+    coachMp >= MEMORY_RECALL_MP_COST;
+
   // Adopt a coach suggestion: load it into the textarea, and if its suggested
   // skill matches one of the lead's chips, select that chip too.
   function useSuggestion(s: AssistSuggestion) {
@@ -614,6 +849,17 @@ export function BattleDebateView() {
         <div
           className="capture-flash absolute inset-0 z-50 pointer-events-none"
           style={{ background: "var(--accent)" }}
+        />
+      )}
+
+      {/* Memory Recall (Wave C) — full-screen overlay surfaces the actual
+          Redis transcript key + 5 lines + the typed-out counter. Auto-dismisses
+          after MEMORY_RECALL_OVERLAY_MS, or click to close immediately. */}
+      {recallResult && activeEncounterId && (
+        <MemoryRecallOverlay
+          encounterId={activeEncounterId}
+          result={recallResult}
+          onClose={() => setRecallResult(null)}
         />
       )}
 
@@ -693,7 +939,7 @@ export function BattleDebateView() {
                 isLead={c.monster_id === leadParty?.monster_id}
                 isActive={activeId != null ? c.monster_id === activeId : undefined}
                 floatDmg={floatByTarget[c.monster_id] ?? null}
-                floatKey={lastVerdict?.turn}
+                floatKey={floatKey}
               />
             );
           })
@@ -970,6 +1216,27 @@ export function BattleDebateView() {
         >
           Auto (3)
         </button>
+        {/* Memory Recall (Wave C: the headline). Greyed when unaffordable or
+            while another action is in flight. The local MP fallback assumes
+            max_mp until Wave B's MP map streams in — the backend re-enforces
+            the real gate, so an over-cast just surfaces as `recallError`. */}
+        <button
+          className="pixel-btn pixel-btn--accent"
+          disabled={!canRecall}
+          onClick={castMemoryRecall}
+          title={
+            !canRecall
+              ? `Memory Recall needs ${MEMORY_RECALL_MP_COST} MP`
+              : "Peek the encounter transcript and counter the enemy's strongest line"
+          }
+        >
+          {recalling ? "Recalling…" : `Memory Recall (${MEMORY_RECALL_MP_COST} MP)`}
+        </button>
+        {recallError && (
+          <span className="font-body text-[11px]" style={{ color: "var(--danger)" }}>
+            {recallError}
+          </span>
+        )}
         {isCapturable && (
           <button className="pixel-btn pixel-btn--accent" disabled={busy} onClick={handleCapture}>
             Capture
