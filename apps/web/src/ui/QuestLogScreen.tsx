@@ -9,6 +9,7 @@
  * quests stay selectable (selecting one just re-affirms it / no-op for now).
  */
 import { useCallback, useEffect, useState } from "react";
+import { T, Var, useGT } from "gt-react";
 import { api } from "../api/client";
 import { useGame } from "../state/store";
 import { ListMenu, LoadingState, EmptyState, ErrorState } from "./shell";
@@ -46,6 +47,7 @@ function isClosed(status: string): boolean {
 
 export default function QuestLogScreen() {
   const runId = useGame((s) => s.runId);
+  const t = useGT();
   const [quests, setQuests] = useState<Quest[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,8 +79,12 @@ export default function QuestLogScreen() {
     return (
       <EmptyState
         icon="📜"
-        title="No quests yet"
-        message={`Talk to NPCs to take on quests. Your first comes from ${INTRO_SCRIPT.npcName}.`}
+        title={t("No quests yet")}
+        message={
+          <T>
+            Talk to NPCs to take on quests. Your first comes from <Var>{INTRO_SCRIPT.npcName}</Var>.
+          </T>
+        }
       />
     );
 

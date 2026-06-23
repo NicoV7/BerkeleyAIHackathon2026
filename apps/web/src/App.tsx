@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LocaleSelector } from "gt-react";
 import { useGame } from "./state/store";
 import { api } from "./api/client";
 import Overworld from "./ui/Overworld";
@@ -101,6 +102,7 @@ function AppShell() {
             <span style={{ color: "var(--muted)" }} className="truncate max-w-[16rem]">
               theme: {runTheme || topic}
             </span>
+            <LocaleSelector />
           </div>
         </header>
       )}
