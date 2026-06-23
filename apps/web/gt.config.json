@@ -1,4 +1,7 @@
 {
   "defaultLocale": "en",
-  "locales": ["es"]
+  "locales": [
+    "es"
+  ],
+  "_versionId": "480a9f45bb05649bfa095cb745eb3e72a7aaba4a29fd2a09202c4dad6c982c3f"
 }

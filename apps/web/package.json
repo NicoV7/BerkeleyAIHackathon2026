@@ -12,7 +12,7 @@
     "e2e": "playwright test",
     "gen:types": "openapi-typescript http://localhost:8000/openapi.json -o ../../packages/shared/types.gen.ts",
     "gt:setup": "gtx-cli setup",
-    "gt:translate": "gtx-cli translate"
+    "gt:translate": "gtx-cli translate --publish"
   },
   "dependencies": {
     "@debate/shared": "workspace:*",
