@@ -7,6 +7,7 @@
  * NPCs can accept dungeon-clear quests.
  */
 import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
+import { T, Var } from "gt-react";
 import { api } from "../api/client";
 import {
   INTRO_SCRIPT,
@@ -14,10 +15,47 @@ import {
   MERCHANT_DIALOGUE,
   INNKEEPER_DIALOGUE,
   type IntroChoice,
+  type IntroLine,
 } from "../content/introScript";
 import { ListMenu, ErrorState } from "../ui/shell";
 import type { ListMenuItem } from "../ui/shell";
 import type { NPCAnchorView } from "./NPCBehavior";
+
+// Localized renderers for the intro script. The text literals live HERE (not in
+// introScript.ts) so gt-react's scanner can extract them — the data file stays
+// pure data, keyed by id. If you add a new IntroLine/IntroChoice, add a case.
+function IntroLineText({ line }: { line: IntroLine }) {
+  const body = (() => {
+    switch (line.id) {
+      case "intro-1":
+        return <T>A figure in a frayed scholar's cloak waits at the crossroads, as if she'd expected you.</T>;
+      case "intro-2":
+        return <T>So. Another wanderer who thinks the loudest voice wins. You'll learn quickly that it doesn't.</T>;
+      case "intro-3":
+        return <T>In these lands the weapon is reasoning. A sharp argument cuts deeper than any blade — and you walk in unarmed.</T>;
+      case "intro-4":
+        return <T>But you needn't fight alone. Speakers — agents of pure rhetoric — can be summoned to argue at your side. You have none yet.</T>;
+      case "intro-5":
+        return <T>Take this charm. Summon your first Speaker, and I'll mark your map with a debate worth winning.</T>;
+      default:
+        return line.text;
+    }
+  })();
+  return line.speaker === "narration" ? <em>{body}</em> : body;
+}
+
+function IntroChoiceLabel({ id }: { id: string }) {
+  switch (id) {
+    case "choice-accept":
+      return <T>Take the charm and summon a Speaker.</T>;
+    case "choice-explain":
+      return <T>"Reasoning is the weapon?" Explain.</T>;
+    case "choice-decline":
+      return <T>Not yet. (Walk away.)</T>;
+    default:
+      return id;
+  }
+}
 
 interface TalkTurn {
   role: "player" | "npc";
@@ -213,7 +251,7 @@ function IntroDialogue({
 
   const choiceRows: ListMenuItem<IntroChoice>[] = INTRO_SCRIPT.choices.map((c) => ({
     id: c.id,
-    label: c.label,
+    label: <IntroChoiceLabel id={c.id} />,
     disabled: busy,
     value: c,
   }));
@@ -225,7 +263,7 @@ function IntroDialogue({
       onClose={onClose}
     >
       {error ? (
-        <ErrorState message="The path is silent." detail={error} onRetry={() => setError(null)} />
+        <ErrorState message={<T>The path is silent.</T>} detail={error} onRetry={() => setError(null)} />
       ) : !atChoices ? (
         <button
           type="button"
@@ -237,16 +275,18 @@ function IntroDialogue({
             className="font-body text-sm min-h-10 leading-relaxed"
             style={{ color: current.speaker === "narration" ? "var(--muted)" : "var(--ink)" }}
           >
-            {current.speaker === "narration" ? <em>{current.text}</em> : current.text}
+            <IntroLineText line={current} />
           </p>
           <p className="font-hud text-[9px] mt-1" style={{ color: "var(--muted)" }}>
-            click / Enter to continue ({lineIdx + 1}/{lines.length})
+            <T>
+              click / Enter to continue (<Var>{lineIdx + 1}</Var>/<Var>{lines.length}</Var>)
+            </T>
           </p>
         </button>
       ) : (
         <div className="space-y-2">
           <p className="font-body text-sm" style={{ color: "var(--ink)" }}>
-            {INTRO_SCRIPT.choicePrompt}
+            <T>Will you accept the charm?</T>
           </p>
           <ListMenu
             items={choiceRows}
@@ -255,7 +295,7 @@ function IntroDialogue({
           />
           {busy ? (
             <p className="font-hud text-[9px]" style={{ color: "var(--muted)" }}>
-              Summoning your first Speaker...
+              <T>Summoning your first Speaker...</T>
             </p>
           ) : null}
         </div>

@@ -97,6 +97,23 @@ not print provider secrets.
 Encounter pacing is controlled by `BATTLE_DAMAGE_MULTIPLIER` (default `1.0`).
 Raise it to shorten battles, lower it if playtests feel too abrupt.
 
+## Translations
+
+Authored web copy (intro NPC dialogue, choice prompts, party/quest empty
+states) is wrapped with [General Translation](https://generaltranslation.com)
+`<T>` components and translated by their CDN. Locale config lives in
+[`apps/web/gt.config.json`](apps/web/gt.config.json) (defaults to English
+source + Spanish target). Put `GT_PROJECT_ID` / `VITE_GT_PROJECT_ID` and
+`GT_API_KEY` in your root `.env` (placeholders in `.env.example`), then run:
+
+```bash
+pnpm --filter web gt:translate
+```
+
+Locale artifacts are gitignored, so a fresh clone needs one `gt:translate`
+run before localized text appears in the locale dropdown. Dynamic LLM-generated
+NPC responses and Python-side POI labels are not yet translated.
+
 ## Layout
 ```
 apps/web/         Vite + React + Phaser

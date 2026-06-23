@@ -9,10 +9,11 @@
  * Props: none — reads runId from global store.
  */
 import { useEffect, useState, useCallback } from "react";
+import { T, Var } from "gt-react";
 import { useGame } from "../state/store";
 import { api } from "../api/client";
 import { effectLabel, parseSkills, typeColor } from "../lib/skills";
-import { EMPTY_PARTY_COPY } from "../content/introScript";
+import { INTRO_SCRIPT } from "../content/introScript";
 
 // ---- Types (mirrors app/schemas.py MonsterSummary) ----
 
@@ -277,9 +278,13 @@ export default function PartyScreen() {
       {!loading && party.length === 0 && !error && (
         <div className="pixel-panel p-6 text-center">
           <div className="text-4xl mb-3">👾</div>
-          <div className="font-hud text-sm mb-1">{EMPTY_PARTY_COPY.title}</div>
+          <div className="font-hud text-sm mb-1">
+            <T>No Speakers yet</T>
+          </div>
           <div className="font-body text-xs" style={{ color: "var(--muted)" }}>
-            {EMPTY_PARTY_COPY.message}
+            <T>
+              Recruit your first agent — talk to <Var>{INTRO_SCRIPT.npcName}</Var> at the crossroads.
+            </T>
           </div>
         </div>
       )}

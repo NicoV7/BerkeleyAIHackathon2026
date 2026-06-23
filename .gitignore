@@ -49,3 +49,9 @@ apps/api/.venv/
 apps/api/.coverage
 uv.lock
 apps/api/uv.lock
+
+# General Translation generated locale artifacts (regenerate with
+# `pnpm --filter web gt:translate`; never commit translated payloads).
+.gt/
+apps/web/.gt/
+apps/web/src/_gt/
